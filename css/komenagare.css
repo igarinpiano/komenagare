@@ -49,7 +49,7 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .cf-actions{display:flex;gap:6px;flex-wrap:wrap}
 
 /* ---------- layout ---------- */
-.layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 370px;grid-template-rows:minmax(0,1fr);gap:12px;padding:12px}
+.layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) min(var(--side-w,400px), max(300px, calc(100% - 412px)));grid-template-rows:minmax(0,1fr);gap:12px;padding:12px}
 .player-col{min-width:0;min-height:0;overflow:auto;display:flex;flex-direction:column}
 /* プレビューは枠いっぱいに広げ、動画と枠の比率が合わない部分は帯（色は設定で変更可）にする */
 .player{flex:1 0 auto;width:100%;min-width:320px;display:flex;flex-direction:column;background:#000;border-radius:8px;overflow:hidden;border:1px solid #2a2a2a}
@@ -196,7 +196,10 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .stab:hover{background:none;color:#ddd}
 .stab.on{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
 .pane{flex:1;min-height:0;display:flex;flex-direction:column}
-.layout.wide-side{grid-template-columns:minmax(0,1fr) minmax(420px,46%)}
+/* 右のパネルの幅を変えるつまみ（動画との間のすき間。PC の幅のときだけ） */
+.side-resize{display:none;justify-self:start;align-self:stretch;width:12px;margin-left:-12px;cursor:ew-resize;z-index:3;position:relative;touch-action:none}
+.side-resize::after{content:"";position:absolute;top:50%;left:4px;width:3px;height:44px;margin-top:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
+.side-resize:hover::after,.side-resize.on::after{opacity:1}
 .mtabs{display:none}
 .danger{color:#ff8a8a;border-color:#6a2c2c}
 .danger:hover{background:#3a1f1f}
@@ -280,6 +283,8 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 
 @media (min-width: 981px){
   body.tl-off .timeline{display:none}
+  .layout > .side,.side-resize{grid-column:2;grid-row:1}
+  .side-resize{display:block}
 }
 @media (max-width: 980px){
   body{overflow-x:hidden;overflow-y:auto}
