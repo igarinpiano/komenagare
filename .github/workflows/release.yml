@@ -1,5 +1,5 @@
-# cli/Cargo.toml の version のリリースを作る。各 OS 向けにビルドしてリリースに載せる
-# （install.sh / install.ps1 と komenagare update がここから取る。ファイル名は cli/src/update.rs と合わせる）
+# cli/Cargo.toml の version のリリースを作る。全部のターゲット（build-matrix.yml）向けにビルドし、
+# .github/package.sh でまとめてリリースに載せる（install.sh / install.ps1 と komenagare update がここから取る）
 #
 # 起動のしかた（どちらでもよい）
 #   - Actions の画面（または API）から main で手動実行する。タグ（v0.1.1 など）はこのワークフローが作る
@@ -24,7 +24,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: タグを決める（手動実行なら作る）
         id: tag
         shell: bash
@@ -49,65 +49,22 @@ jobs:
 
   build:
     needs: tag
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
-          - { target: x86_64-apple-darwin, os: macos-latest }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-pc-windows-msvc, os: windows-latest }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - if: contains(matrix.target, 'linux-musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: ビルド
-        shell: bash
-        run: |
-          # musl 向けは C の部分（rustls が使う ring）を musl-gcc でビルドする
-          if [[ "${{ matrix.target }}" == *linux-musl ]]; then export "CC_${MT//-/_}=musl-gcc"; fi
-          # Windows は Visual C++ ランタイムを入れていない PC でも動くよう静的リンクする
-          if [[ "${{ matrix.target }}" == *windows-msvc ]]; then export RUSTFLAGS="-C target-feature=+crt-static"; fi
-          cargo build --release --locked --manifest-path cli/Cargo.toml --target ${{ matrix.target }}
-        env:
-          MT: ${{ matrix.target }}
-      - name: まとめる
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          name=komenagare-${{ matrix.target }}
-          mkdir dist
-          cp cli/target/${{ matrix.target }}/release/komenagare LICENSE README.md dist/
-          tar -czf $name.tar.gz -C dist .
-          if command -v sha256sum >/dev/null; then sha256sum $name.tar.gz > $name.tar.gz.sha256; else shasum -a 256 $name.tar.gz > $name.tar.gz.sha256; fi
-      - name: まとめる（Windows）
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $name = "komenagare-${{ matrix.target }}"
-          New-Item -ItemType Directory dist | Out-Null
-          Copy-Item cli/target/${{ matrix.target }}/release/komenagare.exe, LICENSE, README.md dist/
-          Compress-Archive -Path dist/* -DestinationPath "$name.zip"
-          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
-          Set-Content -Encoding ascii -Path "$name.zip.sha256" -Value "$hash  $name.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: komenagare-${{ matrix.target }}
-          path: komenagare-${{ matrix.target }}.*
+    uses: ./.github/workflows/build-matrix.yml
 
   release:
     needs: [tag, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: dist
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bin-*
           merge-multiple: true
+          path: binaries
+      - name: まとめる
+        run: bash .github/package.sh binaries dist && ls -l dist
       - name: リリースを作る
         env:
           GH_TOKEN: ${{ github.token }}
