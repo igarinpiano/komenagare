@@ -142,10 +142,11 @@ function updateOps(changes){
 }
 // 変更セットを store に適用して画面に反映する。undoable なら「元に戻す」の対象にする
 // 共同編集中は、ここで適用した変更をホストへ送る（send: false はホストから来た変更を反映するとき）
-function commitOps(ops, { undoable = true, save = true, atomic = false, send = true, record = true } = {}){
+// conflicts に配列を渡すと、適用できなかった op（衝突）をそこに入れる
+function commitOps(ops, { undoable = true, save = true, atomic = false, send = true, record = true, conflicts: out = null } = {}){
   if (!ops.length) return null;
   const { applied, conflicts } = store.apply({ id: uuidv7(), ops }, { atomic });
-  if (conflicts.length) console.warn('変更の衝突', conflicts);
+  if (conflicts.length){ if (out) out.push(...conflicts); else console.warn('変更の衝突', conflicts); }
   if (!applied) return null;
   if (undoable) pushUndo(applied);
   if (record) recordChange(applied);
@@ -2210,6 +2211,8 @@ $('#tlZoom').oninput = (e) => {
    ===================================================================== */
 const editDlg = $('#editDlg');
 let editTarget = null;
+// 編集画面を開いたときの値（保存するときの「変更前の値」。開いている間にほかの人が変えても、これと比べて 3-way マージする）
+let editBase = null;
 function edSync(){
   const o = parseCmd(normCmd($('#edCmd').value));
   $('#edPos').value = o.pos;
@@ -2219,6 +2222,7 @@ function edSync(){
 }
 function openEditDialog(c){
   editTarget = c;
+  editBase = pickFields(c);
   $('#edTitle').textContent = 'コメントを編集';
   $('#edText').value = c.text;
   $('#edTime').value = fmtPrecise(c.t);
@@ -2255,13 +2259,23 @@ function edCommit(){
   const text = $('#edText').value.replace(/\s+$/, '');
   if (!text.trim()){ toast('本文を入力してください', { type:'error' }); $('#edText').focus(); return; }
   const cmd = normCmd($('#edCmd').value);
+  let conflict = null;
   if (editTarget){
-    const c = editTarget;
-    if (!store.has(c.id)){ editDlg.close(); return; }
-    const { ops, failed } = updateOps([{ c, t, cmd, text }]);
-    if (failed){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
-    commitOps(ops);
-    TL.sel = new Set([c.id]);
+    // 開いたときの値（editBase）から自分が変えた項目だけを、その値からの変更として適用する。
+    // ほかの人が同じ項目を変えていたり、コメントを削除していたりしたら衝突として選んでもらう（3-way マージ）
+    const id = editTarget.id, base = editBase, f = normFields(t, cmd, text);
+    const changed = COMMENT_FIELDS.filter(k => f[k] !== base[k]);
+    const cur = store.get(id);
+    if (changed.length){
+      if (cur){
+        const m = { ...pickFields(cur), ...pickFields(f, changed) }, key = commentKey(m.t, m.cmd, m.text);
+        if (key !== cur.key && store.hasKey(key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+      }
+      const conflicts = [];
+      commitOps([{ type:'update', id, before: pickFields(base, changed), after: pickFields(f, changed) }], { conflicts });
+      if (conflicts.length) conflict = { reason: conflicts[0].reason, id, base, mine: pickFields(f, changed) };
+    }
+    if (store.has(id)) TL.sel = new Set([id]);
   } else {
     const c = makeComment(t, cmd, text, true);
     if (store.hasKey(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
@@ -2271,6 +2285,15 @@ function edCommit(){
   }
   editDlg.close();
   tlSelChanged();
+  if (conflict) addEditConflict(conflict);
+}
+// 編集画面で保存した変更がほかの人の変更と重なったとき、衝突の解決画面に出す
+function addEditConflict({ reason, id, base, mine }){
+  const cur = store.get(id), theirs = cur ? pickFields(cur) : null;
+  collab.conflicts.push({ key: 'edit:' + uuidv7(), id, reason, opType: 'update', base: { ...base },
+    mine: { ...(theirs || base), ...mine }, theirs, at: Date.now() });
+  conflictsChanged();
+  conflictOpen();
 }
 editDlg.addEventListener('close', () => { editTarget = null; TL.main.focus({ preventScroll:true }); });
 
@@ -2972,9 +2995,12 @@ function collabAddConflicts(entry, conflicts, fix, local){
     const mine = op.type === 'delete' ? null
       : op.type === 'add' ? { ...op.after }
       : { ...(theirs || {}), ...(mineNow ? { t: mineNow.t, cmd: mineNow.cmd, text: mineNow.text } : {}), ...op.after };
+    // 元の値（3-way の共通の祖先）。update の before は変えた項目だけなので、ほかの項目は自分の側の値で補う
+    const base = op.type === 'add' ? null
+      : { ...(mineNow ? pickFields(mineNow) : theirs || {}), ...op.before };
     const key = entry.id + ':' + c.id;
     if (collab.conflicts.some(x => x.key === key)) continue;
-    collab.conflicts.push({ key, id: c.id, reason: c.reason, opType: op.type, mine, theirs, at: Date.now() });
+    collab.conflicts.push({ key, id: c.id, reason: c.reason, opType: op.type, base, mine, theirs, at: Date.now() });
     added++;
   }
   if (!added) return;
@@ -3173,14 +3199,23 @@ function conflictRender(){
     const base = rec.theirs || rec.mine || {};
     box.append(mkEl('div', 'cf-title', `「${clip(base.text, 60)}」 ${fmtPrecise(base.t ?? 0)}`));
     box.append(mkEl('div', 'cf-why', CONFLICT_WHY[`${rec.reason}:${rec.opType}`] || 'ほかの人の変更と重なりました'));
+    // 3-way：元の値（共通の祖先）・あなた・相手（今の内容）を並べ、どれかが違う項目だけ出す
     const table = mkEl('table', 'cf-table');
-    const head = mkEl('tr'); head.append(mkEl('th'), mkEl('th', null, 'あなた'), mkEl('th', null, '相手（今の内容）')); table.append(head);
-    const keys = rec.mine && rec.theirs ? ['t', 'cmd', 'text'].filter(k => rec.mine[k] !== rec.theirs[k]) : ['text'];
+    const cols = [];
+    if (rec.base) cols.push(['元の値', rec.base, '（なし）']);
+    cols.push(['あなた', rec.mine, '（削除）'], ['相手（今の内容）', rec.theirs, '（削除済み）']);
+    const head = mkEl('tr'); head.append(mkEl('th'), ...cols.map(([name]) => mkEl('th', null, name))); table.append(head);
+    const vals = cols.map(([, v]) => v).filter(Boolean);
+    let keys = COMMENT_FIELDS.filter(k => vals.some(v => v[k] !== vals[0][k]));
+    if (!keys.length) keys = ['text'];
     for (const k of keys){
       const tr = mkEl('tr');
-      tr.append(mkEl('th', null, label[k]),
-        mkEl('td', null, rec.mine ? show(k, rec.mine[k]) : '（削除）'),
-        mkEl('td', null, rec.theirs ? show(k, rec.theirs[k]) : '（削除済み）'));
+      tr.append(mkEl('th', null, label[k]), ...cols.map(([, v, none]) => {
+        const td = mkEl('td', null, v ? show(k, v[k]) : none);
+        // 元の値から変わったところを目立たせる
+        if (rec.base && v && v !== rec.base && v[k] !== rec.base[k]) td.className = 'cf-changed';
+        return td;
+      }));
       table.append(tr);
     }
     box.append(table);

@@ -46,6 +46,7 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .cf-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:8px}
 .cf-table th,.cf-table td{border-top:1px solid #2c2c2c;padding:3px 6px;text-align:left;vertical-align:top;word-break:break-all}
 .cf-table th{color:var(--muted);font-weight:500;width:4.5em}
+.cf-table td.cf-changed{color:#ffd28a;font-weight:600}
 .cf-actions{display:flex;gap:6px;flex-wrap:wrap}
 
 /* ---------- layout ---------- */
