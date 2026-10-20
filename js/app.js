@@ -2773,10 +2773,25 @@ function applyPhoneLandscape(){
     : innerWidth > innerHeight;
   document.documentElement.classList.toggle('phone-landscape', land && Math.min(screen.width, screen.height) <= 540);
 }
-applyPhoneLandscape();
-screen.orientation?.addEventListener('change', applyPhoneLandscape);
-window.addEventListener('orientationchange', applyPhoneLandscape);
-window.addEventListener('resize', applyPhoneLandscape);
+// 表示領域の高さ（スマホの縦持ちで動画の大きさを決める）。入力中はキーボードで縮んでも変えない
+let stableH = 0;
+function applyStableHeight(reset){
+  const el = document.activeElement;
+  const typing = el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+  if (reset || !typing || innerHeight > stableH) stableH = innerHeight;
+  document.documentElement.style.setProperty('--stable-h', stableH + 'px');
+}
+function onViewportChange(e){
+  applyPhoneLandscape();
+  // 向きが変わったら測り直す
+  applyStableHeight(e && e.type !== 'resize');
+}
+onViewportChange();
+screen.orientation?.addEventListener('change', onViewportChange);
+window.addEventListener('orientationchange', onViewportChange);
+window.addEventListener('resize', onViewportChange);
+// キーボードが閉じたあと（入力欄から離れたあと）に測り直す
+document.addEventListener('focusout', () => setTimeout(() => applyStableHeight(false), 300));
 function applyLayoutVars(){
   const root = document.documentElement.style;
   root.setProperty('--tl-h', settings.tlHeight + 'px');
