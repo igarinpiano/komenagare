@@ -3,6 +3,7 @@
 #
 # 起動のしかた（どちらでもよい）
 #   - Actions の画面（または API）から main で手動実行する。タグ（v0.1.1 など）はこのワークフローが作る
+#     replace を付けると、同じ版のリリースとタグが別のコミットに既にあっても、ビルドが全部できてから消して作り直す
 #   - version と同じ番号のタグを push する
 name: Release
 
@@ -10,6 +11,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      replace:
+        description: 同じ版のリリースとタグが別のコミットにあれば、消してこのコミットで作り直す
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,22 +31,25 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      - name: タグを決める（手動実行なら作る）
+      - name: タグを決めて、作れるか確かめる
         id: tag
         shell: bash
+        env:
+          REPLACE: ${{ inputs.replace }}
         run: |
           v=$(grep -m1 '^version' cli/Cargo.toml | cut -d '"' -f 2)
           tag="v$v"
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             [ "$GITHUB_REF" = refs/heads/main ] || { echo "main で実行してください（今は $GITHUB_REF）"; exit 1; }
-            if git fetch -q --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null; then
-              # 同じコミットのタグがあるなら、前回の続き（途中で失敗したリリースのやり直し）として進める
-              [ "$(git rev-parse "$tag^{commit}")" = "$GITHUB_SHA" ] \
-                || { echo "タグ $tag は別のコミットに既にあります。cli/Cargo.toml の version を上げてください"; exit 1; }
-            else
-              # GITHUB_TOKEN で push したタグではこのワークフローは起動し直さない
-              git tag "$tag" "$GITHUB_SHA"
-              git push origin "refs/tags/$tag"
+            # タグは最後にリリースを作るときに作る（同じコミットのタグがあれば、途中で失敗したリリースの続きとして進める）
+            if git fetch -q --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null \
+              && [ "$(git rev-parse "$tag^{commit}")" != "$GITHUB_SHA" ]; then
+              if [ "$REPLACE" = true ]; then
+                echo "タグ $tag は別のコミットにあります。ビルドが全部できたら、リリースとタグを消して作り直します"
+              else
+                echo "タグ $tag は別のコミットに既にあります。cli/Cargo.toml の version を上げるか、replace を付けて実行してください"
+                exit 1
+              fi
             fi
           else
             [ "$tag" = "$GITHUB_REF_NAME" ] || { echo "タグ $GITHUB_REF_NAME と cli/Cargo.toml の version $v が違います"; exit 1; }
@@ -112,10 +121,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag.outputs.tag }}
+          REPLACE: ${{ inputs.replace }}
         run: |
+          repo="$GITHUB_REPOSITORY"
+          # 今のタグのコミット（タグが無ければ空）
+          cur=$(gh api "repos/$repo/commits/$TAG" --jq .sha 2>/dev/null) || cur=
+          [[ "$cur" =~ ^[0-9a-f]{40}$ ]] || cur=
+          if [ -n "$cur" ] && [ "$cur" != "$GITHUB_SHA" ]; then
+            [ "$REPLACE" = true ] || { echo "タグ $TAG は別のコミット（$cur）にあります"; exit 1; }
+            echo "前の $TAG（$cur）のリリースとタグを消します"
+            if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+              gh release delete "$TAG" --repo "$repo" --yes
+            fi
+            gh api -X DELETE "repos/$repo/git/refs/tags/$TAG"
+          fi
           # やり直しでリリースが既にあれば、ファイルを置き換える
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$repo" --clobber
           else
-            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
+            # タグが無ければこのコミットに作る（GITHUB_TOKEN で作ったタグではこのワークフローは起動し直さない）
+            gh release create "$TAG" dist/* --repo "$repo" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
           fi
