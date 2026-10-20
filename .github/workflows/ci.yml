@@ -23,9 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: cli
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check --all
       - run: cargo test --locked --manifest-path cli/Cargo.toml
       - run: sh -n install.sh
 
@@ -35,8 +36,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: cli
       - run: cargo test --locked --manifest-path cli/Cargo.toml
       - name: install.ps1 と komenagare update を手元のミラーで確かめる
         shell: pwsh
@@ -46,7 +45,7 @@ jobs:
           $name = 'komenagare-x86_64-pc-windows-msvc'
           $rel = "mirror/releases/download/$v"
           New-Item -ItemType Directory -Force pkg, $rel | Out-Null
-          Copy-Item cli/target/debug/komenagare.exe, LICENSE, README.md pkg/
+          Copy-Item target/debug/komenagare.exe, LICENSE, README.md pkg/
           Compress-Archive -Path pkg/* -DestinationPath "$rel/$name.zip"
           $hash = (Get-FileHash "$rel/$name.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Encoding ascii -Path "$rel/$name.zip.sha256" -Value "$hash  $name.zip"

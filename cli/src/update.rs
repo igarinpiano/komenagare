@@ -23,31 +23,17 @@ pub fn releases_url() -> String {
         .to_string()
 }
 
-/// この OS・CPU 向けの配布物の名前（.github/workflows/release.yml と同じ）
-pub fn asset_name() -> Option<&'static str> {
-    if cfg!(windows) {
-        // Arm の Windows でも x86_64 版が動く
-        return Some("komenagare-x86_64-pc-windows-msvc.zip");
-    }
-    let arm = cfg!(target_arch = "aarch64");
-    if !arm && !cfg!(target_arch = "x86_64") {
-        return None;
-    }
-    if cfg!(target_os = "macos") {
-        Some(if arm {
-            "komenagare-aarch64-apple-darwin.tar.gz"
-        } else {
-            "komenagare-x86_64-apple-darwin.tar.gz"
-        })
-    } else if cfg!(target_os = "linux") {
-        Some(if arm {
-            "komenagare-aarch64-unknown-linux-musl.tar.gz"
-        } else {
-            "komenagare-x86_64-unknown-linux-musl.tar.gz"
-        })
+/// この komenagare の配布物の種類（x86_64-unknown-linux-musl など。cli/build.rs が埋め込む）
+pub const TARGET: &str = env!("KOMENAGARE_TARGET");
+
+/// この komenagare と同じ種類の配布物の名前（.github/workflows/release.yml でまとめるときと同じ）
+pub fn asset_name() -> String {
+    let ext = if TARGET.contains("windows") {
+        "zip"
     } else {
-        None
-    }
+        "tar.gz"
+    };
+    format!("komenagare-{TARGET}.{ext}")
 }
 
 fn agent(timeout: u64) -> ureq::Agent {
@@ -129,9 +115,9 @@ pub fn run(version: Option<&str>, check_only: bool) -> Result<()> {
         println!("komenagare v{CURRENT} は最新です（最新のリリース: {tag}）");
         return Ok(());
     }
-    let asset = asset_name().context("この OS・CPU 向けの配布物はありません")?;
+    let asset = asset_name();
     println!("komenagare v{CURRENT} → {tag} に更新しています…");
-    let archive = download(&base, &tag, asset)?;
+    let archive = download(&base, &tag, &asset)?;
     let bin = extract(&archive)?;
     let exe = replace_exe(&bin, &tag)?;
     println!("更新しました: {}（{tag}）", exe.display());
@@ -142,7 +128,18 @@ pub fn run(version: Option<&str>, check_only: bool) -> Result<()> {
 fn download(base: &str, tag: &str, asset: &str) -> Result<Vec<u8>> {
     let agent = agent(300);
     let url = format!("{base}/download/{tag}/{asset}");
-    let body = get(&agent, &url)?;
+    let body = get(&agent, &url).map_err(|e| {
+        if matches!(
+            e.downcast_ref::<ureq::Error>(),
+            Some(ureq::Error::StatusCode(404))
+        ) {
+            e.context(format!(
+                "{tag} にはこの種類（{TARGET}）の配布物がありません。install.sh / install.ps1 で入れ直してください"
+            ))
+        } else {
+            e
+        }
+    })?;
     let sums = get(&agent, &format!("{url}.sha256"))?;
     let expected = String::from_utf8_lossy(&sums)
         .split_whitespace()
@@ -313,8 +310,9 @@ mod tests {
 
     #[test]
     fn asset_for_this_platform() {
-        let name = asset_name().unwrap();
-        assert!(name.starts_with("komenagare-"));
+        let name = asset_name();
+        assert!(!TARGET.is_empty());
+        assert!(name.starts_with(&format!("komenagare-{TARGET}.")));
         assert_eq!(name.ends_with(".zip"), cfg!(windows));
         assert_eq!(
             sha256_hex(b"abc"),

@@ -1,0 +1,10 @@
+# CLI（cli/）の workspace。リポジトリの直下に置くのは、cross（.github/workflows/build-matrix.yml）が
+# workspace のルートをコンテナに入れるため（CLI は cli/ の外にある Web アプリを埋め込む）
+[workspace]
+members = ["cli"]
+resolver = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

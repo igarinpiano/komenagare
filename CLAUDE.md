@@ -13,18 +13,21 @@
 - `js/export-worker.js` — 高速書き出し用 Web Worker
 - `js/app.js` — アプリ本体（1つの IIFE。上のファイルのグローバルを使う）
 - `lib/` — 同梱ライブラリ（Mediabunny、MPL-2.0。classic スクリプト版でグローバル `Mediabunny`）
+- `Cargo.toml` — CLI の workspace（cross がリポジトリの直下をコンテナに入れるよう、ここに置く。`Cargo.lock` と `target/` もここ）
 - `cli/` — `komenagare` コマンド（Rust）。Web アプリを内蔵して配信し、WebSocket で変更を受け渡す
+  - `build.rs` — 配布物の種類（ターゲット）を埋め込む（`komenagare update` が同じ種類を取る）
   - `store.rs` — `js/comment-store.js` と同じ規則の変更セット適用（両方を同じに保つこと）
   - `workspace.rs` — `comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット
   - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）と WebSocket の取り決め（ファイル冒頭に記載）
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）
-  - `update.rs` — `komenagare update`（GitHub のリリースから配布物を取って、チェックサムを確かめて実行ファイルを置き換える）と、起動時の新しい版のお知らせ。配布物の名前は `release.yml` と合わせる
+  - `update.rs` — `komenagare update`（GitHub のリリースから配布物を取って、チェックサムを確かめて実行ファイルを置き換える）と、起動時の新しい版のお知らせ。配布物の名前は `.github/package.sh` と合わせる
 - `web.json` — CLI が取ってくる Web アプリのファイル一覧と、ホストとのやりとりの取り決めの版数（protocol）
-- `install.sh` — `curl … | sh` 用のインストーラー（Linux / macOS。GitHub リリースから取る）
+- `install.sh` — `curl … | sh` 用のインストーラー（Linux / macOS / Android / BSD など。OS と CPU から配布物を選ぶ。ターゲットを足したらここも合わせる）
 - `install.ps1` — `irm … | iex` 用のインストーラー（Windows。raw.githubusercontent.com から配る。UTF-8・BOM なしのまま保つ）
-- `.github/workflows/` — CI（Node と Rust のテスト）と、タグ `vX.Y.Z` でのリリース
+- `.github/workflows/` — CI（Node と Rust のテスト）、リリース（`release.yml`）、全ターゲットのビルド（`build-matrix.yml`。ターゲットの一覧はここだけ）と、その確認（`build-check.yml`。依存やビルドの設定を変えた PR で走る）
+- `.github/package.sh` — ビルドした実行ファイルを配布物（`komenagare-<target>.tar.gz` / `.zip` と `.sha256`）にまとめる
 
 ## 守ること
 
@@ -51,7 +54,8 @@
 ## リリース
 
 `cli/Cargo.toml` の version を上げて main に入れ、Release ワークフロー（`.github/workflows/release.yml`）を main で手動実行する
-（Actions の画面、または GitHub API の workflow_dispatch）。ワークフローが同じ番号のタグ（`v0.1.1` など）を作り、
-Linux（x86_64 / aarch64、musl の静的リンク）、macOS（x86_64 / aarch64）、Windows（x86_64、MSVC・ランタイムも静的リンク）向けにビルドしてリリースに載せる。
+（Actions の画面、または GitHub API の workflow_dispatch）。ワークフローが同じ番号のタグ（`v0.1.2` など）を作り、
+`build-matrix.yml` の全ターゲット（macOS・Windows・Linux の各 CPU、Android、FreeBSD / NetBSD / illumos）向けにビルドしてリリースに載せる。
+1つでもビルドできなければ公開しない。ターゲットを足すときは build-check で先に確かめる。
 タグを自分で push しても同じように動く。途中で失敗したら、同じ main のまま手動実行し直せば続きから作る。
 利用者は `komenagare update` で更新する。

@@ -18,13 +18,13 @@
 
 ### インストール
 
-Linux / macOS:
+Linux / macOS / Android（Termux）/ FreeBSD / NetBSD / illumos:
 
 ```sh
 curl -fsSL https://igarinpiano.github.io/komenagare/install.sh | sh
 ```
 
-`~/.local/bin/komenagare` に入ります（`KOMENAGARE_INSTALL_DIR` で変更可）。
+`~/.local/bin/komenagare` に入ります（`KOMENAGARE_INSTALL_DIR` で変更可）。OS と CPU から配布物を選びます（`KOMENAGARE_TARGET` で指定も可）。
 
 Windows（PowerShell）:
 
@@ -34,7 +34,20 @@ irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | 
 
 `%LOCALAPPDATA%\komenagare\bin\komenagare.exe` に入り、ユーザーの PATH に足されます（新しく開いたターミナルから使えます）。
 
+x64・Arm64・32 ビット（x86）の Windows に対応しています。
+
 どちらも、履歴を残すには git が必要です。
+
+配布物は [リリース](https://github.com/igarinpiano/komenagare/releases) にあります（`komenagare-<種類>.tar.gz`、Windows は `.zip`）。
+
+| OS | CPU |
+| --- | --- |
+| macOS | Apple シリコン（aarch64）、Intel（x86_64）、両方入り（universal） |
+| Windows | x86_64、aarch64、i686（MSVC）、x86_64（GNU） |
+| Linux（musl・静的リンク） | x86_64、aarch64、i686、armv7、arm（armv6） |
+| Linux（glibc） | x86_64・aarch64（glibc 2.28 以降）、i686、armv7、arm、riscv64、powerpc64le、s390x、loongarch64 |
+| Android（Termux） | aarch64、armv7、x86_64、i686 |
+| FreeBSD / NetBSD / illumos | x86_64 |
 
 ### 更新
 

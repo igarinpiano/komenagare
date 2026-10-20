@@ -3,8 +3,9 @@
 #   irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | iex
 #
 # 環境変数
-#   KOMENAGARE_VERSION        入れるバージョン（例: v0.1.1。既定は最新）
+#   KOMENAGARE_VERSION        入れるバージョン（例: v0.1.2。既定は最新）
 #   KOMENAGARE_INSTALL_DIR    入れる場所（既定は %LOCALAPPDATA%\komenagare\bin）
+#   KOMENAGARE_TARGET         配布物の種類（例: x86_64-pc-windows-gnu。既定は CPU から選ぶ）
 #   KOMENAGARE_DOWNLOAD_URL   ダウンロード元（既定は GitHub のリリース。ミラーやテスト用）
 #   KOMENAGARE_NO_MODIFY_PATH 1 なら PATH に足さない
 
@@ -17,7 +18,19 @@
   $repo = 'igarinpiano/komenagare'
   $version = if ($env:KOMENAGARE_VERSION) { $env:KOMENAGARE_VERSION } else { 'latest' }
   $dir = if ($env:KOMENAGARE_INSTALL_DIR) { $env:KOMENAGARE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'komenagare\bin' }
-  $asset = 'komenagare-x86_64-pc-windows-msvc.zip'
+  # CPU に合う配布物を選ぶ。x64 のエミュレーションで動いている PowerShell でも OS 本来の CPU を見る
+  $target = $env:KOMENAGARE_TARGET
+  if (-not $target) {
+    $cpu = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
+    if (-not $cpu) { $cpu = $env:PROCESSOR_ARCHITECTURE }
+    $target = switch ($cpu) {
+      'AMD64' { 'x86_64-pc-windows-msvc' }
+      'ARM64' { 'aarch64-pc-windows-msvc' }
+      'x86' { 'i686-pc-windows-msvc' }
+      default { throw "この CPU（$cpu）向けの配布物はありません" }
+    }
+  }
+  $asset = "komenagare-$target.zip"
   if ($env:KOMENAGARE_DOWNLOAD_URL) {
     $base = $env:KOMENAGARE_DOWNLOAD_URL.TrimEnd('/')
   } elseif ($version -eq 'latest') {
@@ -25,16 +38,13 @@
   } else {
     $base = "https://github.com/$repo/releases/download/$version"
   }
-  if (-not [Environment]::Is64BitOperatingSystem) {
-    throw '32 ビット版の Windows には未対応です'
-  }
   # Windows PowerShell 5.1 は TLS 1.2 が既定で有効でないことがある
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('komenagare-' + [Guid]::NewGuid())
   New-Item -ItemType Directory $tmp | Out-Null
   try {
-    Write-Host "komenagare（$version・x86_64-pc-windows-msvc）をダウンロードしています…"
+    Write-Host "komenagare（$version・$target）をダウンロードしています…"
     $zip = Join-Path $tmp $asset
     try {
       Invoke-WebRequest -UseBasicParsing "$base/$asset" -OutFile $zip
