@@ -59,7 +59,7 @@ detect_target() {
     SunOS)
       case "$(isainfo -k 2>/dev/null || echo "$cpu")" in amd64 | x86_64) echo x86_64-unknown-illumos ;; *) return 1 ;; esac ;;
     MINGW* | MSYS* | CYGWIN*)
-      fail "Windows では PowerShell で次を実行してください: irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex" ;;
+      fail "Windows では PowerShell で次を実行してください: irm https://igarinpiano.github.io/komenagare/install.ps1 | iex" ;;
     *) return 1 ;;
   esac
 }

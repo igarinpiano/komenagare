@@ -37,7 +37,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --manifest-path cli/Cargo.toml
-      - name: install.ps1 と komenagare update を手元のミラーで確かめる
+      - name: install.ps1（irm | iex）と komenagare update を手元のミラーで確かめる
         shell: pwsh
         run: |
           cargo build --locked --manifest-path cli/Cargo.toml
@@ -49,19 +49,32 @@ jobs:
           Compress-Archive -Path pkg/* -DestinationPath "$rel/$name.zip"
           $hash = (Get-FileHash "$rel/$name.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Encoding ascii -Path "$rel/$name.zip.sha256" -Value "$hash  $name.zip"
-          $server = Start-Process python -ArgumentList '-m', 'http.server', '8799', '--directory', 'mirror' -PassThru -NoNewWindow
+          Copy-Item install.ps1 mirror/
+          # 文字コードの指定なしで配る（Windows PowerShell 5.1 が UTF-8 を Latin-1 として読む、いちばん厳しい場合）
+          $serve = "$env:RUNNER_TEMP\serve.py"
+          Set-Content -Path $serve -Value @(
+            'import functools, http.server, sys'
+            'class H(http.server.SimpleHTTPRequestHandler):'
+            '    def guess_type(self, path): return "application/octet-stream"'
+            'http.server.ThreadingHTTPServer(("127.0.0.1", 8799), functools.partial(H, directory=sys.argv[1])).serve_forever()'
+          )
+          $server = Start-Process python -ArgumentList $serve, 'mirror' -PassThru -NoNewWindow
           Start-Sleep 3
           try {
             $env:KOMENAGARE_DOWNLOAD_URL = "http://127.0.0.1:8799/releases/download/$v"
             $env:KOMENAGARE_INSTALL_DIR = "$env:RUNNER_TEMP\kbin"
             $env:KOMENAGARE_NO_MODIFY_PATH = '1'
             $exe = "$env:KOMENAGARE_INSTALL_DIR\komenagare.exe"
-            # irm | iex と同じく、UTF-8 として読んだ文字列を iex する（Windows PowerShell 5.1、PowerShell 7 で入れ直し）
-            $run = "[Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('install.ps1')) | iex"
-            powershell -NoProfile -Command $run
-            if ($LASTEXITCODE) { throw 'install.ps1（Windows PowerShell 5.1）が失敗しました' }
-            pwsh -NoProfile -Command $run
-            if ($LASTEXITCODE) { throw 'install.ps1（PowerShell 7）が失敗しました' }
+            # README と同じ irm | iex で入れる（Windows PowerShell 5.1、PowerShell 7 で入れ直し）。表示が化けていないことも確かめる
+            $u = 'http://127.0.0.1:8799/install.ps1'
+            foreach ($ps in 'powershell', 'pwsh') {
+              $out = "$env:RUNNER_TEMP\install-$ps.txt"
+              & $ps -NoProfile -Command "`$o = & { irm $u | iex } 6>&1 | Out-String; [IO.File]::WriteAllText('$out', `$o, [Text.Encoding]::UTF8)"
+              if ($LASTEXITCODE) { throw "install.ps1（$ps）が失敗しました" }
+              $text = Get-Content -Raw -Encoding utf8 $out
+              $text
+              if ($text -notmatch 'インストールしました') { throw "install.ps1（$ps）の表示が化けています" }
+            }
             & $exe --version
             # 同じ版を入れ直して、実行中の exe の置き換えを確かめる
             $env:KOMENAGARE_RELEASES_URL = 'http://127.0.0.1:8799/releases'

@@ -29,7 +29,7 @@ curl -fsSL https://igarinpiano.github.io/komenagare/install.sh | sh
 Windows（PowerShell）:
 
 ```powershell
-irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | iex
+irm https://igarinpiano.github.io/komenagare/install.ps1 | iex
 ```
 
 `%LOCALAPPDATA%\komenagare\bin\komenagare.exe` に入り、ユーザーの PATH に足されます（新しく開いたターミナルから使えます）。

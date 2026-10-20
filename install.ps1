@@ -1,6 +1,6 @@
 # komenagare（コメナガレのホスト）を Windows にインストールする
 #
-#   irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | iex
+#   irm https://igarinpiano.github.io/komenagare/install.ps1 | iex
 #
 # 環境変数
 #   KOMENAGARE_VERSION        入れるバージョン（例: v0.1.2。既定は最新）
@@ -12,6 +12,13 @@
 # iex で読み込まれても、呼んだ側の設定（$ErrorActionPreference など）を変えないよう、全体をまとめて実行する
 & {
   $ErrorActionPreference = 'Stop'
+  # 文字コードの指定なしで配られると（GitHub Pages の .ps1 など）、Windows PowerShell 5.1 はこのスクリプト（UTF-8）を
+  # Latin-1 として読み、日本語が化ける。そのときは表示する文言を UTF-8 として読み直してから値を差し込む
+  $latin1 = 'あ'.Length -ne 1
+  function msg([string]$text) {
+    if ($latin1) { $text = [Text.Encoding]::UTF8.GetString([Text.Encoding]::GetEncoding(28591).GetBytes($text)) }
+    $text -f $args
+  }
   # Windows PowerShell 5.1 では進捗表示があるとダウンロードがとても遅い
   $ProgressPreference = 'SilentlyContinue'
 
@@ -27,7 +34,7 @@
       'AMD64' { 'x86_64-pc-windows-msvc' }
       'ARM64' { 'aarch64-pc-windows-msvc' }
       'x86' { 'i686-pc-windows-msvc' }
-      default { throw "この CPU（$cpu）向けの配布物はありません" }
+      default { throw (msg 'この CPU（{0}）向けの配布物はありません' $cpu) }
     }
   }
   $asset = "komenagare-$target.zip"
@@ -44,18 +51,18 @@
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ('komenagare-' + [Guid]::NewGuid())
   New-Item -ItemType Directory $tmp | Out-Null
   try {
-    Write-Host "komenagare（$version・$target）をダウンロードしています…"
+    Write-Host (msg 'komenagare（{0}・{1}）をダウンロードしています…' $version $target)
     $zip = Join-Path $tmp $asset
     try {
       Invoke-WebRequest -UseBasicParsing "$base/$asset" -OutFile $zip
       Invoke-WebRequest -UseBasicParsing "$base/$asset.sha256" -OutFile "$zip.sha256"
     } catch {
-      throw "ダウンロードできませんでした: $base/$asset（$($_.Exception.Message)）"
+      throw (msg 'ダウンロードできませんでした: {0}/{1}（{2}）' $base $asset $_.Exception.Message)
     }
     $expected = ((Get-Content "$zip.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if ($expected -ne $actual) {
-      throw 'ダウンロードしたファイルが壊れています（チェックサムが一致しません）'
+      throw (msg 'ダウンロードしたファイルが壊れています（チェックサムが一致しません）')
     }
     $unpacked = Join-Path $tmp 'unpacked'
     Expand-Archive $zip -DestinationPath $unpacked -Force
@@ -70,7 +77,7 @@
     Copy-Item (Join-Path $unpacked 'komenagare.exe') $exe
     Remove-Item -Force "$exe.old" -ErrorAction SilentlyContinue
     $installed = & $exe --version
-    Write-Host "インストールしました: $exe（$installed）"
+    Write-Host (msg 'インストールしました: {0}（{1}）' $exe $installed)
   } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
   }
@@ -87,7 +94,7 @@
         [Environment]::SetEnvironmentVariable('KOMENAGARE_INSTALL', '1', 'User')
         [Environment]::SetEnvironmentVariable('KOMENAGARE_INSTALL', $null, 'User')
         Write-Host ''
-        Write-Host "$dir を PATH に足しました。新しく開いたターミナルから komenagare を使えます。"
+        Write-Host (msg '{0} を PATH に足しました。新しく開いたターミナルから komenagare を使えます。' $dir)
       }
     } finally {
       $key.Close()
@@ -99,10 +106,10 @@
 
   if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host ''
-    Write-Host '注意: git が見つかりません。git がないと変更の履歴は残りません。'
-    Write-Host '      https://git-scm.com/downloads からインストールしてください（winget install Git.Git でも入ります）。'
+    Write-Host (msg '注意: git が見つかりません。git がないと変更の履歴は残りません。')
+    Write-Host (msg '      https://git-scm.com/downloads からインストールしてください（winget install Git.Git でも入ります）。')
   }
   Write-Host ''
-  Write-Host '使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）'
-  Write-Host '更新: komenagare update'
+  Write-Host (msg '使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）')
+  Write-Host (msg '更新: komenagare update')
 }
