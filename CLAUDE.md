@@ -13,6 +13,12 @@
 - `js/export-worker.js` — 高速書き出し用 Web Worker
 - `js/app.js` — アプリ本体（1つの IIFE。上のファイルのグローバルを使う）
 - `lib/` — 同梱ライブラリ（Mediabunny、MPL-2.0。classic スクリプト版でグローバル `Mediabunny`）
+- `cli/` — `komenagare` コマンド（Rust）。Web アプリを内蔵して配信し、WebSocket で変更を受け渡す
+  - `store.rs` — `js/comment-store.js` と同じ規則の変更セット適用（両方を同じに保つこと）
+  - `workspace.rs` — `comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット
+  - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）と WebSocket の取り決め（ファイル冒頭に記載）
+- `install.sh` — `curl … | sh` 用のインストーラー（GitHub リリースから取る）
+- `.github/workflows/` — CI（Node と Rust のテスト）と、タグ `vX.Y.Z` でのリリース
 
 ## 守ること
 
@@ -21,13 +27,22 @@
 - localStorage のキー（`komenagare.settings` など）は変えない（保存済みデータを引き継ぐため）。
 - コメントの追加・変更・削除は必ず `commitOps`（`js/app.js`）で変更セットとして行い、`state.comments` や各コメントを直接書き換えない（複数人編集で変更を送り合うため）。タイムラインのドラッグ中の一時的な見た目の変更だけは例外で、確定時に戻してから `commitOps` する。
 - コメントの id は UUID v7。ファイル（JSON / CSV）に保存し、読み込み時に引き継ぐ。
+- 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
 - UI の文言・コメントは日本語。
 
 ## テスト
 
 - `node --test 'tests/*.test.js'` — Vim エンジンとコメントストアのテスト
+- `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）
+- 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる
 - 画面と書き出しは Chromium（Playwright）で、http 配信（`npx http-server -p 8124 -s -c-1 .`）と `file://` の両方で確かめる
+
+## リリース
+
+`cli/Cargo.toml` の version を上げて main に入れ、同じ番号のタグ（`v0.1.0` など）を push すると、
+GitHub Actions が Linux（x86_64 / aarch64、musl の静的リンク）と macOS（x86_64 / aarch64）向けにビルドしてリリースに載せる。
 
 ## 今後の予定
 
-- Rust 製 CLI（コメントファイルと動画の結合、ホストして複数人で編集）
+- 衝突の解決画面、変更履歴の表示
+- CLI でコメントファイルと動画を結合する

@@ -20,6 +20,7 @@ function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.
 const store = new CommentStore();
 const state = {
   get comments(){ return store.comments; }, layouts: [],
+  collab: !!document.querySelector('meta[name="komenagare-host"]'), // komenagare CLI から配信されているか（共同編集）
   fileHandle: null, fileName: null, dirty: false,
   videoName: null, videoUrl: null, videoLoaded: false, needsDraw: true, needsRelayout: false, version: 0,
 };
@@ -138,13 +139,15 @@ function updateOps(changes){
   return { ops, failed };
 }
 // 変更セットを store に適用して画面に反映する。undoable なら「元に戻す」の対象にする
-function commitOps(ops, { undoable = true, save = true, atomic = false } = {}){
+// 共同編集中は、ここで適用した変更をホストへ送る（send: false はホストから来た変更を反映するとき）
+function commitOps(ops, { undoable = true, save = true, atomic = false, send = true } = {}){
   if (!ops.length) return null;
   const { applied, conflicts } = store.apply({ id: uuidv7(), ops }, { atomic });
   if (conflicts.length) console.warn('変更の衝突', conflicts);
   if (!applied) return null;
   if (undoable) pushUndo(applied);
   commentsChanged();
+  if (send) collabSend(applied);
   if (save){ markDirty(); autosave(); }
   return applied;
 }
@@ -202,7 +205,8 @@ function commentsChanged(){
   tlRelane();
   vimCommentsChanged();
 }
-function markDirty(){ state.dirty = true; updateStatus(); }
+// 共同編集中はホストが保存するので「未保存」にしない
+function markDirty(){ if (state.collab) return; state.dirty = true; updateStatus(); }
 function markClean(){ state.dirty = false; updateStatus(); }
 
 /* =====================================================================
@@ -813,7 +817,7 @@ function updateStatus(){
   const fs = $('#fileStatus');
   fs.replaceChildren();
   const name = document.createElement('span');
-  name.textContent = 'コメント: ' + (state.fileName || '新規');
+  name.textContent = 'コメント: ' + (state.collab ? '共同編集（ホストに保存）' : (state.fileName || '新規'));
   fs.append(name, ' ');
   const st = document.createElement('span');
   if (state.dirty){ st.className = 'dirty'; st.textContent = '● 未保存'; }
@@ -893,6 +897,12 @@ function loadReplace(text, name, handle){
   let items;
   try { items = parseCommentText(text, name); }
   catch (e) { toast(`${name}: ${e.message}`, { type:'error' }); return; }
+  if (state.collab){
+    // 共同編集中は全体を入れ替えず、ほかの人のコメントを残したまま追加する
+    const r = addComments(items);
+    toast(`${name} から ${r.added} 件のコメントを追加しました（共同編集中は置き換えずに追加します）` + (r.dup ? `　重複 ${r.dup} 件は除外` : ''), { timeout:6000 });
+    return;
+  }
   store.reset();
   history.undo.length = 0; history.redo.length = 0; updateUndoUI();
   TL.sel.clear();
@@ -1425,7 +1435,7 @@ function pushUndo(ch){
 function applyHistory(ch){
   const { applied, conflicts } = store.apply(ch, { atomic: true });
   if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return false; }
-  if (applied){ commentsChanged(); markDirty(); autosave(); tlSelChanged(); }
+  if (applied){ commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
   return true;
 }
 function undo(){
@@ -1446,7 +1456,7 @@ function redo(){
 function revertChange(ch){
   const { applied, conflicts } = store.apply(invertChange(ch), { atomic: true });
   if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return null; }
-  if (applied){ pushUndo(applied); commentsChanged(); markDirty(); autosave(); tlSelChanged(); }
+  if (applied){ pushUndo(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
   return applied;
 }
 function updateUndoUI(){
@@ -2764,6 +2774,172 @@ mq.addEventListener('change', applyPanes);
 window.addEventListener('resize', () => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender(); });
 
 /* =====================================================================
+   共同編集（komenagare CLI から配信されているとき）
+   - 変更は送る前にこのブラウザの IndexedDB に控え（送信待ち）、ホストの受け取り確認で消す
+   - 接続が切れても編集を続けられ、つながり直したら送信待ちを送り直す
+     （同じ変更を二度送ってもホストは1回だけ適用する）
+   - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
+   ===================================================================== */
+const collab = {
+  ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
+  workspace: document.querySelector('meta[name="komenagare-host"]')?.dataset.workspace || 'default',
+  key: (() => {
+    const k = new URLSearchParams(location.search).get('k');
+    try { if (k) sessionStorage.setItem('komenagare.key', k); return k || sessionStorage.getItem('komenagare.key'); } catch { return k; }
+  })(),
+};
+const collabLS = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch {} return null; };
+function collabName(){ return collabLS('komenagare.name') || ''; }
+function collabClientId(){
+  let id = collabLS('komenagare.clientId');
+  if (!isUuid(id)){ id = uuidv7(); collabLS('komenagare.clientId', id); }
+  return id;
+}
+
+// IndexedDB（送信待ちと、最後に見たコメント一覧の控え）
+function collabIdb(){
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open('komenagare-collab-' + collab.workspace, 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('outbox', { keyPath: 'id' }); r.result.createObjectStore('meta'); };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+function collabTx(name, mode, fn){
+  if (!collab.db) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const tx = collab.db.transaction(name, mode), req = fn(tx.objectStore(name));
+    tx.oncomplete = () => resolve(req ? req.result : null);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function collabSaveSoon(){
+  clearTimeout(collab.saveTimer);
+  collab.saveTimer = setTimeout(() => {
+    const comments = store.comments.map(c => ({ id: c.id, t: c.t, cmd: c.cmd, text: c.text, mine: c.mine }));
+    collabTx('meta', 'readwrite', s => s.put({ comments, savedAt: Date.now() }, 'snapshot')).catch(e => console.warn(e));
+  }, 400);
+}
+
+// 自分の変更をホストへ送る（送信待ちに控えてから）
+function collabSend(change){
+  if (!state.collab || !change) return;
+  const ch = { id: change.id, ops: change.ops.map(({ mine, ...op }) => op) };
+  collab.outbox.push({ id: ch.id, seq: Date.now(), change: ch });
+  collabTx('outbox', 'readwrite', s => s.put(collab.outbox[collab.outbox.length - 1])).catch(e => console.warn(e));
+  collabSaveSoon();
+  if (collab.connected) collab.ws.send(JSON.stringify({ type: 'change', change: ch }));
+  collabUI();
+}
+
+function collabConnect(){
+  clearTimeout(collab.timer);
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (collab.key ? '?k=' + encodeURIComponent(collab.key) : '');
+  const ws = new WebSocket(url);
+  collab.ws = ws;
+  ws.onopen = () => { ws.send(JSON.stringify({ type: 'hello', name: collabName() || 'ゲスト', client: collabClientId() })); };
+  ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } collabHandle(m); };
+  ws.onclose = () => {
+    if (collab.ws !== ws) return;
+    const was = collab.connected;
+    collab.connected = false; collab.peers = [];
+    if (!was) collab.failed++;
+    collabUI();
+    collab.timer = setTimeout(collabConnect, Math.min(10000, 1000 * 2 ** Math.min(collab.retry++, 4)));
+  };
+}
+
+function collabHandle(m){
+  if (m.type === 'snapshot'){
+    // ホストの内容に、まだ受け取り確認のない自分の変更を重ねてから送り直す
+    const mine = new Set(store.comments.filter(c => c.mine).map(c => c.id));
+    store.reset(m.comments.map(c => ({ ...c, mine: mine.has(c.id) })));
+    for (const e of collab.outbox) store.apply(e.change);
+    commentsChanged();
+    collab.connected = true; collab.retry = 0; collab.failed = 0;
+    for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
+    collabSaveSoon();
+    collabUI();
+  } else if (m.type === 'change'){
+    const r = store.apply(m.change);
+    if (r.applied){ commentsChanged(); collabSaveSoon(); }
+  } else if (m.type === 'ack'){
+    collab.outbox = collab.outbox.filter(e => e.id !== m.id);
+    collabTx('outbox', 'readwrite', s => s.delete(m.id)).catch(e => console.warn(e));
+    if (m.fix && m.fix.length) collabFix(m.fix, m.conflicts || []);
+    collabUI();
+  } else if (m.type === 'peers'){
+    collab.peers = m.names || [];
+    collabUI();
+  } else if (m.type === 'error'){
+    toast('ホスト: ' + m.message, { type:'error' });
+  }
+}
+
+// 他の人の変更と重なったコメントを、ホストの内容に合わせる
+function collabFix(fix, conflicts){
+  const ops = [];
+  for (const { id, comment } of fix){
+    const cur = store.get(id);
+    if (!comment){ if (cur) ops.push(deleteOp(cur)); }
+    else if (!cur) ops.push({ type:'add', id, after: { t: comment.t, cmd: comment.cmd, text: comment.text } });
+    else { const op = updateOp(cur, comment); if (op) ops.push(op); }
+  }
+  commitOps(ops, { undoable: false, save: false, send: false });
+  const why = { modified: '他の人が先に変更していた', deleted: '他の人が先に削除していた', exists: '同じ id のコメントが既にあった' };
+  const kinds = [...new Set(conflicts.map(c => why[c.reason] || c.reason))].join('・');
+  toast(`${fix.length} 件のコメントは${kinds || '他の人の変更と重なった'}ため、あなたの変更を反映せずホストの内容に合わせました`, { type:'error', timeout:9000 });
+}
+
+function collabUI(){
+  const el = $('#collabStatus');
+  if (!el) return;
+  el.hidden = !state.collab;
+  const pending = collab.outbox.length;
+  if (collab.connected){
+    el.className = 'collab on';
+    el.textContent = `● 共同編集 ${collab.peers.length}人` + (pending ? `（送信中 ${pending}）` : '');
+    el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで表示名を変更（今: ${collabName() || 'ゲスト'}）`;
+  } else {
+    el.className = 'collab off';
+    el.textContent = (collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン') + (pending ? `（未送信 ${pending}）` : '');
+    el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
+  }
+}
+
+async function collabInit(){
+  if (!state.collab) return;
+  $('#collabStatus').onclick = () => {
+    const n = prompt('共同編集で表示する名前', collabName());
+    if (n == null) return;
+    collabLS('komenagare.name', n.trim().slice(0, 40));
+    if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hello', name: collabName() || 'ゲスト', client: collabClientId() }));
+  };
+  if (!collabName()){
+    const n = prompt('共同編集で表示する名前を入力してください（コミットの作者名になります）', '');
+    if (n && n.trim()) collabLS('komenagare.name', n.trim().slice(0, 40));
+  }
+  try {
+    collab.db = await collabIdb();
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    const [snap, outbox] = await Promise.all([collabTx('meta', 'readonly', s => s.get('snapshot')), collabTx('outbox', 'readonly', s => s.getAll())]);
+    collab.outbox = (outbox || []).sort((a, b) => a.seq - b.seq);
+    // 前回の控えをすぐに表示する（ホストにつながる前やオフラインでも作業できるように）
+    if (snap && snap.comments){
+      store.reset(snap.comments);
+      for (const e of collab.outbox) store.apply(e.change);
+      commentsChanged();
+    }
+  } catch (e) {
+    console.warn('IndexedDB を使えません', e);
+    toast('このブラウザに控えを保存できないため、オフラインの間の変更は失われることがあります', { type:'error', timeout:8000 });
+  }
+  updateStatus();
+  collabUI();
+  collabConnect();
+}
+
+/* =====================================================================
    設定UI・ショートカット・その他
    ===================================================================== */
 $('#setOpacity').value = settings.opacity;
@@ -2813,7 +2989,8 @@ document.addEventListener('keydown', (e) => {
   }
 });
 window.addEventListener('beforeunload', (e) => {
-  if (state.dirty && state.comments.length){ e.preventDefault(); e.returnValue = ''; }
+  // 送信待ちは IndexedDB に控えてあるので、控えられないときだけ確かめる
+  if ((state.dirty && state.comments.length) || (collab.outbox.length && !collab.db)){ e.preventDefault(); e.returnValue = ''; }
 });
 if (document.fonts && document.fonts.ready){
   document.fonts.ready.then(() => { metricCache.clear(); displayRenderer.reset(); if (state.comments.length) relayout(); });
@@ -2828,5 +3005,6 @@ renderPresets();
 updateUndoUI();
 tlSelChanged();
 applyPanes();
+collabInit();
 requestAnimationFrame(loop);
 })();
