@@ -50,6 +50,8 @@
 
 ## リリース
 
-`cli/Cargo.toml` の version を上げて main に入れ、同じ番号のタグ（`v0.1.0` など）を push すると、
-GitHub Actions が Linux（x86_64 / aarch64、musl の静的リンク）、macOS（x86_64 / aarch64）、Windows（x86_64、MSVC・ランタイムも静的リンク）向けにビルドしてリリースに載せる。
+`cli/Cargo.toml` の version を上げて main に入れ、Release ワークフロー（`.github/workflows/release.yml`）を main で手動実行する
+（Actions の画面、または GitHub API の workflow_dispatch）。ワークフローが同じ番号のタグ（`v0.1.1` など）を作り、
+Linux（x86_64 / aarch64、musl の静的リンク）、macOS（x86_64 / aarch64）、Windows（x86_64、MSVC・ランタイムも静的リンク）向けにビルドしてリリースに載せる。
+タグを自分で push しても同じように動く。途中で失敗したら、同じ main のまま手動実行し直せば続きから作る。
 利用者は `komenagare self-update` で更新する。
