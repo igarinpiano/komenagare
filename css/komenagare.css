@@ -298,7 +298,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   .status{margin-left:6px;flex:none}
   .layout{display:contents}
   .player-col{flex:none;padding:8px 8px 0;overflow:visible}
-  .player{flex:none;align-self:center;max-width:min(100%, calc(32vh * 16 / 9));min-width:0}
+  .player{flex:none;align-self:center;max-width:min(100%, calc(var(--stable-h, 100vh) * 0.32 * 16 / 9));min-width:0}
   .stage{flex:none;aspect-ratio:16/9;min-height:0}
   .ctrl-row{gap:4px}
   .time{min-width:0;font-size:12px}
