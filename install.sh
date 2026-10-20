@@ -76,4 +76,4 @@ case ":${PATH}:" in
 esac
 say ""
 say "使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）"
-say "更新: komenagare self-update"
+say "更新: komenagare update"

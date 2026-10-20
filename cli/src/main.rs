@@ -76,7 +76,7 @@ struct Args {
 #[allow(clippy::large_enum_variant)]
 enum Cmd {
     /// komenagare を最新版に更新する
-    SelfUpdate {
+    Update {
         /// 更新があるかを確かめるだけ
         #[arg(long)]
         check: bool,
@@ -225,7 +225,7 @@ async fn run(args: Args) -> Result<()> {
     if let Some(cmd @ Cmd::Render { .. }) = &args.cmd {
         return run_render(cmd);
     }
-    if let Some(Cmd::SelfUpdate { check, version }) = &args.cmd {
+    if let Some(Cmd::Update { check, version }) = &args.cmd {
         let (check, version) = (*check, version.clone());
         return tokio::task::spawn_blocking(move || update::run(version.as_deref(), check)).await?;
     }
@@ -336,9 +336,7 @@ async fn run(args: Args) -> Result<()> {
         println!("  注意: 合言葉なしで起動しています。URL を知っている人は誰でも編集できます");
     }
     if let Some(tag) = newer {
-        println!(
-            "  新しい版: komenagare {tag} があります（komenagare self-update で更新できます）"
-        );
+        println!("  新しい版: komenagare {tag} があります（komenagare update で更新できます）");
     }
     println!("  終了: Ctrl+C");
     if args.open {
@@ -465,7 +463,7 @@ async fn prepare_web(args: &Args) -> (web::Source, String) {
 fn incompatible_message(protocol: u32) -> String {
     format!(
         "最新の Web アプリ（取り決め {protocol}）はこの komenagare（取り決め {}）では使えないため、前回のもの（無ければ内蔵のもの）を使います。\n\
-         最新版を使うには komenagare を更新してください: komenagare self-update",
+         最新版を使うには komenagare を更新してください: komenagare update",
         server::PROTOCOL
     )
 }

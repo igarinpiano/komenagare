@@ -94,5 +94,5 @@
   }
   Write-Host ''
   Write-Host '使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）'
-  Write-Host '更新: komenagare self-update'
+  Write-Host '更新: komenagare update'
 }

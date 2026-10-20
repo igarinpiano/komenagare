@@ -1,4 +1,4 @@
-//! komenagare 自身の更新（komenagare self-update）。
+//! komenagare 自身の更新（komenagare update）。
 //!
 //! GitHub のリリースから、この OS・CPU 向けの配布物（install.sh / install.ps1 が入れるのと同じもの）を
 //! 取ってきてチェックサムを確かめ、実行中の komenagare を置き換える。
@@ -104,7 +104,7 @@ pub fn check_newer() -> Option<String> {
     is_newer(&tag).then_some(tag)
 }
 
-/// komenagare self-update
+/// komenagare update
 pub fn run(version: Option<&str>, check_only: bool) -> Result<()> {
     let base = releases_url();
     let tag = match version {
@@ -117,7 +117,9 @@ pub fn run(version: Option<&str>, check_only: bool) -> Result<()> {
     };
     if check_only {
         if is_newer(&tag) {
-            println!("新しい版があります: {tag}（今は v{CURRENT}）。komenagare self-update で更新できます");
+            println!(
+                "新しい版があります: {tag}（今は v{CURRENT}）。komenagare update で更新できます"
+            );
         } else {
             println!("komenagare v{CURRENT} は最新です（最新のリリース: {tag}）");
         }

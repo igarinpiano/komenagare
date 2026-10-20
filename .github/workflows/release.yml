@@ -1,16 +1,54 @@
-# v0.1.0 のようなタグを push すると、各 OS 向けにビルドしてリリースに載せる
-# （install.sh / install.ps1 と komenagare self-update がここから取る。ファイル名は cli/src/update.rs と合わせる）
+# cli/Cargo.toml の version のリリースを作る。各 OS 向けにビルドしてリリースに載せる
+# （install.sh / install.ps1 と komenagare update がここから取る。ファイル名は cli/src/update.rs と合わせる）
+#
+# 起動のしかた（どちらでもよい）
+#   - Actions の画面（または API）から main で手動実行する。タグ（v0.1.1 など）はこのワークフローが作る
+#   - version と同じ番号のタグを push する
 name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: タグを決める（手動実行なら作る）
+        id: tag
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' cli/Cargo.toml | cut -d '"' -f 2)
+          tag="v$v"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "main で実行してください（今は $GITHUB_REF）"; exit 1; }
+            if git fetch -q --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null; then
+              # 同じコミットのタグがあるなら、前回の続き（途中で失敗したリリースのやり直し）として進める
+              [ "$(git rev-parse "$tag^{commit}")" = "$GITHUB_SHA" ] \
+                || { echo "タグ $tag は別のコミットに既にあります。cli/Cargo.toml の version を上げてください"; exit 1; }
+            else
+              # GITHUB_TOKEN で push したタグではこのワークフローは起動し直さない
+              git tag "$tag" "$GITHUB_SHA"
+              git push origin "refs/tags/$tag"
+            fi
+          else
+            [ "$tag" = "$GITHUB_REF_NAME" ] || { echo "タグ $GITHUB_REF_NAME と cli/Cargo.toml の version $v が違います"; exit 1; }
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: tag
     strategy:
       fail-fast: false
       matrix:
@@ -23,11 +61,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: タグと Cargo.toml のバージョンが同じか確かめる
-        shell: bash
-        run: |
-          v=$(grep -m1 '^version' cli/Cargo.toml | cut -d '"' -f 2)
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "タグ $GITHUB_REF_NAME と cli/Cargo.toml の version $v が違います"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -68,7 +101,7 @@ jobs:
           path: komenagare-${{ matrix.target }}.*
 
   release:
-    needs: build
+    needs: [tag, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -78,4 +111,11 @@ jobs:
       - name: リリースを作る
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          # やり直しでリリースが既にあれば、ファイルを置き換える
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
+          fi
