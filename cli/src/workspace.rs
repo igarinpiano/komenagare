@@ -43,46 +43,46 @@ pub struct LogEntry {
 }
 
 impl Workspace {
-    pub fn open(dir: &Path, git_mode: GitMode) -> Result<Workspace> {
+    /// 作業フォルダか（komenagare init で作ったか）
+    pub fn is_workspace(dir: &Path) -> bool {
+        dir.join(META_DIR).join("id").is_file()
+    }
+
+    /// 作業フォルダを作る（komenagare init）。git が使えれば git の管理下にして、最初のコミットをする
+    pub fn init(dir: &Path, git_mode: GitMode) -> Result<Workspace> {
+        if git_mode == GitMode::Require && !git_available() {
+            bail!("git が見つかりません（--require-git が指定されています）");
+        }
         std::fs::create_dir_all(dir).with_context(|| format!("{} を作れません", dir.display()))?;
         let dir = dir.canonicalize()?;
+        if Self::is_workspace(&dir) {
+            bail!(
+                "{} は既に作業フォルダです（komenagare で始められます）",
+                dir.display()
+            );
+        }
         std::fs::create_dir_all(dir.join(META_DIR))?;
         let comments = dir.join(COMMENTS_FILE);
         if !comments.exists() {
             std::fs::write(&comments, "")?;
         }
+        std::fs::write(dir.join(META_DIR).join("id"), crate::store::uuid_v7())?;
 
-        let id_file = dir.join(META_DIR).join("id");
-        let id = match std::fs::read_to_string(&id_file) {
-            Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
-            _ => {
-                let id = crate::store::uuid_v7();
-                std::fs::write(&id_file, &id)?;
-                id
-            }
-        };
-        let mut ws = Workspace {
-            dir,
-            id,
-            git: false,
-            git_identity: false,
-        };
-        if git_mode == GitMode::Off {
+        // （まだ git の管理下にないこともあるので、--require-git でも止めずに開く）
+        let mut ws = Self::open(
+            &dir,
+            if git_mode == GitMode::Off {
+                GitMode::Off
+            } else {
+                GitMode::Auto
+            },
+        )?;
+        if git_mode == GitMode::Off || !git_available() {
             return Ok(ws);
         }
-        if !git_available() {
-            if git_mode == GitMode::Require {
-                bail!("git が見つかりません（--require-git が指定されています）");
-            }
-            eprintln!("警告: git が見つからないため、変更の履歴は残りません（comments.jsonl への書き込みだけ行います）");
-            eprintln!("      履歴を残すには git をインストールしてください: https://git-scm.com/downloads");
-            return Ok(ws);
-        }
-        ws.git = true;
-        ws.git_identity = git_out(&ws.dir, &["config", "user.email"])
-            .map(|s| s.trim().is_empty())
-            .unwrap_or(true);
-        if git_out(&ws.dir, &["rev-parse", "--is-inside-work-tree"]).is_err() {
+        if !ws.git {
+            ws.git = true;
+            ws.git_identity = needs_identity(&ws.dir);
             ws.run_git(&["init", "-q"])?;
         }
         // 作業用の記録は履歴に入れない
@@ -104,15 +104,68 @@ impl Workspace {
                 ),
             )?;
         }
-        if git_out(&ws.dir, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() {
-            ws.run_git(&["add", "--", COMMENTS_FILE, ".gitignore"])?;
-            ws.commit(
-                "komenagare: 作業フォルダを作成",
-                "komenagare",
-                "komenagare@localhost",
-                &[],
-            )?;
+        ws.run_git(&["add", "--", COMMENTS_FILE, ".gitignore"])?;
+        ws.commit(
+            "komenagare: 作業フォルダを作成",
+            "komenagare",
+            "komenagare@localhost",
+            &[],
+        )?;
+        Ok(ws)
+    }
+
+    /// 作業フォルダを開く（komenagare）。作業フォルダでなければ何も作らずに止める
+    pub fn open(dir: &Path, git_mode: GitMode) -> Result<Workspace> {
+        if !Self::is_workspace(dir) {
+            let shown = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+            let arg = if dir == Path::new(".") {
+                String::new()
+            } else {
+                format!(" {}", dir.display())
+            };
+            bail!(
+                "{} はコメナガレの作業フォルダではありません。\n\
+                 作業フォルダを作るには: komenagare init{arg}",
+                shown.display()
+            );
         }
+        let dir = dir.canonicalize()?;
+        let id = std::fs::read_to_string(dir.join(META_DIR).join("id"))?
+            .trim()
+            .to_string();
+        let comments = dir.join(COMMENTS_FILE);
+        if !comments.exists() {
+            std::fs::write(&comments, "")?;
+        }
+        let mut ws = Workspace {
+            dir,
+            id,
+            git: false,
+            git_identity: false,
+        };
+        if git_mode == GitMode::Off {
+            return Ok(ws);
+        }
+        if !git_available() {
+            if git_mode == GitMode::Require {
+                bail!("git が見つかりません（--require-git が指定されています）");
+            }
+            eprintln!("警告: git が見つからないため、変更の履歴は残りません（comments.jsonl への書き込みだけ行います）");
+            eprintln!("      履歴を残すには git をインストールしてください: https://git-scm.com/downloads");
+            return Ok(ws);
+        }
+        // git の管理下でなければ（init --no-git で作ったときなど）履歴は残さない
+        if git_out(&ws.dir, &["rev-parse", "--is-inside-work-tree"]).is_err() {
+            if git_mode == GitMode::Require {
+                bail!(
+                    "{} は git の管理下にありません（--require-git が指定されています）",
+                    ws.dir.display()
+                );
+            }
+            return Ok(ws);
+        }
+        ws.git = true;
+        ws.git_identity = needs_identity(&ws.dir);
         Ok(ws)
     }
 
@@ -241,6 +294,13 @@ fn clean(s: &str) -> String {
         .to_string()
 }
 
+/// git の user.email が未設定か（未設定ならコミットのときに補う）
+fn needs_identity(dir: &Path) -> bool {
+    git_out(dir, &["config", "user.email"])
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+}
+
 pub fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
@@ -263,12 +323,31 @@ mod tests {
     use crate::store::{Fields, Op};
 
     #[test]
+    fn open_needs_init() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 作業フォルダでなければ何も作らない
+        let err = Workspace::open(tmp.path(), GitMode::Off).err().unwrap();
+        assert!(err.to_string().contains("komenagare init"), "{err}");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+        // git なしで作ると、開いても git は使わない
+        Workspace::init(tmp.path(), GitMode::Off).unwrap();
+        assert!(!tmp.path().join(".git").exists());
+        let ws = Workspace::open(tmp.path(), GitMode::Auto).unwrap();
+        assert!(!ws.git);
+        if git_available() {
+            assert!(Workspace::open(tmp.path(), GitMode::Require).is_err());
+        }
+    }
+
+    #[test]
     fn writes_jsonl_and_commits() {
         if !git_available() {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let ws = Workspace::open(tmp.path(), GitMode::Require).unwrap();
+        assert!(Workspace::open(tmp.path(), GitMode::Require).is_err());
+        let ws = Workspace::init(tmp.path(), GitMode::Require).unwrap();
+        assert!(Workspace::init(tmp.path(), GitMode::Require).is_err());
         let mut store = Store::new(ws.load_comments().unwrap());
         let change = Change {
             id: "ch1".into(),

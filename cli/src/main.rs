@@ -31,7 +31,7 @@ use workspace::{GitMode, LogEntry, Workspace};
 struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,
-    /// 作業フォルダ（comments.jsonl と履歴を置く）。無ければ作る
+    /// 作業フォルダ（komenagare init で作ったもの）
     #[arg(default_value = ".")]
     dir: PathBuf,
     /// 待ち受けるアドレス。同じネットワークの人と共有するときは 0.0.0.0
@@ -46,10 +46,10 @@ struct Args {
     /// 参加用の合言葉を指定する（指定しなければ起動ごとに作る）
     #[arg(long, conflicts_with = "no_token")]
     token: Option<String>,
-    /// git が無ければ起動しない
+    /// 履歴（git）が残せなければ起動しない
     #[arg(long, conflicts_with = "no_git")]
     require_git: bool,
-    /// git を使わない（履歴を残さない）
+    /// 今回は git にコミットしない（履歴を残さない）
     #[arg(long)]
     no_git: bool,
     /// コメナガレで保存したファイル（.json / .jsonl / .csv）のコメントを取り込んでから始める
@@ -75,6 +75,21 @@ struct Args {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Cmd {
+    /// 作業フォルダを作る（comments.jsonl と履歴の置き場所。git があれば git の管理下にする）
+    Init {
+        /// 作業フォルダにする場所。無ければ作る
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// git を使わない（履歴を残さない）
+        #[arg(long, conflicts_with = "require_git")]
+        no_git: bool,
+        /// git が無ければ作らない
+        #[arg(long)]
+        require_git: bool,
+        /// コメナガレで保存したファイル（.json / .jsonl / .csv）のコメントを取り込む
+        #[arg(long, value_name = "FILE")]
+        import: Option<PathBuf>,
+    },
     /// komenagare を最新版に更新する
     Update {
         /// 更新があるかを確かめるだけ
@@ -225,6 +240,15 @@ async fn run(args: Args) -> Result<()> {
     if let Some(cmd @ Cmd::Render { .. }) = &args.cmd {
         return run_render(cmd);
     }
+    if let Some(Cmd::Init {
+        dir,
+        no_git,
+        require_git,
+        import: file,
+    }) = &args.cmd
+    {
+        return run_init(dir, git_mode(*no_git, *require_git), file.as_deref());
+    }
     if let Some(Cmd::Update { check, version }) = &args.cmd {
         let (check, version) = (*check, version.clone());
         return tokio::task::spawn_blocking(move || update::run(version.as_deref(), check)).await?;
@@ -243,14 +267,7 @@ async fn run(args: Args) -> Result<()> {
         }
         return Ok(());
     }
-    let git_mode = if args.no_git {
-        GitMode::Off
-    } else if args.require_git {
-        GitMode::Require
-    } else {
-        GitMode::Auto
-    };
-    let ws = Workspace::open(&args.dir, git_mode)?;
+    let ws = Workspace::open(&args.dir, git_mode(args.no_git, args.require_git))?;
     let mut store = Store::new(ws.load_comments()?);
     let (seen, rev, history) = ws.load_log(server::HISTORY_KEEP)?;
 
@@ -357,6 +374,37 @@ async fn run(args: Args) -> Result<()> {
         let _ = writer_thread.join();
     })
     .await?;
+    Ok(())
+}
+
+fn git_mode(no_git: bool, require_git: bool) -> GitMode {
+    if no_git {
+        GitMode::Off
+    } else if require_git {
+        GitMode::Require
+    } else {
+        GitMode::Auto
+    }
+}
+
+/// komenagare init
+fn run_init(dir: &Path, git_mode: GitMode, file: Option<&Path>) -> Result<()> {
+    let ws = Workspace::init(dir, git_mode)?;
+    println!(
+        "作業フォルダを作りました: {}（履歴: {}）",
+        ws.dir.display(),
+        if ws.git { "git" } else { "なし" }
+    );
+    if let Some(file) = file {
+        let mut store = Store::new(ws.load_comments()?);
+        let n = import(&ws, &mut store, file)?;
+        println!("{} から {} 件のコメントを取り込みました", file.display(), n);
+    }
+    if dir == Path::new(".") {
+        println!("始めるには: komenagare");
+    } else {
+        println!("始めるには: komenagare {}", dir.display());
+    }
     Ok(())
 }
 

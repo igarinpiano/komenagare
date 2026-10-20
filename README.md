@@ -63,10 +63,14 @@ komenagare update --version v0.1.0   # 指定した版にする（前の版に�
 
 ```sh
 mkdir my-comments && cd my-comments
-komenagare                      # この PC だけで使う
+komenagare init                 # 作業フォルダにする（最初に1回。git があれば git の管理下にする）
+komenagare                      # 始める（この PC だけで使う）
 komenagare --host 0.0.0.0       # 同じネットワークの人と共有する
 komenagare --import comments.json   # 保存済みのコメントを取り込んでから始める
 ```
+
+作業フォルダ以外で `komenagare` を実行しても何も作らず、`komenagare init` を案内します。
+`komenagare init` には `--no-git`（履歴を残さない）、`--import`（保存済みのコメントを取り込んで作る）も付けられます。
 
 表示された URL（`?k=` の合言葉付き）を参加者に渡します。動画ファイルは各自の手元のものを開きます。
 

@@ -120,5 +120,5 @@ case ":${PATH}:" in
     ;;
 esac
 say ""
-say "使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）"
+say "使い方: 作業用のフォルダで komenagare init を実行してから komenagare で始め、表示された URL をブラウザで開きます（komenagare --help で一覧）"
 say "更新: komenagare update"
