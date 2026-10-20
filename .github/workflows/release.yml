@@ -31,7 +31,14 @@ jobs:
           targets: ${{ matrix.target }}
       - if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --locked --manifest-path cli/Cargo.toml --target ${{ matrix.target }}
+      - name: ビルド
+        shell: bash
+        run: |
+          # musl 向けは C の部分（rustls が使う ring）を musl-gcc でビルドする
+          if [[ "${{ matrix.target }}" == *linux-musl ]]; then export "CC_${MT//-/_}=musl-gcc"; fi
+          cargo build --release --locked --manifest-path cli/Cargo.toml --target ${{ matrix.target }}
+        env:
+          MT: ${{ matrix.target }}
       - name: まとめる
         shell: bash
         run: |

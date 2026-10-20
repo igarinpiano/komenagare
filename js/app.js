@@ -2780,6 +2780,8 @@ window.addEventListener('resize', () => { if (vim.E && !$('#paneVim').hidden) vi
      （同じ変更を二度送ってもホストは1回だけ適用する）
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
+// ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
+const COLLAB_PROTOCOL = 1;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   workspace: document.querySelector('meta[name="komenagare-host"]')?.dataset.workspace || 'default',
@@ -2837,10 +2839,11 @@ function collabConnect(){
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (collab.key ? '?k=' + encodeURIComponent(collab.key) : '');
   const ws = new WebSocket(url);
   collab.ws = ws;
-  ws.onopen = () => { ws.send(JSON.stringify({ type: 'hello', name: collabName() || 'ゲスト', client: collabClientId() })); };
+  ws.onopen = () => { ws.send(JSON.stringify({ type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId() })); };
   ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } collabHandle(m); };
   ws.onclose = () => {
     if (collab.ws !== ws) return;
+    if (collab.blocked){ collab.connected = false; collabUI(); return; }
     const was = collab.connected;
     collab.connected = false; collab.peers = [];
     if (!was) collab.failed++;
@@ -2872,7 +2875,8 @@ function collabHandle(m){
     collab.peers = m.names || [];
     collabUI();
   } else if (m.type === 'error'){
-    toast('ホスト: ' + m.message, { type:'error' });
+    toast('ホスト: ' + m.message, { type:'error', timeout: m.code === 'protocol' ? 20000 : 3800 });
+    if (m.code === 'protocol'){ collab.blocked = true; collab.ws.close(); }
   }
 }
 
@@ -2902,7 +2906,7 @@ function collabUI(){
     el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで表示名を変更（今: ${collabName() || 'ゲスト'}）`;
   } else {
     el.className = 'collab off';
-    el.textContent = (collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン') + (pending ? `（未送信 ${pending}）` : '');
+    el.textContent = (collab.blocked ? '○ ページを再読み込みしてください' : collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン') + (pending ? `（未送信 ${pending}）` : '');
     el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
   }
 }
@@ -2913,7 +2917,7 @@ async function collabInit(){
     const n = prompt('共同編集で表示する名前', collabName());
     if (n == null) return;
     collabLS('komenagare.name', n.trim().slice(0, 40));
-    if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hello', name: collabName() || 'ゲスト', client: collabClientId() }));
+    if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId() }));
   };
   if (!collabName()){
     const n = prompt('共同編集で表示する名前を入力してください（コミットの作者名になります）', '');

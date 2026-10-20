@@ -9,6 +9,7 @@
 //!   {"type":"ack","id":"変更セットid","rev":N,"dup":bool,"conflicts":[...],"fix":[{"id":..,"comment":..|null}]}
 //!   {"type":"peers","names":[...]}                           参加者
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
+//! hello の protocol が PROTOCOL と違えば {"type":"error","code":"protocol"} を返して切る。
 
 use crate::store::{Change, Comment, Store};
 use crate::workspace::{LogEntry, Workspace};
@@ -26,6 +27,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
+
+/// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
+pub const PROTOCOL: u32 = 1;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -223,6 +227,13 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
         };
         match v["type"].as_str() {
             Some("hello") => {
+                if v["protocol"].as_u64() != Some(PROTOCOL as u64) {
+                    let _ = out_tx.send(json!({ "type": "error", "code": "protocol",
+                        "message": "このページはホストと版が合いません。ページを再読み込みしてください（直らなければ komenagare を更新してください）" }).to_string());
+                    // 送り終えてから切る
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    break;
+                }
                 if let Some(n) = v["name"].as_str().map(str::trim).filter(|n| !n.is_empty()) {
                     name = n.chars().take(40).collect();
                 }

@@ -7,10 +7,11 @@
 
 mod server;
 mod store;
+mod web;
 mod workspace;
 
-use anyhow::{Context, Result};
-use clap::Parser;
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
 use rand::Rng;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,10 @@ use workspace::{GitMode, LogEntry, Workspace};
     version,
     about = "コメナガレを複数人で編集するためのホスト"
 )]
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
     /// 作業フォルダ（comments.jsonl と履歴を置く）。無ければ作る
     #[arg(default_value = ".")]
     dir: PathBuf,
@@ -51,9 +55,28 @@ struct Args {
     /// 起動したらブラウザで開く
     #[arg(long)]
     open: bool,
-    /// Web アプリを内蔵のものではなく、このフォルダから配信する（開発用）
+    /// 起動時に Web アプリの更新を確かめない（前回取ってきたもの、無ければ内蔵のものを使う）
+    #[arg(long)]
+    no_update: bool,
+    /// CLI に内蔵した Web アプリを使う
+    #[arg(long, conflicts_with = "no_update")]
+    bundled_web: bool,
+    /// Web アプリの取得元
+    #[arg(long, value_name = "URL", env = "KOMENAGARE_WEB_URL", default_value = web::DEFAULT_URL)]
+    web_url: String,
+    /// Web アプリをこのフォルダから配信する（開発用）
     #[arg(long, value_name = "DIR", hide = true)]
     web: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Web アプリの最新版を取ってくる（起動時にも自動で確かめる）
+    UpdateWeb {
+        /// Web アプリの取得元
+        #[arg(long, value_name = "URL", env = "KOMENAGARE_WEB_URL", default_value = web::DEFAULT_URL)]
+        web_url: String,
+    },
 }
 
 #[tokio::main]
@@ -65,6 +88,20 @@ async fn main() {
 }
 
 async fn run(args: Args) -> Result<()> {
+    if let Some(Cmd::UpdateWeb { web_url }) = &args.cmd {
+        let dir = web::cache_dir().context("保存場所（ホームフォルダ）が分かりません")?;
+        let url = web_url.clone();
+        let d = dir.clone();
+        match tokio::task::spawn_blocking(move || web::update(&url, &d)).await?? {
+            web::Outcome::Updated(n) => println!(
+                "Web アプリを更新しました（{n} ファイル）: {}",
+                dir.display()
+            ),
+            web::Outcome::UpToDate => println!("Web アプリは最新です: {}", dir.display()),
+            web::Outcome::Incompatible(p) => bail!("{}", incompatible_message(p)),
+        }
+        return Ok(());
+    }
     let git_mode = if args.no_git {
         GitMode::Off
     } else if args.require_git {
@@ -81,6 +118,7 @@ async fn run(args: Args) -> Result<()> {
         println!("{} から {} 件のコメントを取り込みました", file.display(), n);
     }
 
+    let (web_source, web_label) = prepare_web(&args).await;
     let token = if args.no_token {
         None
     } else {
@@ -97,7 +135,10 @@ async fn run(args: Args) -> Result<()> {
         seen,
         writer,
         token.clone(),
-        args.web.clone(),
+        match web_source {
+            web::Source::Dir(d) => Some(d),
+            web::Source::Bundled => None,
+        },
         workspace_id,
     );
 
@@ -129,6 +170,7 @@ async fn run(args: Args) -> Result<()> {
         if git { "git" } else { "なし" }
     );
     println!("  コメント: {count} 件");
+    println!("  Web アプリ: {web_label}");
     println!("  開く: {local}");
     if addr.ip().is_unspecified() {
         if let Some(ip) = lan_ip() {
@@ -225,6 +267,61 @@ fn import(ws: &Workspace, store: &mut Store, file: &Path) -> Result<usize> {
         change: applied,
     })?;
     Ok(n)
+}
+
+/// 配信する Web アプリを決める（必要なら最新版を取ってくる）
+async fn prepare_web(args: &Args) -> (web::Source, String) {
+    if let Some(d) = &args.web {
+        return (
+            web::Source::Dir(d.clone()),
+            format!("{}（--web）", d.display()),
+        );
+    }
+    let bundled = (
+        web::Source::Bundled,
+        format!("内蔵（komenagare {}）", env!("CARGO_PKG_VERSION")),
+    );
+    if args.bundled_web {
+        return bundled;
+    }
+    let Some(dir) = web::cache_dir() else {
+        return bundled;
+    };
+    let mut latest = false;
+    if !args.no_update {
+        let (url, d) = (args.web_url.clone(), dir.clone());
+        match tokio::task::spawn_blocking(move || web::update(&url, &d)).await {
+            Ok(Ok(web::Outcome::Updated(n))) => {
+                latest = true;
+                println!("Web アプリを最新版に更新しました（{n} ファイル）");
+            }
+            Ok(Ok(web::Outcome::UpToDate)) => latest = true,
+            Ok(Ok(web::Outcome::Incompatible(p))) => eprintln!("注意: {}", incompatible_message(p)),
+            Ok(Err(e)) => eprintln!("注意: Web アプリの更新を確かめられませんでした（{e:#}）"),
+            Err(e) => eprintln!("注意: Web アプリの更新に失敗しました（{e}）"),
+        }
+    }
+    if web::cached_usable(&dir) {
+        let what = if latest {
+            "最新版"
+        } else {
+            "前回取得した版"
+        };
+        (
+            web::Source::Dir(dir.clone()),
+            format!("{what}（{}）", dir.display()),
+        )
+    } else {
+        bundled
+    }
+}
+
+fn incompatible_message(protocol: u32) -> String {
+    format!(
+        "最新の Web アプリ（取り決め {protocol}）はこの komenagare（取り決め {}）では使えないため、前回のもの（無ければ内蔵のもの）を使います。\n\
+         最新版を使うには komenagare を更新してください: curl -fsSL https://igarinpiano.github.io/komenagare/install.sh | sh",
+        server::PROTOCOL
+    )
 }
 
 fn is_uuid(s: &str) -> bool {
