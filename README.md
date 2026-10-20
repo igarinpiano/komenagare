@@ -16,7 +16,7 @@
 ビルド手順はありません。構成は `CLAUDE.md` を参照してください。
 
 ```sh
-node tests/vim-engine.test.js   # Vim エンジンのテスト
+node --test 'tests/*.test.js'   # Vim エンジンとコメントストアのテスト
 ```
 
 ## ライセンス
