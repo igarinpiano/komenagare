@@ -16,13 +16,35 @@
 `komenagare` コマンドでホストすると、同じコメントを複数人で同時に編集できます。変更はすぐにほかの人の画面に反映され、
 送られてくるたびに作業フォルダの `comments.jsonl` に書き込まれ、git のコミットとして残ります（作者は参加者の表示名）。
 
-### インストール（Linux / macOS）
+### インストール
+
+Linux / macOS:
 
 ```sh
 curl -fsSL https://igarinpiano.github.io/komenagare/install.sh | sh
 ```
 
-`~/.local/bin/komenagare` に入ります（`KOMENAGARE_INSTALL_DIR` で変更可）。履歴を残すには git が必要です。
+`~/.local/bin/komenagare` に入ります（`KOMENAGARE_INSTALL_DIR` で変更可）。
+
+Windows（PowerShell）:
+
+```powershell
+irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | iex
+```
+
+`%LOCALAPPDATA%\komenagare\bin\komenagare.exe` に入り、ユーザーの PATH に足されます（新しく開いたターミナルから使えます）。
+
+どちらも、履歴を残すには git が必要です。
+
+### 更新
+
+```sh
+komenagare self-update            # 最新版に更新する
+komenagare self-update --check    # 更新があるかを確かめるだけ
+komenagare self-update --version v0.1.0   # 指定した版にする（前の版に戻すときにも）
+```
+
+ホストを起動したときにも新しい版があるかを確かめ、あれば知らせます（`--no-update` で確かめない）。
 
 ### 使い方
 
@@ -41,7 +63,7 @@ komenagare --import comments.json   # 保存済みのコメントを取り込ん
 - ホストとの接続が切れても編集を続けられます。変更はブラウザに保存され、つながり直したときに送られます。
 - 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
-  取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、更新を促します。
+  取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare self-update` を促します。
 
 ### コメントを動画に焼き込む（komenagare render）
 
@@ -52,6 +74,7 @@ komenagare render --ass comments.ass -c comments.json   # 字幕ファイル（A
 ```
 
 Web アプリの書き出しと同じ規則で配置し、ffmpeg（libass 付き）で描きます。ffmpeg が必要です。
+フォントは `--font` / `--font-serif` で変えられます（既定は Windows では MS PGothic / Yu Mincho、ほかは fontconfig の sans-serif / serif）。
 文字の幅はフォントで測らず見積もるため、流れるコメントの重なり方は Web アプリの書き出しと少し違うことがあります。
 
 ## 開発

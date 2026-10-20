@@ -14,6 +14,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// 既定のフォント（Windows では Web アプリが使うのと同じもの。ほかは fontconfig に任せる）
+pub const DEFAULT_FONT: &str = if cfg!(windows) {
+    "MS PGothic"
+} else {
+    "sans-serif"
+};
+pub const DEFAULT_FONT_SERIF: &str = if cfg!(windows) { "Yu Mincho" } else { "serif" };
+
 // js/comment-render.js と同じ値
 const STAGE_H: f64 = 384.0;
 const STAGE_W: f64 = STAGE_H * 16.0 / 9.0;
@@ -609,18 +617,7 @@ pub fn font_scale(name: &str) -> f64 {
 }
 
 fn font_scale_of(name: &str) -> Option<f64> {
-    let out = Command::new("fc-match")
-        .args(["-f", "%{file}\n%{index}\n"])
-        .arg(format!("{name}:lang=ja"))
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines = text.lines();
-    let file = lines.next()?.trim();
-    let index: u32 = lines
-        .next()
-        .and_then(|x| x.trim().parse().ok())
-        .unwrap_or(0);
+    let (file, index) = fc_match(name).or_else(|| windows_font(name))?;
     let data = std::fs::read(file).ok()?;
     let face = ttf_parser::Face::parse(&data, index).ok()?;
     let em = face.units_per_em() as f64;
@@ -633,6 +630,69 @@ fn font_scale_of(name: &str) -> Option<f64> {
     };
     let k = height / em;
     (0.5..3.0).contains(&k).then_some(k)
+}
+
+/// fontconfig でフォントのファイルを探す
+fn fc_match(name: &str) -> Option<(PathBuf, u32)> {
+    let out = Command::new("fc-match")
+        .args(["-f", "%{file}\n%{index}\n"])
+        .arg(format!("{name}:lang=ja"))
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let file = lines.next()?.trim();
+    if file.is_empty() {
+        return None;
+    }
+    let index = lines
+        .next()
+        .and_then(|x| x.trim().parse().ok())
+        .unwrap_or(0);
+    Some((PathBuf::from(file), index))
+}
+
+/// fontconfig の無い Windows で、よく使う日本語フォントのファイルを探す
+fn windows_font(name: &str) -> Option<(PathBuf, u32)> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let files: &[&str] = match name.to_lowercase().as_str() {
+        "ms pgothic" | "ms gothic" | "ms ui gothic" | "ｍｓ ｐゴシック" | "ｍｓ ゴシック" => {
+            &["msgothic.ttc"]
+        }
+        "ms pmincho" | "ms mincho" | "ｍｓ ｐ明朝" | "ｍｓ 明朝" => &["msmincho.ttc"],
+        "yu gothic" | "yu gothic ui" | "游ゴシック" => &["YuGothR.ttc", "YuGothM.ttc"],
+        "yu mincho" | "游明朝" => &["yumin.ttf"],
+        "meiryo" | "meiryo ui" | "メイリオ" => &["meiryo.ttc"],
+        "sans-serif" => &["msgothic.ttc"],
+        "serif" => &["yumin.ttf"],
+        _ => return None,
+    };
+    let dirs = [
+        std::env::var_os("WINDIR").map(|d| PathBuf::from(d).join("Fonts")),
+        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Microsoft/Windows/Fonts")),
+    ];
+    let path = dirs
+        .iter()
+        .flatten()
+        .flat_map(|d| files.iter().map(move |f| d.join(f)))
+        .find(|p| p.is_file())?;
+    // .ttc なら名前の合う書体を選ぶ（MS PGothic は msgothic.ttc の中の1つ）
+    let data = std::fs::read(&path).ok()?;
+    let want = name.to_lowercase();
+    let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+    let index = (0..count)
+        .find(|&i| {
+            ttf_parser::Face::parse(&data, i).is_ok_and(|f| {
+                f.names().into_iter().any(|n| {
+                    n.name_id == ttf_parser::name_id::FAMILY
+                        && n.to_string().is_some_and(|s| s.to_lowercase() == want)
+                })
+            })
+        })
+        .unwrap_or(0);
+    Some((path, index))
 }
 
 #[cfg(test)]
