@@ -4717,7 +4717,7 @@ function loadMediabunny(){
     const sc = document.createElement('script');
     sc.src = MB_URL;
     sc.onload = () => window.Mediabunny ? resolve(window.Mediabunny) : reject(new Error('変換ライブラリを読み込めませんでした'));
-    sc.onerror = () => reject(new Error('変換ライブラリ（lib/' + MB_URL.split('/').pop() + '）が見つかりません。komenagare.html と同じ場所に lib フォルダを置いてください'));
+    sc.onerror = () => reject(new Error('変換ライブラリ（lib/' + MB_URL.split('/').pop() + '）が見つかりません。index.html と同じ場所に lib フォルダを置いてください'));
     document.head.append(sc);
   });
 }
