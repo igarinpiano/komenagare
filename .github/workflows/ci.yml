@@ -28,3 +28,49 @@ jobs:
           workspaces: cli
       - run: cargo test --locked --manifest-path cli/Cargo.toml
       - run: sh -n install.sh
+
+  cli-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+      - run: cargo test --locked --manifest-path cli/Cargo.toml
+      - name: install.ps1 と self-update を手元のミラーで確かめる
+        shell: pwsh
+        run: |
+          cargo build --locked --manifest-path cli/Cargo.toml
+          $v = 'v' + (Select-String -Path cli/Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $name = 'komenagare-x86_64-pc-windows-msvc'
+          $rel = "mirror/releases/download/$v"
+          New-Item -ItemType Directory -Force pkg, $rel | Out-Null
+          Copy-Item cli/target/debug/komenagare.exe, LICENSE, README.md pkg/
+          Compress-Archive -Path pkg/* -DestinationPath "$rel/$name.zip"
+          $hash = (Get-FileHash "$rel/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Encoding ascii -Path "$rel/$name.zip.sha256" -Value "$hash  $name.zip"
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8799', '--directory', 'mirror' -PassThru -NoNewWindow
+          Start-Sleep 3
+          try {
+            $env:KOMENAGARE_DOWNLOAD_URL = "http://127.0.0.1:8799/releases/download/$v"
+            $env:KOMENAGARE_INSTALL_DIR = "$env:RUNNER_TEMP\kbin"
+            $env:KOMENAGARE_NO_MODIFY_PATH = '1'
+            $exe = "$env:KOMENAGARE_INSTALL_DIR\komenagare.exe"
+            # irm | iex と同じく、UTF-8 として読んだ文字列を iex する（Windows PowerShell 5.1、PowerShell 7 で入れ直し）
+            $run = "[Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('install.ps1')) | iex"
+            powershell -NoProfile -Command $run
+            if ($LASTEXITCODE) { throw 'install.ps1（Windows PowerShell 5.1）が失敗しました' }
+            pwsh -NoProfile -Command $run
+            if ($LASTEXITCODE) { throw 'install.ps1（PowerShell 7）が失敗しました' }
+            & $exe --version
+            # 同じ版を入れ直して、実行中の exe の置き換えを確かめる
+            $env:KOMENAGARE_RELEASES_URL = 'http://127.0.0.1:8799/releases'
+            & $exe self-update --version $v
+            if ($LASTEXITCODE) { throw 'self-update が失敗しました' }
+            if (-not (Test-Path "$exe.old")) { throw '置き換えた古い exe がありません' }
+            & $exe --version
+            if (Test-Path "$exe.old") { throw '古い exe が次の起動で消えていません' }
+          } finally {
+            Stop-Process -Id $server.Id
+          }

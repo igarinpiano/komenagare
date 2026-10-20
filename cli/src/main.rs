@@ -9,6 +9,7 @@ mod files;
 mod render;
 mod server;
 mod store;
+mod update;
 mod web;
 mod workspace;
 
@@ -57,7 +58,7 @@ struct Args {
     /// 起動したらブラウザで開く
     #[arg(long)]
     open: bool,
-    /// 起動時に Web アプリの更新を確かめない（前回取ってきたもの、無ければ内蔵のものを使う）
+    /// 起動時に更新を確かめない（Web アプリは前回取ってきたもの、無ければ内蔵のものを使う）
     #[arg(long)]
     no_update: bool,
     /// CLI に内蔵した Web アプリを使う
@@ -72,7 +73,17 @@ struct Args {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Cmd {
+    /// komenagare を最新版に更新する
+    SelfUpdate {
+        /// 更新があるかを確かめるだけ
+        #[arg(long)]
+        check: bool,
+        /// 入れるバージョン（例 v0.1.1。前の版に戻すときにも使える）
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+    },
     /// Web アプリの最新版を取ってくる（起動時にも自動で確かめる）
     UpdateWeb {
         /// Web アプリの取得元
@@ -108,10 +119,10 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         crf: u32,
         /// ゴシック体（defont / gothic）に使うフォント
-        #[arg(long, default_value = "sans-serif")]
+        #[arg(long, default_value = render::DEFAULT_FONT)]
         font: String,
         /// 明朝体（mincho）に使うフォント
-        #[arg(long, default_value = "serif")]
+        #[arg(long, default_value = render::DEFAULT_FONT_SERIF)]
         font_serif: String,
         /// 文字の大きさの補正（省略するとフォントから求める）
         #[arg(long)]
@@ -203,6 +214,7 @@ fn run_render(cmd: &Cmd) -> Result<()> {
 
 #[tokio::main]
 async fn main() {
+    update::cleanup();
     if let Err(e) = run(Args::parse()).await {
         eprintln!("エラー: {e:#}");
         std::process::exit(1);
@@ -212,6 +224,10 @@ async fn main() {
 async fn run(args: Args) -> Result<()> {
     if let Some(cmd @ Cmd::Render { .. }) = &args.cmd {
         return run_render(cmd);
+    }
+    if let Some(Cmd::SelfUpdate { check, version }) = &args.cmd {
+        let (check, version) = (*check, version.clone());
+        return tokio::task::spawn_blocking(move || update::run(version.as_deref(), check)).await?;
     }
     if let Some(Cmd::UpdateWeb { web_url }) = &args.cmd {
         let dir = web::cache_dir().context("保存場所（ホームフォルダ）が分かりません")?;
@@ -243,7 +259,18 @@ async fn run(args: Args) -> Result<()> {
         println!("{} から {} 件のコメントを取り込みました", file.display(), n);
     }
 
+    // komenagare 自身の新しい版があるか（Web アプリの用意と並べて確かめる）
+    let newer = (!args.no_update && args.web.is_none())
+        .then(|| tokio::task::spawn_blocking(update::check_newer));
     let (web_source, web_label) = prepare_web(&args).await;
+    let newer = match newer {
+        Some(h) => tokio::time::timeout(std::time::Duration::from_secs(3), h)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten(),
+        None => None,
+    };
     let token = if args.no_token {
         None
     } else {
@@ -307,6 +334,11 @@ async fn run(args: Args) -> Result<()> {
     }
     if token.is_none() {
         println!("  注意: 合言葉なしで起動しています。URL を知っている人は誰でも編集できます");
+    }
+    if let Some(tag) = newer {
+        println!(
+            "  新しい版: komenagare {tag} があります（komenagare self-update で更新できます）"
+        );
     }
     println!("  終了: Ctrl+C");
     if args.open {
@@ -433,7 +465,7 @@ async fn prepare_web(args: &Args) -> (web::Source, String) {
 fn incompatible_message(protocol: u32) -> String {
     format!(
         "最新の Web アプリ（取り決め {protocol}）はこの komenagare（取り決め {}）では使えないため、前回のもの（無ければ内蔵のもの）を使います。\n\
-         最新版を使うには komenagare を更新してください: curl -fsSL https://igarinpiano.github.io/komenagare/install.sh | sh",
+         最新版を使うには komenagare を更新してください: komenagare self-update",
         server::PROTOCOL
     )
 }

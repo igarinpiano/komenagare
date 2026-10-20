@@ -19,6 +19,7 @@ fail() { printf 'エラー: %s\n' "$*" >&2; exit 1; }
 case "$(uname -s)" in
   Linux) os="unknown-linux-musl" ;;
   Darwin) os="apple-darwin" ;;
+  MINGW* | MSYS* | CYGWIN*) fail "Windows では PowerShell で次を実行してください: irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex" ;;
   *) fail "この OS（$(uname -s)）には未対応です。Linux か macOS で実行してください" ;;
 esac
 case "$(uname -m)" in
@@ -75,3 +76,4 @@ case ":${PATH}:" in
 esac
 say ""
 say "使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）"
+say "更新: komenagare self-update"

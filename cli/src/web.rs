@@ -1,8 +1,8 @@
 //! 配信する Web アプリの用意。
 //!
 //! 起動時に GitHub Pages（--web-url）から最新の Web アプリを取ってきて、手元の保存場所
-//! （~/.cache/komenagare/web など）に置き、そこから配信する。Web 版を更新すれば CLI を
-//! 入れ直さなくても共同編集の画面が新しくなる。
+//! （~/.cache/komenagare/web、Windows は %LOCALAPPDATA%\komenagare\web など）に置き、
+//! そこから配信する。Web 版を更新すれば CLI を入れ直さなくても共同編集の画面が新しくなる。
 //!
 //! 取ってくるファイルは web.json の files に書いてある。web.json の protocol（ホストとの
 //! やりとりの取り決めの版数）がこの CLI の対応外なら使わない（CLI の更新が必要）。
@@ -48,7 +48,9 @@ pub fn cache_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(d));
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let base = if cfg!(target_os = "macos") {
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
         home.map(|h| h.join("Library/Caches"))
     } else {
         std::env::var_os("XDG_CACHE_HOME")
