@@ -28,6 +28,7 @@
     <span id="videoStatus">動画: なし</span>
     <span id="fileStatus"></span>
     <button id="collabStatus" class="collab" hidden></button>
+    <button id="conflictBtn" class="collab warn" hidden title="ほかの人の変更と重なった変更を確認する"></button>
   </div>
 </header>
 
@@ -82,12 +83,14 @@
     <button class="mtab" data-mpane="timeline">🎞 タイムライン</button>
     <button class="mtab" data-mpane="list">☰ リスト</button>
     <button class="mtab" data-mpane="vim">⌨ Vim</button>
+    <button class="mtab" data-mpane="history">🕘 履歴</button>
   </nav>
 
   <aside class="side" id="side">
     <div class="side-tabs">
       <button class="stab" data-pane="list">コメントリスト</button>
       <button class="stab" data-pane="vim">Vim エディタ</button>
+      <button class="stab" data-pane="history">変更履歴</button>
     </div>
     <div class="pane" id="paneList">
     <div class="side-head">
@@ -111,6 +114,14 @@
       </div>
       <div class="note" id="fsNote"></div>
     </details>
+    </div>
+    <div class="pane" id="paneHistory" hidden>
+      <div class="side-head">
+        <div class="side-title">変更履歴<span id="histCount"></span></div>
+        <button id="histConflicts" class="warn" hidden></button>
+      </div>
+      <p class="muted hist-note" id="histNote"></p>
+      <div class="hist" id="histList"></div>
     </div>
     <div class="pane" id="paneVim" hidden>
       <div class="vim-head">
@@ -271,6 +282,15 @@
   </div>
 </dialog>
 
+<dialog id="conflictDlg">
+  <div class="dlg-head">ほかの人の変更と重なった変更</div>
+  <div class="dlg-body">
+    <p class="muted" style="margin:0 0 10px">同じコメントを同時に変えたため、あなたの変更はまだ反映されていません（今はホストにある内容になっています）。コメントごとにどうするか選んでください。</p>
+    <div id="conflictList"></div>
+  </div>
+  <div class="dlg-foot"><button id="conflictLater">あとで</button><button id="conflictKeepAll">すべて相手のままにする</button></div>
+</dialog>
+
 <dialog id="helpDlg">
   <div class="dlg-head">使い方</div>
   <div class="dlg-body help">
@@ -326,8 +346,11 @@
     <h4>Vim エディタ</h4>
     <p class="muted" style="margin:0">コメントを1行1件のテキスト（<code>01:23.45 ue red | 本文</code>）として Vim のキー操作で編集できます。時刻やコマンドを書き換えて <code>:w</code> で反映、<code>:q</code> で閉じます。<code>:now</code> で再生位置に行を追加、<code>:seek</code> でカーソル行の時刻へ移動。対応キーの一覧はエディタ内で <code>:help</code>。スマホでは画面下のキーバーで Esc や Ctrl を入力できます。</p>
 
+    <h4>変更履歴</h4>
+    <p class="muted" style="margin:0">右の「変更履歴」タブで、コメントの追加・変更・削除を新しい順に見られます。「取り消す」でその変更を打ち消す変更を加え（その後に同じコメントが変わっていれば止まります）、「移動」でそのコメントの時刻へ移ります。共同編集中は全員の変更が出ます。</p>
+
     <h4>みんなで編集する</h4>
-    <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます。クリックで表示名を変更）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、知らせが出ます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
+    <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます。クリックで表示名を変更）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、「⚠ 衝突」から自分の変更にする・相手のままにする・両方残すを選べます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
 
     <h4>ファイル形式</h4>
     <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>

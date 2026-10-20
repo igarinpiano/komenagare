@@ -20,6 +20,7 @@ function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.
 const store = new CommentStore();
 const state = {
   get comments(){ return store.comments; }, layouts: [],
+  changeLog: [], // この画面で行った変更（変更履歴の表示用。新しいものが後ろ）
   collab: !!document.querySelector('meta[name="komenagare-host"]'), // komenagare CLI から配信されているか（共同編集）
   fileHandle: null, fileName: null, dirty: false,
   videoName: null, videoUrl: null, videoLoaded: false, needsDraw: true, needsRelayout: false, version: 0,
@@ -140,12 +141,13 @@ function updateOps(changes){
 }
 // 変更セットを store に適用して画面に反映する。undoable なら「元に戻す」の対象にする
 // 共同編集中は、ここで適用した変更をホストへ送る（send: false はホストから来た変更を反映するとき）
-function commitOps(ops, { undoable = true, save = true, atomic = false, send = true } = {}){
+function commitOps(ops, { undoable = true, save = true, atomic = false, send = true, record = true } = {}){
   if (!ops.length) return null;
   const { applied, conflicts } = store.apply({ id: uuidv7(), ops }, { atomic });
   if (conflicts.length) console.warn('変更の衝突', conflicts);
   if (!applied) return null;
   if (undoable) pushUndo(applied);
+  if (record) recordChange(applied);
   commentsChanged();
   if (send) collabSend(applied);
   if (save){ markDirty(); autosave(); }
@@ -905,6 +907,7 @@ function loadReplace(text, name, handle){
   }
   store.reset();
   history.undo.length = 0; history.redo.length = 0; updateUndoUI();
+  state.changeLog.length = 0; histChanged();
   TL.sel.clear();
   const n = newComments(items);
   store.reset(n.items);
@@ -1435,7 +1438,7 @@ function pushUndo(ch){
 function applyHistory(ch){
   const { applied, conflicts } = store.apply(ch, { atomic: true });
   if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return false; }
-  if (applied){ commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
+  if (applied){ recordChange(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
   return true;
 }
 function undo(){
@@ -1456,7 +1459,7 @@ function redo(){
 function revertChange(ch){
   const { applied, conflicts } = store.apply(invertChange(ch), { atomic: true });
   if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return null; }
-  if (applied){ pushUndo(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
+  if (applied){ pushUndo(applied); recordChange(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
   return applied;
 }
 function updateUndoUI(){
@@ -2748,6 +2751,7 @@ function applyPanes(){
   const pane = mobile ? (settings.mobilePane === 'timeline' ? 'list' : settings.mobilePane) : settings.sidePane;
   $('#paneList').hidden = pane !== 'list';
   $('#paneVim').hidden = pane !== 'vim';
+  $('#paneHistory').hidden = pane !== 'history';
   document.body.dataset.mpane = settings.mobilePane;
   document.body.classList.toggle('tl-off', !settings.timeline);
   $('#layout').classList.toggle('wide-side', !mobile && pane === 'vim');
@@ -2757,6 +2761,7 @@ function applyPanes(){
   applyLayoutVars();
   const vimShown = pane === 'vim' && (!mobile || settings.mobilePane === 'vim');
   if (vimShown){ vimEnsure(); if (!vim.E.modified && vim.synced !== state.version) vimReload(false); }
+  if (pane === 'history') histRefresh();
   requestAnimationFrame(() => {
     resizeCanvas(); tlResize();
     if (vimShown){ vim.lineH = 0; vimRender(); }
@@ -2781,9 +2786,10 @@ window.addEventListener('resize', () => { if (vim.E && !$('#paneVim').hidden) vi
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 1;
+const COLLAB_PROTOCOL = 2;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
+  conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
   workspace: document.querySelector('meta[name="komenagare-host"]')?.dataset.workspace || 'default',
   key: (() => {
     const k = new URLSearchParams(location.search).get('k');
@@ -2863,14 +2869,26 @@ function collabHandle(m){
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
     collabSaveSoon();
     collabUI();
+    histChanged();
   } else if (m.type === 'change'){
     const r = store.apply(m.change);
     if (r.applied){ commentsChanged(); collabSaveSoon(); }
+    if (hist.entries){ hist.entries.unshift({ rev: m.rev, time: m.time, author: m.author, change: m.change }); histRender(); }
   } else if (m.type === 'ack'){
+    const entry = collab.outbox.find(e => e.id === m.id);
     collab.outbox = collab.outbox.filter(e => e.id !== m.id);
     collabTx('outbox', 'readwrite', s => s.delete(m.id)).catch(e => console.warn(e));
-    if (m.fix && m.fix.length) collabFix(m.fix, m.conflicts || []);
+    if (m.fix && m.fix.length){
+      // ホストの内容に合わせる前に、自分の側の内容を控えておく（衝突の解決画面で「あなた」として出す）
+      const local = new Map(m.fix.map(f => [f.id, store.get(f.id) ? { ...store.get(f.id) } : null]));
+      collabFix(m.fix);
+      collabAddConflicts(entry, m.conflicts || [], m.fix, local);
+    }
     collabUI();
+    histChanged();
+  } else if (m.type === 'history'){
+    hist.entries = m.entries || [];
+    histRender();
   } else if (m.type === 'peers'){
     collab.peers = m.names || [];
     collabUI();
@@ -2881,7 +2899,7 @@ function collabHandle(m){
 }
 
 // 他の人の変更と重なったコメントを、ホストの内容に合わせる
-function collabFix(fix, conflicts){
+function collabFix(fix){
   const ops = [];
   for (const { id, comment } of fix){
     const cur = store.get(id);
@@ -2889,10 +2907,27 @@ function collabFix(fix, conflicts){
     else if (!cur) ops.push({ type:'add', id, after: { t: comment.t, cmd: comment.cmd, text: comment.text } });
     else { const op = updateOp(cur, comment); if (op) ops.push(op); }
   }
-  commitOps(ops, { undoable: false, save: false, send: false });
-  const why = { modified: '他の人が先に変更していた', deleted: '他の人が先に削除していた', exists: '同じ id のコメントが既にあった' };
-  const kinds = [...new Set(conflicts.map(c => why[c.reason] || c.reason))].join('・');
-  toast(`${fix.length} 件のコメントは${kinds || '他の人の変更と重なった'}ため、あなたの変更を反映せずホストの内容に合わせました`, { type:'error', timeout:9000 });
+  commitOps(ops, { undoable: false, save: false, send: false, record: false });
+}
+// 衝突した自分の変更を、あとで選べるように控える
+function collabAddConflicts(entry, conflicts, fix, local){
+  const theirsOf = new Map(fix.map(f => [f.id, f.comment ? { t: f.comment.t, cmd: f.comment.cmd, text: f.comment.text } : null]));
+  let added = 0;
+  for (const c of conflicts){
+    const op = entry && entry.change.ops.filter(o => o.id === c.id).pop();
+    if (!op) continue;
+    const theirs = theirsOf.get(c.id) ?? null, mineNow = local.get(c.id);
+    const mine = op.type === 'delete' ? null
+      : op.type === 'add' ? { ...op.after }
+      : { ...(theirs || {}), ...(mineNow ? { t: mineNow.t, cmd: mineNow.cmd, text: mineNow.text } : {}), ...op.after };
+    const key = entry.id + ':' + c.id;
+    if (collab.conflicts.some(x => x.key === key)) continue;
+    collab.conflicts.push({ key, id: c.id, reason: c.reason, opType: op.type, mine, theirs, at: Date.now() });
+    added++;
+  }
+  if (!added) return;
+  conflictsChanged();
+  toast(`${added} 件の変更がほかの人の変更と重なったため、まだ反映していません`, { type:'error', timeout:10000, action:{ label:'確認する', fn: conflictOpen } });
 }
 
 function collabUI(){
@@ -2926,8 +2961,10 @@ async function collabInit(){
   try {
     collab.db = await collabIdb();
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    const [snap, outbox] = await Promise.all([collabTx('meta', 'readonly', s => s.get('snapshot')), collabTx('outbox', 'readonly', s => s.getAll())]);
+    const [snap, outbox, conflicts] = await Promise.all([collabTx('meta', 'readonly', s => s.get('snapshot')), collabTx('outbox', 'readonly', s => s.getAll()), collabTx('meta', 'readonly', s => s.get('conflicts'))]);
     collab.outbox = (outbox || []).sort((a, b) => a.seq - b.seq);
+    collab.conflicts = Array.isArray(conflicts) ? conflicts : [];
+    if (collab.conflicts.length) conflictsChanged();
     // 前回の控えをすぐに表示する（ホストにつながる前やオフラインでも作業できるように）
     if (snap && snap.comments){
       store.reset(snap.comments);
@@ -2942,6 +2979,175 @@ async function collabInit(){
   collabUI();
   collabConnect();
 }
+
+/* =====================================================================
+   変更履歴
+   - ひとりのとき: この画面で行った変更（state.changeLog）
+   - 共同編集のとき: ホストに記録された全員の変更（まだ送れていない自分の変更も上に出す）
+   どの変更も「取り消す」で打ち消す変更を新しく積める（git revert と同じ。その後に同じコメントが
+   変わっていれば止める）
+   ===================================================================== */
+const hist = { entries: null, timer: 0 };
+function recordChange(ch){
+  state.changeLog.push({ time: Date.now(), author: state.collab ? (collabName() || 'ゲスト') : 'あなた', change: ch });
+  if (state.changeLog.length > 1000) state.changeLog.splice(0, state.changeLog.length - 1000);
+  histChanged();
+}
+const histShown = () => !$('#paneHistory').hidden;
+function histChanged(){ if (histShown()){ clearTimeout(hist.timer); hist.timer = setTimeout(histRefresh, 120); } }
+function histRefresh(){
+  if (state.collab && collab.connected) collab.ws.send(JSON.stringify({ type: 'history', limit: 300 }));
+  histRender();
+}
+const mkEl = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const clip = (s, n = 40) => { s = String(s ?? '').replace(/\n/g, '⏎'); return s.length > n ? s.slice(0, n) + '…' : s; };
+function histTime(ms){
+  if (!ms) return '';
+  const d = new Date(ms), p2 = (n) => String(n).padStart(2, '0');
+  const hm = `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+// 1つの op を「追加 「本文」 01:23.45」のような1行にする
+function histOpLine(op){
+  const line = mkEl('div', 'hist-op');
+  const kind = { add: '追加', update: '変更', delete: '削除' }[op.type];
+  line.append(mkEl('span', 'k ' + op.type, kind));
+  if (op.type === 'add' || op.type === 'delete'){
+    const f = op.type === 'add' ? op.after : op.before;
+    line.append(`「${clip(f.text)}」 ${fmtPrecise(f.t ?? 0)}` + (f.cmd ? ` [${f.cmd}]` : ''));
+    return line;
+  }
+  const name = op.after.text ?? op.before.text ?? store.get(op.id)?.text;
+  line.append(name != null ? `「${clip(name, 24)}」 ` : '');
+  const label = { t: '時刻', cmd: 'コマンド', text: '本文' };
+  const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : k === 'text' ? `「${clip(v, 24)}」` : (v || '（なし）');
+  for (const k of ['t', 'cmd', 'text']){
+    if (!(k in op.after)) continue;
+    line.append(` ${label[k]} `);
+    if (k in op.before) line.append(mkEl('span', 'from', show(k, op.before[k])), ' → ');
+    line.append(show(k, op.after[k]));
+  }
+  return line;
+}
+function histRender(){
+  const list = $('#histList');
+  if (!list || !histShown()) return;
+  let items, note;
+  if (state.collab){
+    const me = collabName() || 'ゲスト';
+    items = [...collab.outbox.slice().reverse().map(e => ({ change: e.change, author: me, time: e.seq, pending: true })), ...(hist.entries || [])];
+    note = collab.connected ? 'ホストに記録された全員の変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。'
+      : 'ホストにつながっていないため、前回取得した履歴を表示しています。';
+  } else {
+    items = state.changeLog.slice().reverse();
+    note = 'この画面を開いてからの変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。komenagare でホストすると全員の変更が記録されます。';
+  }
+  $('#histNote').textContent = note;
+  $('#histCount').textContent = items.length ? `${items.length}件` : '';
+  const frag = document.createDocumentFragment();
+  for (const it of items.slice(0, 300)){
+    const box = mkEl('div', 'hist-item' + (it.pending ? ' pending' : ''));
+    const meta = mkEl('div', 'hist-meta');
+    meta.append(mkEl('span', null, histTime(it.time)), mkEl('b', null, it.author || ''));
+    if (it.rev) meta.append(mkEl('span', null, '#' + it.rev));
+    if (it.pending) meta.append(mkEl('span', null, '未送信'));
+    meta.append(mkEl('span', 'spacer'));
+    const target = it.change.ops.map(op => store.get(op.id)).find(Boolean);
+    if (target){
+      const go = mkEl('button', null, '移動');
+      go.title = 'このコメントの時刻へ移動して選ぶ';
+      go.onclick = () => { seekTo(target.t); TL.sel = new Set([target.id]); tlEnsureVisible(target); tlSelChanged(); };
+      meta.append(go);
+    }
+    if (!it.pending){
+      const undo = mkEl('button', null, '取り消す');
+      undo.title = 'この変更を打ち消す変更を加える';
+      undo.onclick = () => { if (revertChange(it.change)) toast('変更を取り消しました'); };
+      meta.append(undo);
+    }
+    box.append(meta);
+    for (const op of it.change.ops.slice(0, 5)) box.append(histOpLine(op));
+    if (it.change.ops.length > 5) box.append(mkEl('div', 'hist-op muted', `ほか ${it.change.ops.length - 5} 件`));
+    frag.append(box);
+  }
+  if (!items.length) frag.append(mkEl('p', 'muted hist-note', 'まだ変更はありません。'));
+  list.replaceChildren(frag);
+}
+
+/* ---------- 衝突の解決（共同編集） ---------- */
+const CONFLICT_WHY = {
+  'modified:update': 'ほかの人が先に同じ項目を変更していました',
+  'deleted:update': 'ほかの人が先に削除していました',
+  'modified:delete': 'あなたは削除しようとしましたが、ほかの人が先に変更していました',
+  'exists:add': '同じ id のコメントが既にありました',
+};
+function conflictActions(rec){
+  if (rec.opType === 'update' && rec.theirs) return [['mine', 'あなたの変更にする'], ['keep', '相手のままにする'], ['both', '両方残す']];
+  if (rec.opType === 'update') return [['mine', 'あなたの内容で復活させる'], ['keep', '削除のままにする']];
+  if (rec.opType === 'delete') return [['mine', 'それでも削除する'], ['keep', '残す']];
+  return [['both', '新しいコメントとして追加する'], ['keep', '追加しない']];
+}
+function conflictResolve(rec, action){
+  const cur = store.get(rec.id);
+  let ops = [];
+  if (action === 'mine'){
+    if (rec.opType === 'delete'){ if (cur) ops = [deleteOp(cur)]; }
+    else if (cur){
+      const r = updateOps([{ c: cur, t: rec.mine.t, cmd: rec.mine.cmd, text: rec.mine.text }]);
+      if (r.failed){ toast('同じ時刻・内容のコメントが既にあるため変更できません', { type:'error' }); return; }
+      ops = r.ops;
+    } else ops = [{ type:'add', id: rec.id, after: { t: rec.mine.t, cmd: rec.mine.cmd, text: rec.mine.text }, mine: true }];
+  } else if (action === 'both'){
+    const c = makeComment(rec.mine.t, rec.mine.cmd, rec.mine.text, true);
+    if (store.hasKey(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+    ops = [addOp(c)];
+  }
+  if (ops.length) commitOps(ops);
+  collab.conflicts = collab.conflicts.filter(x => x !== rec);
+  conflictsChanged();
+}
+function conflictsChanged(){
+  collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts')).catch(e => console.warn(e));
+  const n = collab.conflicts.length;
+  for (const b of [$('#conflictBtn'), $('#histConflicts')]){ b.hidden = !n; b.textContent = `⚠ 衝突 ${n}`; }
+  if ($('#conflictDlg').open){ if (n) conflictRender(); else $('#conflictDlg').close(); }
+}
+function conflictRender(){
+  const label = { t: '時刻', cmd: 'コマンド', text: '本文' };
+  const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : (v || '（なし）');
+  const frag = document.createDocumentFragment();
+  for (const rec of collab.conflicts){
+    const box = mkEl('div', 'cf-item');
+    const base = rec.theirs || rec.mine || {};
+    box.append(mkEl('div', 'cf-title', `「${clip(base.text, 60)}」 ${fmtPrecise(base.t ?? 0)}`));
+    box.append(mkEl('div', 'cf-why', CONFLICT_WHY[`${rec.reason}:${rec.opType}`] || 'ほかの人の変更と重なりました'));
+    const table = mkEl('table', 'cf-table');
+    const head = mkEl('tr'); head.append(mkEl('th'), mkEl('th', null, 'あなた'), mkEl('th', null, '相手（今の内容）')); table.append(head);
+    const keys = rec.mine && rec.theirs ? ['t', 'cmd', 'text'].filter(k => rec.mine[k] !== rec.theirs[k]) : ['text'];
+    for (const k of keys){
+      const tr = mkEl('tr');
+      tr.append(mkEl('th', null, label[k]),
+        mkEl('td', null, rec.mine ? show(k, rec.mine[k]) : '（削除）'),
+        mkEl('td', null, rec.theirs ? show(k, rec.theirs[k]) : '（削除済み）'));
+      table.append(tr);
+    }
+    box.append(table);
+    const acts = mkEl('div', 'cf-actions');
+    for (const [a, text] of conflictActions(rec)){
+      const b = mkEl('button', a === 'mine' ? 'primary' : null, text);
+      b.onclick = () => conflictResolve(rec, a);
+      acts.append(b);
+    }
+    box.append(acts);
+    frag.append(box);
+  }
+  $('#conflictList').replaceChildren(frag);
+}
+function conflictOpen(){ if (!collab.conflicts.length) return; conflictRender(); if (!$('#conflictDlg').open) $('#conflictDlg').showModal(); }
+$('#conflictBtn').onclick = conflictOpen;
+$('#histConflicts').onclick = conflictOpen;
+$('#conflictLater').onclick = () => $('#conflictDlg').close();
+$('#conflictKeepAll').onclick = () => { collab.conflicts = []; conflictsChanged(); };
 
 /* =====================================================================
    設定UI・ショートカット・その他

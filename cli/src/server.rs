@@ -1,11 +1,13 @@
 //! Web アプリの配信と、WebSocket での変更のやりとり。
 //!
 //! クライアント → サーバー
-//!   {"type":"hello","name":"表示名","client":"ブラウザごとの id"}
+//!   {"type":"hello","protocol":2,"name":"表示名","client":"ブラウザごとの id"}
 //!   {"type":"change","change":{変更セット}}
+//!   {"type":"history","limit":N}                             最近の変更を求める
 //! サーバー → クライアント
 //!   {"type":"snapshot","rev":N,"comments":[...]}            接続直後の全体
-//!   {"type":"change","rev":N,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
+//!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
+//!   {"type":"history","entries":[{"rev","time","author","change"},...]} 最近の変更（新しい順）
 //!   {"type":"ack","id":"変更セットid","rev":N,"dup":bool,"conflicts":[...],"fix":[{"id":..,"comment":..|null}]}
 //!   {"type":"peers","names":[...]}                           参加者
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
@@ -22,14 +24,14 @@ use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -56,7 +58,12 @@ struct Inner {
     rev: u64,
     seen: HashSet<String>,
     peers: HashMap<u64, String>,
+    /// 最近の変更（古い順。変更履歴の表示用）
+    history: VecDeque<LogEntry>,
 }
+
+/// 変更履歴として覚えておく件数
+pub const HISTORY_KEEP: usize = 1000;
 
 /// 書き込み担当（ファイルと git は受け取った順に1件ずつ処理する）への依頼
 pub struct Job {
@@ -91,10 +98,12 @@ pub fn spawn_writer(ws: Workspace) -> (std::sync::mpsc::Sender<Job>, std::thread
 }
 
 impl Hub {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Store,
         rev: u64,
         seen: HashSet<String>,
+        history: VecDeque<LogEntry>,
         writer: std::sync::mpsc::Sender<Job>,
         token: Option<String>,
         web_dir: Option<PathBuf>,
@@ -107,6 +116,7 @@ impl Hub {
                 rev,
                 seen,
                 peers: HashMap::new(),
+                history,
             }),
             tx,
             writer,
@@ -252,6 +262,12 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
                 );
                 broadcast_peers(&hub, &inner);
             }
+            Some("history") => {
+                let limit = v["limit"].as_u64().unwrap_or(200).min(HISTORY_KEEP as u64) as usize;
+                let inner = hub.inner.lock().await;
+                let entries: Vec<&LogEntry> = inner.history.iter().rev().take(limit).collect();
+                let _ = out_tx.send(json!({ "type": "history", "entries": entries }).to_string());
+            }
             Some("change") => {
                 let Ok(change) = serde_json::from_value::<Change>(v["change"].clone()) else {
                     let _ = out_tx.send(
@@ -302,21 +318,27 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
             .map(|(k, n)| format!("{k} {n}"))
             .collect::<Vec<_>>()
             .join("・");
+        let job_time = now_ms();
+        let log = LogEntry {
+            rev,
+            time: job_time,
+            author: name.to_string(),
+            change: applied.clone(),
+        };
+        inner.history.push_back(log.clone());
+        if inner.history.len() > HISTORY_KEEP {
+            inner.history.pop_front();
+        }
         let job = Job {
             comments: Store::new(inner.store.sorted().into_iter().cloned().collect()),
             message: format!("{name}: {summary}"),
             author: name.to_string(),
             email: email.to_string(),
-            log: LogEntry {
-                rev,
-                time: now_ms(),
-                author: name.to_string(),
-                change: applied.clone(),
-            },
+            log,
         };
         let _ = hub.writer.send(job);
         let msg =
-            json!({ "type": "change", "rev": rev, "author": name, "change": applied }).to_string();
+            json!({ "type": "change", "rev": rev, "time": job_time, "author": name, "change": applied }).to_string();
         let _ = hub.tx.send((conn, msg.into()));
     }
     json!({ "type": "ack", "id": change.id, "rev": inner.rev, "dup": false, "conflicts": r.conflicts, "fix": fix }).to_string()

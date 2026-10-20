@@ -6,7 +6,7 @@
 use crate::store::{Change, Comment, Store};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -34,7 +34,7 @@ pub struct Workspace {
 }
 
 /// .komenagare/log.jsonl の1行
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub rev: u64,
     pub time: u64,
@@ -131,18 +131,22 @@ impl Workspace {
         Ok(out)
     }
 
-    /// これまでに適用した変更セットの id と、最後の通し番号
-    pub fn load_log(&self) -> Result<(HashSet<String>, u64)> {
-        let (mut ids, mut rev) = (HashSet::new(), 0);
+    /// これまでに適用した変更セットの id、最後の通し番号、最近の記録（古い順に最大 keep 件）
+    pub fn load_log(&self, keep: usize) -> Result<(HashSet<String>, u64, VecDeque<LogEntry>)> {
+        let (mut ids, mut rev, mut recent) = (HashSet::new(), 0, VecDeque::new());
         if let Ok(text) = std::fs::read_to_string(self.dir.join(META_DIR).join(LOG_FILE)) {
             for line in text.lines() {
                 if let Ok(e) = serde_json::from_str::<LogEntry>(line) {
-                    ids.insert(e.change.id);
+                    ids.insert(e.change.id.clone());
                     rev = rev.max(e.rev);
+                    recent.push_back(e);
+                    if recent.len() > keep {
+                        recent.pop_front();
+                    }
                 }
             }
         }
-        Ok((ids, rev))
+        Ok((ids, rev, recent))
     }
 
     pub fn append_log(&self, e: &LogEntry) -> Result<()> {

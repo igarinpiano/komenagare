@@ -5,6 +5,8 @@
 //! フォルダの comments.jsonl を読み込み、Web アプリを配信する。ブラウザから届いた変更は
 //! comments.jsonl に書き込み、git があれば変更ごとにコミットする。
 
+mod files;
+mod render;
 mod server;
 mod store;
 mod web;
@@ -49,7 +51,7 @@ struct Args {
     /// git を使わない（履歴を残さない）
     #[arg(long)]
     no_git: bool,
-    /// コメナガレで保存したファイル（.json / .jsonl）のコメントを取り込んでから始める
+    /// コメナガレで保存したファイル（.json / .jsonl / .csv）のコメントを取り込んでから始める
     #[arg(long, value_name = "FILE")]
     import: Option<PathBuf>,
     /// 起動したらブラウザで開く
@@ -77,6 +79,126 @@ enum Cmd {
         #[arg(long, value_name = "URL", env = "KOMENAGARE_WEB_URL", default_value = web::DEFAULT_URL)]
         web_url: String,
     },
+    /// コメントを動画に焼き込む（ffmpeg が必要）。--ass なら字幕ファイル（ASS）だけを書き出す
+    Render {
+        /// 元の動画
+        video: Option<PathBuf>,
+        /// コメントファイル（.json / .jsonl / .csv）。省略すると今のフォルダの comments.jsonl
+        #[arg(short, long, value_name = "FILE")]
+        comments: Option<PathBuf>,
+        /// 書き出す動画（.mp4 / .mov / .mkv / .webm）。省略すると「元の名前_comments.mp4」
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// 動画ではなく字幕ファイル（ASS）を書き出す。mpv などで動画に重ねて再生できる
+        #[arg(long, value_name = "FILE")]
+        ass: Option<PathBuf>,
+        /// 高さ（ピクセル）。幅は 16:9 になる。省略すると元の動画と同じ（--ass では 1080）
+        #[arg(long)]
+        height: Option<u32>,
+        /// フレームレート。省略すると元の動画と同じ
+        #[arg(long)]
+        fps: Option<f64>,
+        /// 書き出す範囲の始め（例 1:23.45）
+        #[arg(long, value_parser = parse_time_arg)]
+        start: Option<f64>,
+        /// 書き出す範囲の終わり（例 2:00）
+        #[arg(long, value_parser = parse_time_arg)]
+        end: Option<f64>,
+        /// 画質（x264 の CRF。小さいほど高画質）
+        #[arg(long, default_value_t = 20)]
+        crf: u32,
+        /// ゴシック体（defont / gothic）に使うフォント
+        #[arg(long, default_value = "sans-serif")]
+        font: String,
+        /// 明朝体（mincho）に使うフォント
+        #[arg(long, default_value = "serif")]
+        font_serif: String,
+        /// 文字の大きさの補正（省略するとフォントから求める）
+        #[arg(long)]
+        font_scale: Option<f64>,
+    },
+}
+
+fn parse_time_arg(s: &str) -> Result<f64, String> {
+    files::parse_time(s)
+        .filter(|t| *t >= 0.0)
+        .ok_or_else(|| format!("時刻「{s}」を読めません（例 1:23.45）"))
+}
+
+/// komenagare render
+fn run_render(cmd: &Cmd) -> Result<()> {
+    let Cmd::Render {
+        video,
+        comments,
+        output,
+        ass,
+        height,
+        fps,
+        start,
+        end,
+        crf,
+        font,
+        font_serif,
+        font_scale,
+    } = cmd
+    else {
+        unreachable!()
+    };
+    let comments = comments
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(workspace::COMMENTS_FILE));
+    let items = files::read(&comments)?;
+    if let Some(ass_path) = ass {
+        let (w, h) = render::even_size(height.unwrap_or(1080));
+        let opt = render::AssOptions {
+            width: w,
+            height: h,
+            font: font.clone(),
+            font_serif: font_serif.clone(),
+            start: start.unwrap_or(0.0),
+            size_scale: font_scale.unwrap_or_else(|| render::font_scale(font)),
+            size_scale_serif: font_scale.unwrap_or_else(|| render::font_scale(font_serif)),
+        };
+        std::fs::write(ass_path, render::to_ass(&items, &opt))?;
+        println!(
+            "{} 件のコメントを字幕にしました: {}",
+            items.len(),
+            ass_path.display()
+        );
+        return Ok(());
+    }
+    let Some(video) = video else {
+        bail!("元の動画を指定してください（字幕だけなら --ass）")
+    };
+    let output = output.clone().unwrap_or_else(|| {
+        let stem = video.file_stem().unwrap_or_default().to_string_lossy();
+        video.with_file_name(format!("{stem}_comments.mp4"))
+    });
+    if output.canonicalize().ok() == video.canonicalize().ok() && output.exists() {
+        bail!("書き出し先が元の動画と同じです");
+    }
+    println!(
+        "{} 件のコメントを {} に焼き込んでいます…",
+        items.len(),
+        output.display()
+    );
+    render::render(
+        &items,
+        &render::RenderOptions {
+            video: video.clone(),
+            output: output.clone(),
+            height: *height,
+            fps: *fps,
+            start: *start,
+            end: *end,
+            crf: *crf,
+            font: font.clone(),
+            font_serif: font_serif.clone(),
+            font_scale: *font_scale,
+        },
+    )?;
+    println!("書き出しました: {}", output.display());
+    Ok(())
 }
 
 #[tokio::main]
@@ -88,6 +210,9 @@ async fn main() {
 }
 
 async fn run(args: Args) -> Result<()> {
+    if let Some(cmd @ Cmd::Render { .. }) = &args.cmd {
+        return run_render(cmd);
+    }
     if let Some(Cmd::UpdateWeb { web_url }) = &args.cmd {
         let dir = web::cache_dir().context("保存場所（ホームフォルダ）が分かりません")?;
         let url = web_url.clone();
@@ -111,7 +236,7 @@ async fn run(args: Args) -> Result<()> {
     };
     let ws = Workspace::open(&args.dir, git_mode)?;
     let mut store = Store::new(ws.load_comments()?);
-    let (seen, rev) = ws.load_log()?;
+    let (seen, rev, history) = ws.load_log(server::HISTORY_KEEP)?;
 
     if let Some(file) = &args.import {
         let n = import(&ws, &mut store, file)?;
@@ -133,6 +258,7 @@ async fn run(args: Args) -> Result<()> {
         store,
         rev,
         seen,
+        history,
         writer,
         token.clone(),
         match web_source {
@@ -206,41 +332,25 @@ async fn run(args: Args) -> Result<()> {
 
 /// コメナガレの JSON（{ "comments": [...] } または配列）か JSONL を取り込む。既にある id は飛ばす
 fn import(ws: &Workspace, store: &mut Store, file: &Path) -> Result<usize> {
-    let text = std::fs::read_to_string(file)
-        .with_context(|| format!("{} を読めません", file.display()))?;
-    let text = text.trim_start_matches('\u{feff}');
-    let items: Vec<serde_json::Value> = match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(serde_json::Value::Array(a)) => a,
-        Ok(v) if v["comments"].is_array() => v["comments"].as_array().cloned().unwrap_or_default(),
-        _ => text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(serde_json::from_str)
-            .collect::<Result<_, _>>()
-            .context("コメナガレの JSON / JSONL として読めません")?,
-    };
     let mut ops = vec![];
-    for it in items {
-        let Some(t) = it["t"].as_f64() else { continue };
-        let text = it["text"].as_str().unwrap_or_default().to_string();
-        if text.trim().is_empty() {
+    for it in files::read(file)? {
+        if it.text.trim().is_empty() {
             continue;
         }
-        let id = it["id"]
-            .as_str()
+        let id = it
+            .id
             .filter(|s| is_uuid(s))
-            .map(str::to_lowercase)
+            .map(|s| s.to_lowercase())
             .unwrap_or_else(uuid_v7);
         if store.get(&id).is_some() {
             continue;
         }
-        let cmd = it["cmd"].as_str().unwrap_or_default().to_string();
         ops.push(Op::Add {
             id,
             after: Fields {
-                t: Some((t * 100.0).round() / 100.0),
-                cmd: Some(cmd),
-                text: Some(text),
+                t: Some((it.t.max(0.0) * 100.0).round() / 100.0),
+                cmd: Some(it.cmd.split_whitespace().collect::<Vec<_>>().join(" ")),
+                text: Some(it.text.replace("\r\n", "\n").replace('\r', "\n")),
             },
         });
     }
@@ -260,9 +370,13 @@ fn import(ws: &Workspace, store: &mut Store, file: &Path) -> Result<usize> {
         "komenagare@localhost",
         &[("Change-Id", &change.id)],
     )?;
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     ws.append_log(&LogEntry {
         rev: 0,
-        time: 0,
+        time,
         author: "komenagare".into(),
         change: applied,
     })?;
