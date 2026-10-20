@@ -326,12 +326,13 @@
     <p class="muted" style="margin:0">コメントを1行1件のテキスト（<code>01:23.45 ue red | 本文</code>）として Vim のキー操作で編集できます。時刻やコマンドを書き換えて <code>:w</code> で反映、<code>:q</code> で閉じます。<code>:now</code> で再生位置に行を追加、<code>:seek</code> でカーソル行の時刻へ移動。対応キーの一覧はエディタ内で <code>:help</code>。スマホでは画面下のキーバーで Esc や Ctrl を入力できます。</p>
 
     <h4>ファイル形式</h4>
-    <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text</code> の3列。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
+    <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
   </div>
   <div class="dlg-foot"><button id="helpClose" class="primary">閉じる</button></div>
 </dialog>
 
 <script src="js/vim-engine.js"></script>
+<script src="js/comment-store.js"></script>
 <script src="js/comment-render.js"></script>
 <script src="js/export-core.js"></script>
 <script src="js/app.js"></script>

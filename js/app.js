@@ -16,12 +16,13 @@ const settings = Object.assign(
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
 
 /* ---------- 状態 ---------- */
+// コメントの追加・変更・削除はすべて store（js/comment-store.js）の変更セットで行う
+const store = new CommentStore();
 const state = {
-  comments: [], keys: new Set(), deletedKeys: new Set(), layouts: [],
+  get comments(){ return store.comments; }, layouts: [],
   fileHandle: null, fileName: null, dirty: false,
   videoName: null, videoUrl: null, videoLoaded: false, needsDraw: true, needsRelayout: false, version: 0,
 };
-let nextId = 1;
 
 /* =====================================================================
    ユーティリティ
@@ -105,31 +106,47 @@ function parseCmd(cmd){
 /* =====================================================================
    コメントデータ
    ===================================================================== */
-function commentKey(t, cmd, text){ return `${Math.round(t*100)}\u0001${cmd}\u0001${text}`; }
-function makeComment(t, cmd, text, mine = false){
-  t = Math.max(0, Math.round(Number(t) * 100) / 100);
-  cmd = normCmd(cmd);
-  text = String(text ?? '').replace(/\r\n?/g, '\n');
-  return { id: nextId++, t, cmd, text, key: commentKey(t, cmd, text), mine };
+const normFields = (t, cmd, text) => ({
+  t: Math.max(0, Math.round(Number(t) * 100) / 100), cmd: normCmd(cmd), text: String(text ?? '').replace(/\r\n?/g, '\n'),
+});
+// まだ store に入れていないコメント（id はファイルにあればそれを使う）
+function makeComment(t, cmd, text, mine = false, id = null){
+  const f = normFields(t, cmd, text);
+  return { id: isUuid(id) ? id.toLowerCase() : uuidv7(), ...f, key: commentKey(f.t, f.cmd, f.text), mine };
 }
-// 既存コメントの時刻・コマンド・本文を書き換える（同じ内容が既にあれば false）
-function updateComment(c, { t = c.t, cmd = c.cmd, text = c.text }){
-  t = Math.max(0, Math.round(Number(t) * 100) / 100);
-  cmd = normCmd(cmd);
-  text = String(text ?? '').replace(/\r\n?/g, '\n');
-  const key = commentKey(t, cmd, text);
-  if (key !== c.key){
-    if (state.keys.has(key)) return false;
-    state.keys.delete(c.key); state.deletedKeys.add(c.key);
-    state.keys.add(key); state.deletedKeys.delete(key);
+const addOp = (c) => ({ type:'add', id: c.id, after: { t: c.t, cmd: c.cmd, text: c.text }, mine: c.mine });
+const deleteOp = (c) => ({ type:'delete', id: c.id, before: { t: c.t, cmd: c.cmd, text: c.text } });
+// c の時刻・コマンド・本文を変える op（変わらなければ null）
+function updateOp(c, { t = c.t, cmd = c.cmd, text = c.text }){
+  const f = normFields(t, cmd, text), before = {}, after = {};
+  for (const k of COMMENT_FIELDS) if (f[k] !== c[k]){ before[k] = c[k]; after[k] = f[k]; }
+  return Object.keys(after).length ? { type:'update', id: c.id, before, after } : null;
+}
+// まとめて変える op を作る。変更後に他のコメントと時刻・内容がまったく同じになるものは除く
+function updateOps(changes){
+  const count = new Map(store.keyCount), ops = [];
+  const inc = (k, d) => count.set(k, (count.get(k) || 0) + d);
+  for (const { c } of changes) inc(c.key, -1);
+  let failed = 0;
+  for (const ch of changes){
+    const op = updateOp(ch.c, ch);
+    const f = op ? { ...ch.c, ...op.after } : ch.c, key = commentKey(f.t, f.cmd, f.text);
+    if (op && count.get(key) > 0){ failed++; inc(ch.c.key, 1); continue; }
+    inc(key, 1);
+    if (op) ops.push(op);
   }
-  Object.assign(c, { t, cmd, text, key });
-  return true;
+  return { ops, failed };
 }
-function removeComments(list){
-  const set = new Set(list);
-  state.comments = state.comments.filter(c => !set.has(c));
-  for (const c of list){ state.keys.delete(c.key); state.deletedKeys.add(c.key); }
+// 変更セットを store に適用して画面に反映する。undoable なら「元に戻す」の対象にする
+function commitOps(ops, { undoable = true, save = true, atomic = false } = {}){
+  if (!ops.length) return null;
+  const { applied, conflicts } = store.apply({ id: uuidv7(), ops }, { atomic });
+  if (conflicts.length) console.warn('変更の衝突', conflicts);
+  if (!applied) return null;
+  if (undoable) pushUndo(applied);
+  commentsChanged();
+  if (save){ markDirty(); autosave(); }
+  return applied;
 }
 // 表示区間（流れるコメントは vpos の 1 秒前から）
 function spanOf(c){ return spanFromVals(c.t, c.cmd); }
@@ -149,7 +166,6 @@ function setCmdPos(cmd, pos){
   if (pos && pos !== 'naka') toks.unshift(pos);
   return toks.join(' ');
 }
-function cmpComments(a, b){ return a.t - b.t || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0); }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function fmtPrecise(t){
   const cs = Math.round(Math.max(0, t) * 100);
@@ -157,20 +173,27 @@ function fmtPrecise(t){
   const p2 = (n) => String(n).padStart(2, '0');
   return (h ? h + ':' + p2(m) : p2(m)) + ':' + p2(s) + '.' + p2(c);
 }
-function addComments(items, { skipDeleted = false } = {}){
-  let added = 0, dup = 0, skipped = 0;
+// まだ store にないコメントを選び出す（同じ内容は重複として除き、id がかぶれば振り直す）
+function newComments(items, { skipDeleted = false } = {}){
+  let dup = 0, skipped = 0;
+  const out = [], keys = new Set(), ids = new Set();
   for (const c of items){
     if (!c.text.trim()) continue;
-    if (skipDeleted && state.deletedKeys.has(c.key)){ skipped++; continue; }
-    if (state.keys.has(c.key)){ dup++; continue; }
-    state.keys.add(c.key); state.comments.push(c); added++;
+    if (skipDeleted && store.deletedKeys.has(c.key)){ skipped++; continue; }
+    if (store.hasKey(c.key) || keys.has(c.key)){ dup++; continue; }
+    if (store.has(c.id) || ids.has(c.id)) c.id = uuidv7();
+    keys.add(c.key); ids.add(c.id); out.push(c);
   }
-  if (added) commentsChanged();
-  return { added, dup, skipped };
+  return { items: out, dup, skipped };
+}
+function addComments(items, opts = {}){
+  const r = newComments(items, opts);
+  commitOps(r.items.map(addOp), opts);
+  return { added: r.items.length, dup: r.dup, skipped: r.skipped };
 }
 function commentsChanged(){
-  state.comments.sort(cmpComments);
   state.version++;
+  if (TL.sel.size) for (const id of [...TL.sel]) if (!store.has(id)) TL.sel.delete(id);
   relayout();
   renderList();
   drawDensity();
@@ -449,12 +472,8 @@ $('#btnPost').onclick = postComment;
 function postAtCurrentTime(text, cmd){
   if (!state.videoLoaded){ toast('先に動画を開いてください'); return false; }
   const c = makeComment(video.currentTime, cmd, text, true);
-  if (state.keys.has(c.key)){ toast('同じ時刻に同じコメントが既にあります'); return false; }
-  pushUndo();
-  state.deletedKeys.delete(c.key);
-  addComments([c]);
-  markDirty();
-  autosave();
+  if (store.hasKey(c.key)){ toast('同じ時刻に同じコメントが既にあります'); return false; }
+  commitOps([addOp(c)]);
   return true;
 }
 function postComment(){
@@ -700,16 +719,9 @@ function highlightCurrent(t){
   }
 }
 function deleteComment(c){
-  if (!state.comments.includes(c)) return;
-  pushUndo();
-  removeComments([c]);
-  commentsChanged(); markDirty(); autosave();
-  toast('コメントを削除しました', { action:{ label:'元に戻す', fn:() => {
-    if (state.keys.has(c.key)) return;
-    pushUndo();
-    state.deletedKeys.delete(c.key);
-    if (addComments([c]).added){ markDirty(); autosave(); }
-  } } });
+  if (!store.has(c.id)) return;
+  const ch = commitOps([deleteOp(c)]);
+  if (ch) toast('コメントを削除しました', { action:{ label:'元に戻す', fn:() => revertChange(ch) } });
 }
 
 /* =====================================================================
@@ -717,12 +729,12 @@ function deleteComment(c){
    ===================================================================== */
 function csvEsc(s){ return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
 function serialize(fmt){
-  const items = state.comments.map(c => ({ t: c.t, cmd: c.cmd, text: c.text }));
+  const items = state.comments.map(c => ({ t: c.t, cmd: c.cmd, text: c.text, id: c.id }));
   if (fmt === 'csv'){
-    return '\ufeff' + 'time,command,text\r\n' + items.map(c => [c.t.toFixed(2), csvEsc(c.cmd), csvEsc(c.text)].join(',')).join('\r\n') + (items.length ? '\r\n' : '');
+    return '\ufeff' + 'time,command,text,id\r\n' + items.map(c => [c.t.toFixed(2), csvEsc(c.cmd), csvEsc(c.text), c.id].join(',')).join('\r\n') + (items.length ? '\r\n' : '');
   }
   const body = items.length ? '[\n' + items.map(c => '    ' + JSON.stringify(c)).join(',\n') + '\n  ]' : '[]';
-  return `{\n  "format": "komenagare",\n  "version": 1,\n  "comments": ${body}\n}\n`;
+  return `{\n  "format": "komenagare",\n  "version": 2,\n  "comments": ${body}\n}\n`;
 }
 function parseCSV(text){
   const rows = []; let row = [], f = '', q = false;
@@ -767,26 +779,27 @@ function parseCommentText(text, name = ''){
       if (t == null || !isFinite(t)) return null;
       const cmd = it.cmd ?? it.command ?? it.mail ?? (Array.isArray(it.commands) ? it.commands.join(' ') : '');
       const body = it.text ?? it.body ?? it.content ?? '';
-      return makeComment(t, String(cmd), String(body));
+      return makeComment(t, String(cmd), String(body), false, it.uuid ?? it.id);
     }).filter(Boolean);
   }
   // CSV
   const rows = parseCSV(text);
   if (!rows.length) return [];
-  let ti = 0, ci = 1, xi = 2, start = 0;
+  let ti = 0, ci = 1, xi = 2, ii = -1, start = 0;
   if (!isFinite(parseTime(rows[0][0]))){
     const h = rows[0].map(x => x.trim().toLowerCase());
     const find = (names, def) => { const i = h.findIndex(x => names.includes(x)); return i >= 0 ? i : def; };
     ti = find(['time','t','vpos','秒','時間','時刻'], 0);
     ci = find(['command','cmd','mail','commands','コマンド'], 1);
     xi = find(['text','comment','content','body','コメント','本文'], 2);
+    ii = find(['id','uuid'], -1);
     start = 1;
   }
   const out = [];
   for (let i = start; i < rows.length; i++){
     const r = rows[i], t = parseTime(r[ti]);
     if (!isFinite(t)) continue;
-    out.push(makeComment(t, r[ci] ?? '', r[xi] ?? ''));
+    out.push(makeComment(t, r[ci] ?? '', r[xi] ?? '', false, ii >= 0 ? r[ii] : null));
   }
   return out;
 }
@@ -827,7 +840,7 @@ async function writeHandle(h, mergeFirst){
       const f = await h.getFile();
       const txt = await f.text();
       if (txt.trim()){
-        const r = addComments(parseCommentText(txt, f.name), { skipDeleted:true });
+        const r = addComments(parseCommentText(txt, f.name), { skipDeleted:true, undoable:false, save:false });
         if (r.added) toast(`ファイル側にあった新しいコメント ${r.added} 件を取り込みました`);
       }
     } catch (e) { console.warn('re-read failed', e); }
@@ -880,11 +893,13 @@ function loadReplace(text, name, handle){
   let items;
   try { items = parseCommentText(text, name); }
   catch (e) { toast(`${name}: ${e.message}`, { type:'error' }); return; }
-  state.comments = []; state.keys.clear(); state.deletedKeys.clear();
+  store.reset();
   history.undo.length = 0; history.redo.length = 0; updateUndoUI();
   TL.sel.clear();
-  const r = addComments(items);
-  if (!r.added) commentsChanged();
+  const n = newComments(items);
+  store.reset(n.items);
+  commentsChanged();
+  const r = { added: n.items.length, dup: n.dup };
   const editable = handle && /\.(json|csv)$/i.test(name);
   state.fileHandle = editable ? handle : null;
   state.fileName = /\.(json|csv)$/i.test(name) ? name : null;
@@ -894,16 +909,14 @@ function loadReplace(text, name, handle){
   vimReload(true);
 }
 async function mergeFiles(files){
-  let added = 0, dup = 0, skipped = 0, ok = 0;
-  const snap = snapshot();
+  let ok = 0;
+  const items = [];
   for (const f of files){
-    try {
-      const r = addComments(parseCommentText(await f.text(), f.name), { skipDeleted:true });
-      added += r.added; dup += r.dup; skipped += r.skipped; ok++;
-    } catch (e) { toast(`${f.name}: ${e.message}`, { type:'error' }); }
+    try { items.push(...parseCommentText(await f.text(), f.name)); ok++; }
+    catch (e) { toast(`${f.name}: ${e.message}`, { type:'error' }); }
   }
   if (!ok) return;
-  if (added){ pushUndoSnap(snap); markDirty(); autosave(); }
+  const { added, dup, skipped } = addComments(items, { skipDeleted:true });
   let msg = `${ok} ファイルをマージ: ${added} 件追加`;
   if (dup) msg += ` / 重複 ${dup} 件`;
   if (skipped) msg += ` / この作業中に削除したもの ${skipped} 件は除外`;
@@ -1400,37 +1413,41 @@ async function runRealtimeExport(){
 /* =====================================================================
    編集履歴（元に戻す / やり直す）
    ===================================================================== */
+// 変更セットを積む。元に戻すときは打ち消す変更セットを当てる（その後に同じコメントが
+// 別の変更で書き換わっていれば、git の revert と同じく衝突として止める）
 const history = { undo: [], redo: [] };
-function snapshot(){ return state.comments.map(c => ({ ...c })); }
-function pushUndoSnap(snap){
-  history.undo.push(snap);
+function pushUndo(ch){
+  history.undo.push(ch);
   if (history.undo.length > 100) history.undo.shift();
   history.redo.length = 0;
   updateUndoUI();
 }
-function pushUndo(){ pushUndoSnap(snapshot()); }
-function restoreSnapshot(snap){
-  const before = state.keys;
-  state.comments = snap.map(c => ({ ...c }));
-  state.keys = new Set(state.comments.map(c => c.key));
-  // 消えたものはファイル側から復活しないよう削除済みとして扱う
-  for (const k of before) if (!state.keys.has(k)) state.deletedKeys.add(k);
-  for (const k of state.keys) state.deletedKeys.delete(k);
-  const ids = new Set(state.comments.map(c => c.id));
-  for (const id of [...TL.sel]) if (!ids.has(id)) TL.sel.delete(id);
-  commentsChanged(); markDirty(); autosave(); tlSelChanged();
+function applyHistory(ch){
+  const { applied, conflicts } = store.apply(ch, { atomic: true });
+  if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return false; }
+  if (applied){ commentsChanged(); markDirty(); autosave(); tlSelChanged(); }
+  return true;
 }
 function undo(){
   if (!history.undo.length){ toast('これ以上元に戻せません'); return; }
-  history.redo.push(snapshot());
-  restoreSnapshot(history.undo.pop());
+  const ch = history.undo[history.undo.length - 1];
+  if (!applyHistory(invertChange(ch))) return;
+  history.redo.push(history.undo.pop());
   updateUndoUI();
 }
 function redo(){
   if (!history.redo.length){ toast('これ以上やり直せません'); return; }
-  history.undo.push(snapshot());
-  restoreSnapshot(history.redo.pop());
+  const ch = history.redo[history.redo.length - 1];
+  if (!applyHistory({ ...ch, id: uuidv7() })) return;
+  history.undo.push(history.redo.pop());
   updateUndoUI();
+}
+// 特定の変更を打ち消す変更を新しく積む（git revert）
+function revertChange(ch){
+  const { applied, conflicts } = store.apply(invertChange(ch), { atomic: true });
+  if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return null; }
+  if (applied){ pushUndo(applied); commentsChanged(); markDirty(); autosave(); tlSelChanged(); }
+  return applied;
 }
 function updateUndoUI(){
   $('#tlUndo').disabled = !history.undo.length;
@@ -1800,22 +1817,20 @@ function tlShowInfo(c){
 function deleteSelected(){
   const list = tlSelected();
   if (!list.length) return;
-  pushUndo();
-  removeComments(list);
   TL.sel.clear();
-  commentsChanged(); markDirty(); autosave(); tlSelChanged();
-  toast(`${list.length} 件のコメントを削除しました`, { action:{ label:'元に戻す', fn: undo } });
+  const ch = commitOps(list.map(deleteOp));
+  tlSelChanged();
+  if (ch) toast(`${list.length} 件のコメントを削除しました`, { action:{ label:'元に戻す', fn:() => revertChange(ch) } });
 }
 function nudgeSelected(dt){
   const list = tlSelected();
   if (!list.length) return;
   dt = Math.max(dt, -Math.min(...list.map(c => c.t)));
   if (!dt) return;
-  pushUndo();
-  let failed = 0;
-  for (const c of (dt > 0 ? list.slice().reverse() : list)) if (!updateComment(c, { t: c.t + dt })) failed++;
+  const { ops, failed } = updateOps(list.map(c => ({ c, t: c.t + dt })));
   if (failed) toast('同じ時刻・内容のコメントがあるため一部を動かせませんでした');
-  commentsChanged(); markDirty(); autosave(); tlSelChanged();
+  commitOps(ops);
+  tlSelChanged();
 }
 
 /* ---------- ドラッグ編集 ---------- */
@@ -1909,13 +1924,10 @@ function tlDragCommit(d){
   tlDragRestore(d);
   TL.snapT = null;
   if (!changes.length){ relayout(); return; }
-  pushUndo();
-  let failed = 0;
-  // 移動方向の先頭から更新して、移動するもの同士で時刻・内容が重ならないようにする
-  changes.sort((a, b) => (b.t - b.c.t) > 0 ? b.c.t - a.c.t : a.c.t - b.c.t);
-  for (const ch of changes) if (!updateComment(ch.c, { t: ch.t, cmd: ch.cmd })) failed++;
+  const { ops, failed } = updateOps(changes);
   if (failed) toast('同じ時刻・内容のコメントがあるため一部を変更できませんでした');
-  commentsChanged(); markDirty(); autosave(); tlSelChanged();
+  if (!commitOps(ops)) relayout();
+  tlSelChanged();
 }
 function tlCancelDrag(){
   const d = TL.drag;
@@ -2208,22 +2220,15 @@ function edCommit(){
   const cmd = normCmd($('#edCmd').value);
   if (editTarget){
     const c = editTarget;
-    if (!state.comments.includes(c)){ editDlg.close(); return; }
-    const key = commentKey(Math.round(t * 100) / 100, cmd, text);
-    if (key !== c.key){
-      if (state.keys.has(key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
-      pushUndo();
-      updateComment(c, { t, cmd, text });
-      commentsChanged(); markDirty(); autosave();
-    }
+    if (!store.has(c.id)){ editDlg.close(); return; }
+    const { ops, failed } = updateOps([{ c, t, cmd, text }]);
+    if (failed){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+    commitOps(ops);
     TL.sel = new Set([c.id]);
   } else {
     const c = makeComment(t, cmd, text, true);
-    if (state.keys.has(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
-    pushUndo();
-    state.deletedKeys.delete(c.key);
-    addComments([c]);
-    markDirty(); autosave();
+    if (store.hasKey(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+    commitOps([addOp(c)]);
     TL.sel = new Set([c.id]);
     tlEnsureVisible(c);
   }
@@ -2285,14 +2290,9 @@ function vimWrite(text, force){
   }
   const removed = state.comments.filter(c => !seen.has(c.key));
   if (added || removed.length){
-    pushUndo();
-    for (const c of removed) state.deletedKeys.add(c.key);
-    for (const c of next) state.deletedKeys.delete(c.key);
-    state.comments = next;
-    state.keys = new Set(seen);
     vim.writing = true;
-    try { commentsChanged(); } finally { vim.writing = false; }
-    markDirty(); autosave();
+    try { commitOps([...removed.map(deleteOp), ...next.filter(c => !store.has(c.id)).map(addOp)]); }
+    finally { vim.writing = false; }
   }
   vim.synced = state.version;
   return { ok:true, msg:`"コメント" ${next.length}件 反映しました（追加 ${added} / 削除 ${removed.length}${dup ? ` / 重複 ${dup}` : ''}）` };
