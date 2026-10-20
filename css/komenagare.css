@@ -313,15 +313,16 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   body:not([data-mpane="timeline"]) .timeline{display:none}
   .time{white-space:nowrap}
 }
-/* 横向きのスマホ：左に動画、右にタイムライン等（LumaFusion 風） */
-@media (max-width: 980px) and (orientation: landscape) and (max-height: 540px){
-  body{display:grid;grid-template-columns:minmax(0,44%) minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);overflow:hidden}
-  .topbar{grid-column:1 / -1}
-  .player-col{grid-column:1;grid-row:2 / 4;overflow-y:auto;padding:6px 0 6px 6px}
-  .player{max-width:100%;align-self:stretch}
-  .mtabs{grid-column:2;grid-row:2;padding:6px 6px 0}
-  .mtab{padding:5px 4px}
-  .side,.timeline{grid-column:2;grid-row:3;min-height:0;margin:6px}
-  .timeline{margin:4px 0 0}
-  .side{margin:6px}
+/* 横向きのスマホ：左に動画、右にタイムライン等（LumaFusion 風）。
+   キーボードが出ると表示領域が横長になるので、CSS の orientation ではなく端末の向きで決める（js/app.js の applyPhoneLandscape） */
+@media (max-width: 980px){
+  html.phone-landscape body{display:grid;grid-template-columns:minmax(0,44%) minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);overflow:hidden}
+  html.phone-landscape .topbar{grid-column:1 / -1}
+  html.phone-landscape .player-col{grid-column:1;grid-row:2 / 4;overflow-y:auto;padding:6px 0 6px 6px}
+  html.phone-landscape .player{max-width:100%;align-self:stretch}
+  html.phone-landscape .mtabs{grid-column:2;grid-row:2;padding:6px 6px 0}
+  html.phone-landscape .mtab{padding:5px 4px}
+  html.phone-landscape .side,html.phone-landscape .timeline{grid-column:2;grid-row:3;min-height:0;margin:6px}
+  html.phone-landscape .timeline{margin:4px 0 0}
+  html.phone-landscape .side{margin:6px}
 }

@@ -2741,6 +2741,18 @@ $('#vim').addEventListener('pointerdown', (e) => { if (e.target === vimEl) vimIn
    パネル切り替え（PC: サイドのタブ / スマホ: 下部のタブ）
    ===================================================================== */
 const mq = matchMedia('(max-width: 980px)');
+// 横向きのスマホか。縦持ちでもキーボードが出ると表示領域が横長になるので、表示領域ではなく端末の向きと画面の大きさで決める
+function applyPhoneLandscape(){
+  const o = screen.orientation?.type;
+  const land = o ? o.startsWith('landscape')
+    : typeof window.orientation === 'number' ? Math.abs(window.orientation) === 90
+    : innerWidth > innerHeight;
+  document.documentElement.classList.toggle('phone-landscape', land && Math.min(screen.width, screen.height) <= 540);
+}
+applyPhoneLandscape();
+screen.orientation?.addEventListener('change', applyPhoneLandscape);
+window.addEventListener('orientationchange', applyPhoneLandscape);
+window.addEventListener('resize', applyPhoneLandscape);
 function applyLayoutVars(){
   const root = document.documentElement.style;
   root.setProperty('--tl-h', settings.tlHeight + 'px');
