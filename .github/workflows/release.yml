@@ -1,0 +1,66 @@
+# v0.1.0 のようなタグを push すると、各 OS 向けにビルドしてリリースに載せる（install.sh がここから取る）
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: タグと Cargo.toml のバージョンが同じか確かめる
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' cli/Cargo.toml | cut -d '"' -f 2)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "タグ $GITHUB_REF_NAME と cli/Cargo.toml の version $v が違います"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: ビルド
+        shell: bash
+        run: |
+          # musl 向けは C の部分（rustls が使う ring）を musl-gcc でビルドする
+          if [[ "${{ matrix.target }}" == *linux-musl ]]; then export "CC_${MT//-/_}=musl-gcc"; fi
+          cargo build --release --locked --manifest-path cli/Cargo.toml --target ${{ matrix.target }}
+        env:
+          MT: ${{ matrix.target }}
+      - name: まとめる
+        shell: bash
+        run: |
+          name=komenagare-${{ matrix.target }}
+          mkdir dist
+          cp cli/target/${{ matrix.target }}/release/komenagare LICENSE README.md dist/
+          tar -czf $name.tar.gz -C dist .
+          if command -v sha256sum >/dev/null; then sha256sum $name.tar.gz > $name.tar.gz.sha256; else shasum -a 256 $name.tar.gz > $name.tar.gz.sha256; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: komenagare-${{ matrix.target }}
+          path: komenagare-${{ matrix.target }}.tar.gz*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: リリースを作る
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

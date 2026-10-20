@@ -83,29 +83,16 @@ class CommentStore {
      戻り値: { applied: 実際に適用した op だけの変更セット（何も変わらなければ null）, conflicts } */
   apply(change, { atomic = false } = {}){
     const conflicts = [], plan = [];
+    // 同じ変更セットの中で前の op が変えたものを後の op から見えるようにする（まだ本体には入れない）
+    const view = new Map();
+    const look = (id) => view.has(id) ? view.get(id) : this.byId.get(id);
     for (const op of change.ops){
-      const cur = this.byId.get(op.id);
-      if (op.type === 'add'){
-        if (!cur){ plan.push(op); continue; }
-        const diff = COMMENT_FIELDS.filter(f => cur[f] !== op.after[f]);
-        if (diff.length) conflicts.push({ op, reason: 'exists', fields: diff, ours: pickFields(cur), theirs: { ...op.after } });
-      } else if (op.type === 'delete'){
-        if (!cur) continue; // もう削除されている
-        const diff = COMMENT_FIELDS.filter(f => f in op.before && cur[f] !== op.before[f]);
-        if (diff.length) conflicts.push({ op, reason: 'modified', fields: diff, ours: pickFields(cur), base: { ...op.before } });
-        else plan.push({ ...op, before: pickFields(cur), mine: cur.mine });
-      } else if (op.type === 'update'){
-        if (!cur){ conflicts.push({ op, reason: 'deleted', fields: Object.keys(op.after) }); continue; }
-        const after = {}, bad = [];
-        for (const f of Object.keys(op.after)){
-          if (!COMMENT_FIELDS.includes(f)) continue;
-          if (cur[f] === op.after[f]) continue;
-          if (!(f in op.before) || cur[f] === op.before[f]) after[f] = op.after[f];
-          else bad.push(f);
-        }
-        if (bad.length) conflicts.push({ op, reason: 'modified', fields: bad, ours: pickFields(cur, bad), base: pickFields(op.before, bad), theirs: pickFields(op.after, bad) });
-        if (Object.keys(after).length) plan.push({ type: 'update', id: op.id, before: pickFields(cur, Object.keys(after)), after });
-      } else throw new Error('unknown op: ' + op.type);
+      const cur = look(op.id), planned = plan.length;
+      this._plan(op, cur, plan, conflicts);
+      if (plan.length > planned){
+        const p = plan[planned];
+        view.set(op.id, p.type === 'delete' ? undefined : { ...(cur || {}), ...p.after });
+      }
     }
     if ((atomic && conflicts.length) || !plan.length) return { applied: null, conflicts };
     for (const op of plan){
@@ -119,6 +106,31 @@ class CommentStore {
     this.log.push(applied);
     if (this.log.length > 5000) this.log.splice(0, this.log.length - 5000);
     return { applied, conflicts };
+  }
+
+  // 1つの op を今の値（cur）と比べ、適用するものは plan に、衝突は conflicts に入れる
+  _plan(op, cur, plan, conflicts){
+    if (op.type === 'add'){
+      if (!cur){ plan.push(op); return; }
+      const diff = COMMENT_FIELDS.filter(f => cur[f] !== op.after[f]);
+      if (diff.length) conflicts.push({ op, reason: 'exists', fields: diff, ours: pickFields(cur), theirs: { ...op.after } });
+    } else if (op.type === 'delete'){
+      if (!cur) return; // もう削除されている
+      const diff = COMMENT_FIELDS.filter(f => f in op.before && cur[f] !== op.before[f]);
+      if (diff.length) conflicts.push({ op, reason: 'modified', fields: diff, ours: pickFields(cur), base: { ...op.before } });
+      else plan.push({ ...op, before: pickFields(cur), mine: cur.mine });
+    } else if (op.type === 'update'){
+      if (!cur){ conflicts.push({ op, reason: 'deleted', fields: Object.keys(op.after) }); return; }
+      const after = {}, bad = [];
+      for (const f of Object.keys(op.after)){
+        if (!COMMENT_FIELDS.includes(f)) continue;
+        if (cur[f] === op.after[f]) continue;
+        if (!(f in op.before) || cur[f] === op.before[f]) after[f] = op.after[f];
+        else bad.push(f);
+      }
+      if (bad.length) conflicts.push({ op, reason: 'modified', fields: bad, ours: pickFields(cur, bad), base: pickFields(op.before, bad), theirs: pickFields(op.after, bad) });
+      if (Object.keys(after).length) plan.push({ type: 'update', id: op.id, before: pickFields(cur, Object.keys(after)), after });
+    } else throw new Error('unknown op: ' + op.type);
   }
 
   _insert(id, f, mine = false){

@@ -109,3 +109,16 @@ test('同じ id で内容が違うものを追加すると衝突、同じ内容�
   assert.equal(s.apply(change(add('a', 1, 'x'))).conflicts.length, 0);
   assert.equal(s.apply(change(add('a', 1, 'z'))).conflicts[0].reason, 'exists');
 });
+
+test('同じ変更セットの中で同じコメントを続けて操作できる', () => {
+  const s = new CommentStore();
+  const r = s.apply(change(add('a', 1, 'x'), { type: 'update', id: 'a', before: { t: 1 }, after: { t: 2 } }));
+  assert.equal(r.conflicts.length, 0);
+  assert.deepEqual(fields(s, 'a'), { t: 2, cmd: '', text: 'x' });
+  const r2 = s.apply(change({ type: 'update', id: 'a', before: { text: 'x' }, after: { text: 'y' } }, { type: 'delete', id: 'a', before: { t: 2, cmd: '', text: 'y' } }));
+  assert.equal(r2.conflicts.length, 0);
+  assert.ok(!s.has('a'));
+  // 打ち消すと元に戻る
+  s.apply(invertChange(r2.applied), { atomic: true });
+  assert.deepEqual(fields(s, 'a'), { t: 2, cmd: '', text: 'x' });
+});

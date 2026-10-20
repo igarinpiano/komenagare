@@ -22,6 +22,9 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .status{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 .status .dirty{color:var(--accent2)}
 .status .clean{color:var(--ok)}
+.collab{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid #3a3a3a;background:#1d1d1d;white-space:nowrap}
+.collab.on{color:#7ee2a8;border-color:#2e6b48}
+.collab.off{color:#ffb35c;border-color:#7a5420}
 
 /* ---------- layout ---------- */
 .layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 370px;grid-template-rows:minmax(0,1fr);gap:12px;padding:12px}
@@ -264,7 +267,8 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   .tb-group{flex-wrap:nowrap}
   .brand{white-space:nowrap;font-size:15px}
   .topbar button{padding:5px 8px;font-size:13px}
-  .status,.desk-only{display:none}
+  .desk-only,#videoStatus,#fileStatus{display:none}
+  .status{margin-left:6px;flex:none}
   .layout{display:contents}
   .player-col{flex:none;padding:8px 8px 0;overflow:visible}
   .player{flex:none;align-self:center;max-width:min(100%, calc(32vh * 16 / 9));min-width:0}
