@@ -8,9 +8,10 @@ const list = $('#list'), textInput = $('#textInput'), cmdInput = $('#cmdInput');
 const hasFS = typeof window.showOpenFilePicker === 'function' && typeof window.showSaveFilePicker === 'function';
 
 /* ---------- 設定 ---------- */
+const SIDE_W = 400; // 右のパネルの既定の幅（ドラッグで変えられる）
 const settings = Object.assign(
   { show:true, opacity:1, pauseOnInput:false, mineBorder:true, autosave:true, saveFormat:'json', volume:1, muted:false,
-    timeline:true, tlHeight:270, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000' },
+    timeline:true, tlHeight:270, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000' },
   (() => { try { return JSON.parse(localStorage.getItem('komenagare.settings') || '{}'); } catch { return {}; } })()
 );
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
@@ -2180,6 +2181,29 @@ $('#tlZoom').oninput = (e) => {
   const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
   h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
 })();
+// 右のパネルの幅：左端をドラッグして変える（ダブルクリックで元に戻す）
+(() => {
+  const h = $('#sideResize');
+  let st = null;
+  // 動画の列に 400px 残す（css/komenagare.css の .layout と同じ）
+  const maxW = () => {
+    const l = $('#layout'), cs = getComputedStyle(l);
+    return Math.max(300, l.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - parseFloat(cs.columnGap) - 400);
+  };
+  h.addEventListener('pointerdown', (e) => {
+    // 今の見た目の幅から始める（画面が狭くて縮んでいるときも飛ばないように）
+    st = { x: e.clientX, w: $('#side').getBoundingClientRect().width };
+    h.setPointerCapture(e.pointerId); h.classList.add('on');
+  });
+  h.addEventListener('pointermove', (e) => {
+    if (!st) return;
+    settings.sideWidth = Math.round(clamp(st.w - (e.clientX - st.x), 300, maxW()));
+    applyLayoutVars();
+  });
+  const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
+  h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
+  h.addEventListener('dblclick', () => { settings.sideWidth = SIDE_W; applyLayoutVars(); saveSettings(); });
+})();
 
 /* =====================================================================
    コメント編集ダイアログ
@@ -2745,6 +2769,7 @@ function applyLayoutVars(){
   const root = document.documentElement.style;
   root.setProperty('--tl-h', settings.tlHeight + 'px');
   root.setProperty('--tl-space', (!mq.matches && settings.timeline) ? settings.tlHeight + 'px' : '0px');
+  root.setProperty('--side-w', settings.sideWidth + 'px');
 }
 function applyPanes(){
   const mobile = mq.matches;
@@ -2754,7 +2779,6 @@ function applyPanes(){
   $('#paneHistory').hidden = pane !== 'history';
   document.body.dataset.mpane = settings.mobilePane;
   document.body.classList.toggle('tl-off', !settings.timeline);
-  $('#layout').classList.toggle('wide-side', !mobile && pane === 'vim');
   $('#btnTimeline').classList.toggle('on', settings.timeline);
   for (const b of document.querySelectorAll('.stab')) b.classList.toggle('on', b.dataset.pane === settings.sidePane);
   for (const b of document.querySelectorAll('.mtab')) b.classList.toggle('on', b.dataset.mpane === settings.mobilePane);
@@ -2776,7 +2800,8 @@ for (const b of document.querySelectorAll('.mtab')) b.onclick = () => {
 };
 $('#btnTimeline').onclick = () => { settings.timeline = !settings.timeline; saveSettings(); applyPanes(); };
 mq.addEventListener('change', applyPanes);
-window.addEventListener('resize', () => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender(); });
+// ウィンドウや右のパネルの幅が変わったら描き直す
+new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender(); }).observe($('#vimScreen'));
 
 /* =====================================================================
    共同編集（komenagare CLI から配信されているとき）
