@@ -39,9 +39,9 @@ irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | 
 ### 更新
 
 ```sh
-komenagare self-update            # 最新版に更新する
-komenagare self-update --check    # 更新があるかを確かめるだけ
-komenagare self-update --version v0.1.0   # 指定した版にする（前の版に戻すときにも）
+komenagare update            # 最新版に更新する
+komenagare update --check    # 更新があるかを確かめるだけ
+komenagare update --version v0.1.0   # 指定した版にする（前の版に戻すときにも）
 ```
 
 ホストを起動したときにも新しい版があるかを確かめ、あれば知らせます（`--no-update` で確かめない）。
@@ -63,7 +63,7 @@ komenagare --import comments.json   # 保存済みのコメントを取り込ん
 - ホストとの接続が切れても編集を続けられます。変更はブラウザに保存され、つながり直したときに送られます。
 - 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
-  取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare self-update` を促します。
+  取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
 
 ### コメントを動画に焼き込む（komenagare render）
 

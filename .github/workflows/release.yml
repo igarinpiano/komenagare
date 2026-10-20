@@ -1,5 +1,5 @@
 # cli/Cargo.toml の version のリリースを作る。各 OS 向けにビルドしてリリースに載せる
-# （install.sh / install.ps1 と komenagare self-update がここから取る。ファイル名は cli/src/update.rs と合わせる）
+# （install.sh / install.ps1 と komenagare update がここから取る。ファイル名は cli/src/update.rs と合わせる）
 #
 # 起動のしかた（どちらでもよい）
 #   - Actions の画面（または API）から main で手動実行する。タグ（v0.1.1 など）はこのワークフローが作る

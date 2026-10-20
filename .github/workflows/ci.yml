@@ -38,7 +38,7 @@ jobs:
         with:
           workspaces: cli
       - run: cargo test --locked --manifest-path cli/Cargo.toml
-      - name: install.ps1 と self-update を手元のミラーで確かめる
+      - name: install.ps1 と komenagare update を手元のミラーで確かめる
         shell: pwsh
         run: |
           cargo build --locked --manifest-path cli/Cargo.toml
@@ -66,8 +66,8 @@ jobs:
             & $exe --version
             # 同じ版を入れ直して、実行中の exe の置き換えを確かめる
             $env:KOMENAGARE_RELEASES_URL = 'http://127.0.0.1:8799/releases'
-            & $exe self-update --version $v
-            if ($LASTEXITCODE) { throw 'self-update が失敗しました' }
+            & $exe update --version $v
+            if ($LASTEXITCODE) { throw 'komenagare update が失敗しました' }
             if (-not (Test-Path "$exe.old")) { throw '置き換えた古い exe がありません' }
             & $exe --version
             if (Test-Path "$exe.old") { throw '古い exe が次の起動で消えていません' }

@@ -20,7 +20,7 @@
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）
-  - `update.rs` — `komenagare self-update`（GitHub のリリースから配布物を取って、チェックサムを確かめて実行ファイルを置き換える）と、起動時の新しい版のお知らせ。配布物の名前は `release.yml` と合わせる
+  - `update.rs` — `komenagare update`（GitHub のリリースから配布物を取って、チェックサムを確かめて実行ファイルを置き換える）と、起動時の新しい版のお知らせ。配布物の名前は `release.yml` と合わせる
 - `web.json` — CLI が取ってくる Web アプリのファイル一覧と、ホストとのやりとりの取り決めの版数（protocol）
 - `install.sh` — `curl … | sh` 用のインストーラー（Linux / macOS。GitHub リリースから取る）
 - `install.ps1` — `irm … | iex` 用のインストーラー（Windows。raw.githubusercontent.com から配る。UTF-8・BOM なしのまま保つ）
@@ -44,7 +44,7 @@
 ## テスト
 
 - `node --test 'tests/*.test.js'` — Vim エンジンとコメントストアのテスト
-- `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）。CI は Windows でも動かし、install.ps1 と self-update を手元のミラーで確かめる
+- `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）。CI は Windows でも動かし、install.ps1 と komenagare update を手元のミラーで確かめる
 - 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる
 - 画面と書き出しは Chromium（Playwright）で、http 配信（`npx http-server -p 8124 -s -c-1 .`）と `file://` の両方で確かめる
 
@@ -54,4 +54,4 @@
 （Actions の画面、または GitHub API の workflow_dispatch）。ワークフローが同じ番号のタグ（`v0.1.1` など）を作り、
 Linux（x86_64 / aarch64、musl の静的リンク）、macOS（x86_64 / aarch64）、Windows（x86_64、MSVC・ランタイムも静的リンク）向けにビルドしてリリースに載せる。
 タグを自分で push しても同じように動く。途中で失敗したら、同じ main のまま手動実行し直せば続きから作る。
-利用者は `komenagare self-update` で更新する。
+利用者は `komenagare update` で更新する。
