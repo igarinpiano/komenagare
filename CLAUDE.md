@@ -17,7 +17,7 @@
 - `cli/` — `komenagare` コマンド（Rust）。Web アプリを内蔵して配信し、WebSocket で変更を受け渡す
   - `build.rs` — 配布物の種類（ターゲット）を埋め込む（`komenagare update` が同じ種類を取る）
   - `store.rs` — `js/comment-store.js` と同じ規則の変更セット適用（両方を同じに保つこと）
-  - `workspace.rs` — `comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット
+  - `workspace.rs` — 作業フォルダ（`komenagare init` で作る。`.komenagare/id` があるものだけを `komenagare` で開く）、`comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット
   - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）と WebSocket の取り決め（ファイル冒頭に記載）
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み

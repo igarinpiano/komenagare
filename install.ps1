@@ -103,6 +103,6 @@
     Write-Host '      https://git-scm.com/downloads からインストールしてください（winget install Git.Git でも入ります）。'
   }
   Write-Host ''
-  Write-Host '使い方: 作業用のフォルダで komenagare を実行し、表示された URL をブラウザで開きます（komenagare --help で一覧）'
+  Write-Host '使い方: 作業用のフォルダで komenagare init を実行してから komenagare で始め、表示された URL をブラウザで開きます（komenagare --help で一覧）'
   Write-Host '更新: komenagare update'
 }
