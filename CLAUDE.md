@@ -38,6 +38,9 @@
 - コメントの id は UUID v7。ファイル（JSON / CSV）に保存し、読み込み時に引き継ぐ。
 - 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
   ホストで衝突した自分の変更は `collab.conflicts` に控え、衝突の解決画面（`#conflictDlg`）で選ばせる。
+  「あとで」にした衝突はホストに預け（`conflict_add`。ホストは `.komenagare/conflicts.json` に残す）、全員の `collab.shared` に出して誰でも解決できるようにする。
+- 再生位置・選択・タイムラインの表示範囲・カーソルは `presence` メッセージで配り合う（`presenceDirty` で送る。ホストは中継するだけで保存しない）。
+  参加者一覧（`#peersDlg`）から「追いかける」と `followApply` で相手に合わせ、自分で操作したらやめる。
 - 変更履歴は、ひとりのときは `state.changeLog`（`recordChange`）、共同編集のときはホストの記録（`history` メッセージ）を出す。
 - `css/`・`js/`・`lib/` にファイルを足したら `web.json` の files にも足す（`cargo test` が確かめる）。
 - WebSocket のやりとり（メッセージの形や意味）を変えるときは、取り決めの版数を上げる: `web.json` の protocol、`js/app.js` の `COLLAB_PROTOCOL`、`cli/src/server.rs` の `PROTOCOL` をそろえて上げ、CLI もリリースする。

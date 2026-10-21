@@ -13,6 +13,8 @@ use std::process::Command;
 pub const COMMENTS_FILE: &str = "comments.jsonl";
 const META_DIR: &str = ".komenagare";
 const LOG_FILE: &str = "log.jsonl";
+/// 「あとで」にした衝突（全員に見せる。解決するまで残す）
+const CONFLICTS_FILE: &str = "conflicts.json";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GitMode {
@@ -200,6 +202,18 @@ impl Workspace {
             }
         }
         Ok((ids, rev, recent))
+    }
+
+    /// 保留中の衝突（読めなければ空）
+    pub fn load_conflicts(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.conflicts_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn conflicts_path(&self) -> PathBuf {
+        self.dir.join(META_DIR).join(CONFLICTS_FILE)
     }
 
     pub fn append_log(&self, e: &LogEntry) -> Result<()> {

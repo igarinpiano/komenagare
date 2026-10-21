@@ -296,6 +296,7 @@ async fn run(args: Args) -> Result<()> {
     let dir = ws.dir.clone();
     let workspace_id = ws.id.clone();
     let git = ws.git;
+    let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
     let (writer, writer_thread) = server::spawn_writer(ws);
     let count = store.len();
     let hub = server::Hub::new(
@@ -310,6 +311,8 @@ async fn run(args: Args) -> Result<()> {
             web::Source::Bundled => None,
         },
         workspace_id,
+        conflicts,
+        conflicts_file,
     );
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)

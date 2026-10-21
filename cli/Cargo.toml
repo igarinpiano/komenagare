@@ -1,6 +1,6 @@
 [package]
 name = "komenagare"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "コメナガレ（komenagare）を複数人で編集するためのホスト"
 license = "Apache-2.0"
