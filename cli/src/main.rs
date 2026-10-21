@@ -6,6 +6,7 @@
 //! comments.jsonl に書き込み、git があれば変更ごとにコミットする。
 
 mod files;
+mod firewall;
 mod render;
 mod server;
 mod store;
@@ -361,6 +362,14 @@ async fn run(args: Args) -> Result<()> {
     println!("  終了: Ctrl+C");
     if args.open {
         open_browser(&local);
+    }
+    // ほかの機械からつながるか（macOS のファイアウォールで止められていないか）を確かめる
+    if let Some(ip) = if addr.ip().is_unspecified() {
+        lan_ip()
+    } else {
+        Some(addr.ip())
+    } {
+        firewall::check_in_background(ip, addr.port());
     }
 
     let stop = hub.shutdown.clone();
