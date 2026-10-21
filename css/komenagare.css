@@ -69,6 +69,24 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .peer-info{flex:1;min-width:0}
 .peer-name{font-weight:600;word-break:break-all}
 .peer-state{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* プロジェクト・ログイン・招待 */
+.collab.proj{color:#cfe3ff;border-color:#35507a;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.proj-row,.auth-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid #2c2c2c}
+.proj-row:first-child{border-top:0}
+.proj-row.on{background:#1d3150;border-radius:6px}
+.proj-info{flex:1;min-width:0}
+.proj-name{font-weight:600;word-break:break-all}
+.proj-peers{font-size:12px;color:var(--muted);word-break:break-all}
+a.btn{display:inline-block;background:var(--panel2);border:1px solid #3a3a3a;border-radius:6px;padding:6px 10px;color:inherit;text-decoration:none;white-space:nowrap}
+a.btn:hover{background:#313131}
+.login-code{width:100%;font-size:20px;letter-spacing:.12em;padding:8px 10px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.login-err{color:#ff9b9b;min-height:1.2em;margin:8px 0 0;font-size:13px}
+.auth-result{margin:12px 0;padding:12px;border:1px solid #2e6b48;border-radius:8px;background:#14241b}
+.auth-code{font:600 26px/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;user-select:all}
+.auth-link{display:flex;gap:6px;margin-top:8px}
+.auth-link input{flex:1;min-width:0}
+#authLists h4{margin:14px 0 4px;font-size:13px}
+.auth-row .auth-name{flex:1;min-width:0;word-break:break-all}
 
 /* ---------- layout ---------- */
 .layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) min(var(--side-w,400px), max(300px, calc(100% - 412px)));grid-template-rows:minmax(0,1fr);gap:12px;padding:12px}

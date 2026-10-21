@@ -67,6 +67,7 @@ komenagare init                 # 作業フォルダにする（最初に1回。
 komenagare                      # 始める（この PC だけで使う）
 komenagare --host 0.0.0.0       # 同じネットワークの人と共有する
 komenagare --import comments.json   # 保存済みのコメントを取り込んでから始める
+komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フォルダ）をまとめて共有する
 ```
 
 作業フォルダ以外で `komenagare` を実行しても何も作らず、`komenagare init` を案内します。
@@ -78,9 +79,50 @@ komenagare --import comments.json   # 保存済みのコメントを取り込ん
   反映されなかった側には「衝突」の知らせが出て、自分の変更にする・相手のままにする・両方残すを選べます。
 - 「変更履歴」タブで、誰がいつ何を変えたかを見られます。どの変更も「取り消す」で打ち消せます（git revert と同じ）。
 - ホストとの接続が切れても編集を続けられます。変更はブラウザに保存され、つながり直したときに送られます。
-- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）。一覧は `komenagare --help`。
+- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
   取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
+
+### 複数のプロジェクト
+
+1フォルダ1プロジェクトのまま、作業フォルダを複数渡すと1つのホストでまとめて共有できます（`komenagare ~/projects/*` でも可）。
+画面右上の「📁」からプロジェクトの一覧を開き、このタブのまま切り替える（読み込んだ動画はそのまま）か、新しいタブで開けます。
+一覧には、それぞれのプロジェクトに今いる人も出ます。同じプロジェクトや別のプロジェクトを複数のタブで並べて作業しても、変更・衝突はタブごとに正しく扱われます。
+
+### ワンタイムパスワード（--otp）
+
+`--otp` を付けると、合言葉（`?k=`）の代わりに参加者ごとのワンタイムパスワードで入るようになります。
+1回使うとそのブラウザがその人の名前でログインした状態になり（名前は自分で変えられません。git の作者にもなります）、取り消すとすぐに切れます。
+
+```sh
+komenagare --otp --host 0.0.0.0                 # 起動すると、管理者として入る URL（1回だけ使える）が出る
+komenagare otp new 山田                          # 英数字 10 文字（既定の期限 7 日）
+komenagare otp new 佐藤 --numeric --expires 30m  # 数字 6 桁（既定の期限 10 分）
+komenagare otp new 鈴木 --admin --url https://komenagare.example.com   # 管理者にする・そのまま開けるリンクも出す
+komenagare otp list                              # ログイン中の人と未使用のワンタイムパスワード
+komenagare otp revoke 山田                       # 取り消す（つながっていれば切れる）
+```
+
+管理者は画面の「📁」→「招待・ログインの管理」からも発行・取り消しができます。
+記録は `~/.config/komenagare/auth`（macOS は `~/Library/Application Support/komenagare/auth`、Windows は `%APPDATA%\komenagare\auth`）に置きます（`--auth-dir` で変更可。`komenagare otp` にも同じものを指定）。
+
+### サーバーで動かす（ローカルネットワークの外から使う）
+
+komenagare 自体は HTTPS を持たないので、前に HTTPS のリバースプロキシを置きます（WebSocket もそのまま通ります）。たとえば Caddy なら:
+
+```
+komenagare.example.com {
+  reverse_proxy 127.0.0.1:8764
+}
+```
+
+```sh
+komenagare /srv/komenagare/* --otp --no-update   # 127.0.0.1 で待ち受けたまま、プロキシ経由で公開する
+```
+
+systemd などで常駐させる場合も、止めるとき（SIGTERM）は書き込み中の変更を保存してから終わります。
+動画はサーバーから配らないので、今まで通り各自が手元の動画を開きます。
+自分たちだけで使うなら、Tailscale などの仲間内ネットワークでつなぐのも手軽です。
 
 ### コメントを動画に焼き込む（komenagare render）
 

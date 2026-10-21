@@ -18,7 +18,8 @@
   - `build.rs` — 配布物の種類（ターゲット）を埋め込む（`komenagare update` が同じ種類を取る）
   - `store.rs` — `js/comment-store.js` と同じ規則の変更セット適用（両方を同じに保つこと）
   - `workspace.rs` — 作業フォルダ（`komenagare init` で作る。`.komenagare/id` があるものだけを `komenagare` で開く）、`comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット
-  - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）と WebSocket の取り決め（ファイル冒頭に記載）
+  - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）、HTTP の API、WebSocket の取り決め（ファイル冒頭に記載）。1つのホストで複数のプロジェクト（作業フォルダ）を共有する（`/ws?p=<作業フォルダの id>`）
+  - `auth.rs` — 参加者ごとのワンタイムパスワード（`--otp`、`komenagare otp`）。1件1ファイルで置き、動いているホストと `komenagare otp` が同時に書いても壊れないようにする
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `firewall.rs` — macOS のファイアウォールの検出と許可（LAN で待ち受けたら自分の LAN のアドレスにつないでみて、切られたら許可するコマンドを y/N で実行する。socketfilterfw の出力の文言には頼らない）
@@ -40,6 +41,9 @@
 - 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
   ホストで衝突した自分の変更は `collab.conflicts` に控え、衝突の解決画面（`#conflictDlg`）で選ばせる。
   「あとで」にした衝突はホストに預け（`conflict_add`。ホストは `.komenagare/conflicts.json` に残す）、全員の `collab.shared` に出して誰でも解決できるようにする。
+- 1つのホストに複数のプロジェクトがあるときは、ページの `?p=` で選ぶ（`collabOpen` / `collabClose` でタブのまま切り替える。控えの IndexedDB はプロジェクトごと）。
+  同じプロジェクトを複数のタブで開けるよう、衝突の控えはタブごと（`collab.owner`）に置き、閉じたタブの分は次に開いたタブが引き継ぐ。
+- `--otp` のときは `collab.session`（localStorage の `komenagare.session`）で入り、名前はホストが決める。
 - 再生位置・選択・タイムラインの表示範囲・カーソルは `presence` メッセージで配り合う（`presenceDirty` で送る。ホストは中継するだけで保存しない）。
   参加者一覧（`#peersDlg`）から「追いかける」と `followApply` で相手に合わせ、自分で操作したらやめる。
 - 変更履歴は、ひとりのときは `state.changeLog`（`recordChange`）、共同編集のときはホストの記録（`history` メッセージ）を出す。
@@ -52,7 +56,7 @@
 
 - `node --test 'tests/*.test.js'` — Vim エンジンとコメントストアのテスト
 - `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）。CI は Windows でも動かし、install.ps1 と komenagare update を手元のミラーで確かめる
-- 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる
+- 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる（複数プロジェクト・複数タブ・`--otp` も）
 - 画面と書き出しは Chromium（Playwright）で、http 配信（`npx http-server -p 8124 -s -c-1 .`）と `file://` の両方で確かめる
 
 ## リリース

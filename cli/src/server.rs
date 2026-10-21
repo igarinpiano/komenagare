@@ -1,31 +1,50 @@
 //! Web アプリの配信と、WebSocket での変更のやりとり。
 //!
-//! クライアント → サーバー
-//!   {"type":"hello","protocol":3,"name":"表示名","client":"ブラウザごとの id"}
+//! 1つのホストで複数のプロジェクト（作業フォルダ）を共有できる。プロジェクトは /ws?p=<id> で選ぶ
+//! （プロジェクトが1つなら省略できる）。プロジェクトごとに参加者・変更・衝突は別々。
+//!
+//! 入り方（どれか1つ）
+//!   合言葉: URL の k=（/ws?k=…、/api/…?k=…）
+//!   ワンタイムパスワード（--otp）: POST /api/login でセッションの鍵をもらい、hello の session と
+//!     /api/… の Authorization: Bearer に付ける（auth.rs）
+//!   なし（--no-token）
+//!
+//! HTTP
+//!   GET  /api/info                       {"app":"komenagare","version"}（だれでも）
+//!   GET  /api/projects                   {"auth","me":{name,admin}|null,"projects":[{"id","name","peers":[名前]}]}
+//!   POST /api/login {"code"}             {"token","name","admin"}（--otp のとき）
+//!   GET  /api/me / POST /api/logout      セッションの確認・ログアウト
+//!   GET  /api/admin/auth                 {"sessions":[...],"otps":[...]}（管理者のみ）
+//!   POST /api/admin/otp {"name","kind":"numeric"|"random","ttl"(秒),"admin"} {"code","expires"}
+//!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
+//!
+//! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
+//!   {"type":"hello","protocol":4,"name":"表示名","client":"ブラウザごとの id","session":"…"(--otp のとき)}
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
 //!   {"type":"conflict_add","conflicts":[{"key":..,...}]}     「あとで」にした衝突を全員に見せる
 //!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"you":接続id,"comments":[...]} 接続直後の全体
+//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","comments":[...]} 接続直後の全体（name はホストが使う名前）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
 //!   {"type":"conflicts","list":[{"key",..,"author","client"}]} 保留中の衝突（変わるたびに全体）
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
 //!   {"type":"history","entries":[{"rev","time","author","change"},...]} 最近の変更（新しい順）
 //!   {"type":"ack","id":"変更セットid","rev":N,"dup":bool,"conflicts":[...],"fix":[{"id":..,"comment":..|null}]}
 //!   {"type":"peers","names":[...],"peers":[{"id","name","client","color"}]} 参加者（color は色の番号。今いる人の中で空いている一番小さい番号）
+//!   {"type":"error","code":"protocol"|"auth"|"project","message":…} code があるものは送ったあと切る
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
-//! hello の protocol が PROTOCOL と違えば {"type":"error","code":"protocol"} を返して切る。
 
+use crate::auth::{self, Auth, Kind, SessionRec};
 use crate::store::{Change, Comment, Store};
 use crate::workspace::{LogEntry, Workspace};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -33,10 +52,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -46,17 +66,82 @@ pub const PROTOCOL: u32 = 3;
 #[include = "lib/*"]
 struct WebAssets;
 
+/// 入り方
+pub enum Access {
+    None,
+    Token(String),
+    Otp(Auth),
+}
+
+impl Access {
+    fn label(&self) -> &'static str {
+        match self {
+            Access::None => "none",
+            Access::Token(_) => "token",
+            Access::Otp(_) => "otp",
+        }
+    }
+}
+
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub hub: Arc<Hub>,
+}
+
+pub struct Server {
+    pub projects: Vec<Project>,
+    pub access: Access,
+    web_dir: Option<PathBuf>,
+    next_conn: AtomicU64,
+    /// 終了するときに接続を閉じる合図
+    pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// 取り消したセッション（つながっている接続を切る）
+    revoked: broadcast::Sender<String>,
+    /// ログインに失敗した時刻（当てずっぽうを防ぐ）
+    login_fails: std::sync::Mutex<VecDeque<Instant>>,
+}
+
+/// この時間のうちに LOGIN_FAILS_MAX 回失敗したら、しばらくログインを受け付けない
+const LOGIN_FAIL_WINDOW: Duration = Duration::from_secs(10 * 60);
+const LOGIN_FAILS_MAX: usize = 30;
+/// 取り消されていないかを確かめる間隔（komenagare otp revoke で消されたときのため）
+const SESSION_CHECK: Duration = Duration::from_secs(15);
+
+impl Server {
+    pub fn new(projects: Vec<Project>, access: Access, web_dir: Option<PathBuf>) -> Arc<Server> {
+        Arc::new(Server {
+            projects,
+            access,
+            web_dir,
+            next_conn: AtomicU64::new(1),
+            shutdown: tokio::sync::watch::channel(false).0,
+            revoked: broadcast::channel(64).0,
+            login_fails: std::sync::Mutex::new(VecDeque::new()),
+        })
+    }
+
+    fn project(&self, id: Option<&str>) -> Option<&Project> {
+        match id.filter(|s| !s.is_empty()) {
+            Some(id) => self.projects.iter().find(|p| p.id == id),
+            None if self.projects.len() == 1 => self.projects.first(),
+            None => None,
+        }
+    }
+
+    fn auth(&self) -> Option<&Auth> {
+        match &self.access {
+            Access::Otp(a) => Some(a),
+            _ => None,
+        }
+    }
+}
+
 pub struct Hub {
     inner: Mutex<Inner>,
     tx: broadcast::Sender<(u64, Arc<str>)>,
     writer: std::sync::mpsc::Sender<Job>,
-    token: Option<String>,
-    web_dir: Option<PathBuf>,
-    workspace_id: String,
     conflicts_file: PathBuf,
-    next_conn: AtomicU64,
-    /// 終了するときに接続を閉じる合図
-    pub shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 struct Inner {
@@ -119,16 +204,12 @@ pub fn spawn_writer(ws: Workspace) -> (std::sync::mpsc::Sender<Job>, std::thread
 }
 
 impl Hub {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Store,
         rev: u64,
         seen: HashSet<String>,
         history: VecDeque<LogEntry>,
         writer: std::sync::mpsc::Sender<Job>,
-        token: Option<String>,
-        web_dir: Option<PathBuf>,
-        workspace_id: String,
         conflicts: Vec<Value>,
         conflicts_file: PathBuf,
     ) -> Arc<Hub> {
@@ -144,30 +225,39 @@ impl Hub {
             }),
             tx,
             writer,
-            token,
-            web_dir,
-            workspace_id,
             conflicts_file,
-            next_conn: AtomicU64::new(1),
-            shutdown: tokio::sync::watch::channel(false).0,
         })
+    }
+
+    async fn peer_names(&self) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        let mut names: Vec<String> = inner.peers.values().map(|p| p.name.clone()).collect();
+        names.sort();
+        names
     }
 }
 
-pub fn router(hub: Arc<Hub>) -> Router {
+pub fn router(server: Arc<Server>) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
         .route(
             "/api/info",
             get(|| async {
-                axum::Json(json!({ "app": "komenagare", "version": env!("CARGO_PKG_VERSION") }))
+                Json(json!({ "app": "komenagare", "version": env!("CARGO_PKG_VERSION") }))
             }),
         )
+        .route("/api/projects", get(projects_handler))
+        .route("/api/login", post(login_handler))
+        .route("/api/me", get(me_handler))
+        .route("/api/logout", post(logout_handler))
+        .route("/api/admin/auth", get(admin_list_handler))
+        .route("/api/admin/otp", post(admin_otp_handler))
+        .route("/api/admin/revoke", post(admin_revoke_handler))
         .fallback(get(static_handler))
-        .with_state(hub)
+        .with_state(server)
 }
 
-async fn static_handler(State(hub): State<Arc<Hub>>, uri: Uri) -> Response {
+async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response {
     let mut path = uri.path().trim_start_matches('/').to_string();
     if path.is_empty() || path.ends_with('/') {
         path.push_str("index.html");
@@ -175,7 +265,7 @@ async fn static_handler(State(hub): State<Arc<Hub>>, uri: Uri) -> Response {
     if path.split('/').any(|p| p == "..") {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let data: Option<Vec<u8>> = match &hub.web_dir {
+    let data: Option<Vec<u8>> = match &server.web_dir {
         Some(dir) => tokio::fs::read(dir.join(&path)).await.ok(),
         None => WebAssets::get(&path).map(|f| f.data.into_owned()),
     };
@@ -187,9 +277,9 @@ async fn static_handler(State(hub): State<Arc<Hub>>, uri: Uri) -> Response {
         let html = String::from_utf8_lossy(&data).replacen(
             "</head>",
             &format!(
-                "<meta name=\"komenagare-host\" content=\"{}\" data-workspace=\"{}\">\n</head>",
+                "<meta name=\"komenagare-host\" content=\"{}\" data-auth=\"{}\">\n</head>",
                 env!("CARGO_PKG_VERSION"),
-                hub.workspace_id
+                server.access.label()
             ),
             1,
         );
@@ -207,34 +297,259 @@ async fn static_handler(State(hub): State<Arc<Hub>>, uri: Uri) -> Response {
 }
 
 #[derive(Deserialize)]
-struct WsQuery {
+struct KeyQuery {
     k: Option<String>,
+    p: Option<String>,
+}
+
+fn api_error(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({ "message": message }))).into_response()
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+/// /api/… を使ってよいか。--otp のときはセッションを返す
+#[allow(clippy::result_large_err)]
+fn authorize(
+    server: &Server,
+    headers: &HeaderMap,
+    k: Option<&str>,
+) -> Result<Option<SessionRec>, Response> {
+    match &server.access {
+        Access::None => Ok(None),
+        Access::Token(t) if k == Some(t.as_str()) => Ok(None),
+        Access::Token(_) => Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "合言葉（URL の k=）が違います",
+        )),
+        Access::Otp(a) => match bearer(headers).and_then(|t| a.verify(t)) {
+            Some(s) => Ok(Some(s)),
+            None => Err(api_error(StatusCode::UNAUTHORIZED, "ログインしてください")),
+        },
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn authorize_admin<'a>(
+    server: &'a Server,
+    headers: &HeaderMap,
+) -> Result<(&'a Auth, SessionRec), Response> {
+    let Some(a) = server.auth() else {
+        return Err(api_error(
+            StatusCode::NOT_FOUND,
+            "ワンタイムパスワードを使っていません（--otp で起動してください）",
+        ));
+    };
+    match bearer(headers).and_then(|t| a.verify(t)) {
+        Some(s) if s.admin => Ok((a, s)),
+        Some(_) => Err(api_error(StatusCode::FORBIDDEN, "管理者だけが使えます")),
+        None => Err(api_error(StatusCode::UNAUTHORIZED, "ログインしてください")),
+    }
+}
+
+async fn projects_handler(
+    State(server): State<Arc<Server>>,
+    Query(q): Query<KeyQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let me = match authorize(&server, &headers, q.k.as_deref()) {
+        Ok(me) => me,
+        Err(r) => return r,
+    };
+    let mut projects = vec![];
+    for p in &server.projects {
+        projects.push(json!({ "id": p.id, "name": p.name, "peers": p.hub.peer_names().await }));
+    }
+    Json(json!({
+        "auth": server.access.label(),
+        "me": me.map(|s| json!({ "name": s.name, "admin": s.admin })),
+        "projects": projects,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    code: String,
+}
+
+async fn login_handler(State(server): State<Arc<Server>>, Json(body): Json<LoginBody>) -> Response {
+    let Some(a) = server.auth() else {
+        return api_error(
+            StatusCode::NOT_FOUND,
+            "ワンタイムパスワードを使っていません",
+        );
+    };
+    {
+        let mut fails = server.login_fails.lock().unwrap();
+        while fails
+            .front()
+            .is_some_and(|t| t.elapsed() > LOGIN_FAIL_WINDOW)
+        {
+            fails.pop_front();
+        }
+        if fails.len() >= LOGIN_FAILS_MAX {
+            return api_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "間違いが多いため、しばらくログインできません。10 分ほど待ってからやり直してください",
+            );
+        }
+    }
+    match a.login(&body.code) {
+        Ok(Some((token, s))) => {
+            Json(json!({ "token": token, "name": s.name, "admin": s.admin })).into_response()
+        }
+        Ok(None) => {
+            server.login_fails.lock().unwrap().push_back(Instant::now());
+            // 続けざまに試せないよう少し待たせる
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            api_error(
+                StatusCode::UNAUTHORIZED,
+                "ワンタイムパスワードが違うか、使用済み・期限切れです",
+            )
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+    }
+}
+
+async fn me_handler(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    match server
+        .auth()
+        .zip(bearer(&headers))
+        .and_then(|(a, t)| a.verify(t))
+    {
+        Some(s) => Json(json!({ "name": s.name, "admin": s.admin })).into_response(),
+        None => api_error(StatusCode::UNAUTHORIZED, "ログインしてください"),
+    }
+}
+
+async fn logout_handler(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    if let Some((a, s)) = server
+        .auth()
+        .zip(bearer(&headers))
+        .and_then(|(a, t)| a.verify(t).map(|s| (a, s)))
+    {
+        a.revoke(&s.id);
+        let _ = server.revoked.send(s.id);
+    }
+    Json(json!({})).into_response()
+}
+
+async fn admin_list_handler(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    let (a, me) = match authorize_admin(&server, &headers) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let sessions: Vec<Value> = a
+        .sessions()
+        .into_iter()
+        .map(|s| json!({ "id": s.id, "name": s.name, "admin": s.admin, "created": s.created, "you": s.id == me.id }))
+        .collect();
+    let otps: Vec<Value> = a
+        .otps()
+        .into_iter()
+        .filter(|o| !o.startup)
+        .map(|o| json!({ "id": o.id, "name": o.name, "admin": o.admin, "kind": o.kind, "created": o.created, "expires": o.expires }))
+        .collect();
+    Json(json!({ "sessions": sessions, "otps": otps })).into_response()
+}
+
+#[derive(Deserialize)]
+struct OtpBody {
+    name: String,
+    kind: String,
+    ttl: Option<u64>,
+    #[serde(default)]
+    admin: bool,
+}
+
+async fn admin_otp_handler(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Json(body): Json<OtpBody>,
+) -> Response {
+    let (a, _) = match authorize_admin(&server, &headers) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(kind) = Kind::parse(&body.kind) else {
+        return api_error(StatusCode::BAD_REQUEST, "種類は numeric か random です");
+    };
+    let ttl = body
+        .ttl
+        .map(|s| Duration::from_secs(s.clamp(60, 30 * 86400)))
+        .unwrap_or_else(|| kind.default_ttl());
+    match a.issue(&body.name, body.admin, kind, ttl) {
+        Ok(i) => Json(json!({ "id": i.id, "code": i.code, "expires": i.expires })).into_response(),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct RevokeBody {
+    id: String,
+}
+
+async fn admin_revoke_handler(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Json(body): Json<RevokeBody>,
+) -> Response {
+    let (a, _) = match authorize_admin(&server, &headers) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let (sessions, otps) = a.revoke(&body.id);
+    for id in &sessions {
+        let _ = server.revoked.send(id.clone());
+    }
+    Json(json!({ "sessions": sessions.len(), "otps": otps })).into_response()
 }
 
 async fn ws_handler(
-    State(hub): State<Arc<Hub>>,
-    Query(q): Query<WsQuery>,
+    State(server): State<Arc<Server>>,
+    Query(q): Query<KeyQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Some(token) = &hub.token {
+    if let Access::Token(token) = &server.access {
         if q.k.as_deref() != Some(token.as_str()) {
             return (StatusCode::UNAUTHORIZED, "invalid key").into_response();
         }
     }
+    let hub = server.project(q.p.as_deref()).map(|p| p.hub.clone());
     ws.max_message_size(64 << 20)
-        .on_upgrade(move |socket| connection(hub, socket))
+        .on_upgrade(move |socket| connection(server, hub, socket))
 }
 
-async fn connection(hub: Arc<Hub>, socket: WebSocket) {
-    let conn = hub.next_conn.fetch_add(1, Ordering::Relaxed);
+async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocket) {
+    let conn = server.next_conn.fetch_add(1, Ordering::Relaxed);
     let (mut sink, mut stream) = socket.split();
+    let Some(hub) = hub else {
+        let _ = sink
+            .send(Message::Text(
+                json!({ "type": "error", "code": "project", "message": "プロジェクトが見つかりません。プロジェクトを選び直してください" })
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    };
     let mut rx = hub.tx.subscribe();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     // 送信: 自分宛てのものと、他の人の変更（自分の分は除く）
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         loop {
             tokio::select! {
-                Some(m) = out_rx.recv() => { if sink.send(Message::Text(m.into())).await.is_err() { break; } }
+                m = out_rx.recv() => match m {
+                    Some(m) => { if sink.send(Message::Text(m.into())).await.is_err() { break; } }
+                    None => break,
+                },
                 r = rx.recv() => match r {
                     Ok((from, m)) => { if from != conn && sink.send(Message::Text(m.to_string().into())).await.is_err() { break; } }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -243,7 +558,6 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
                     }
                     Err(_) => break,
                 },
-                else => break,
             }
         }
     });
@@ -251,27 +565,61 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
     let mut name = String::from("名無し");
     let mut email = String::from("anonymous@komenagare");
     let mut client = String::new();
-    let mut shutdown = hub.shutdown.subscribe();
+    let mut joined = false;
+    let mut session: Option<String> = None;
+    let mut shutdown = server.shutdown.subscribe();
+    let mut revoked = server.revoked.subscribe();
+    let mut check = tokio::time::interval(SESSION_CHECK);
+    let kick = |out_tx: &tokio::sync::mpsc::UnboundedSender<String>| {
+        let _ = out_tx.send(
+            json!({ "type": "error", "code": "auth", "message": "ログインし直してください" })
+                .to_string(),
+        );
+    };
     loop {
         let msg = tokio::select! {
             m = stream.next() => match m { Some(Ok(m)) => m, _ => break },
             _ = shutdown.changed() => break,
+            r = revoked.recv() => {
+                if matches!((&r, &session), (Ok(id), Some(s)) if id == s) { kick(&out_tx); break; }
+                continue;
+            }
+            _ = check.tick() => {
+                if let (Some(a), Some(s)) = (server.auth(), &session) {
+                    if !a.alive(s) { kick(&out_tx); break; }
+                }
+                continue;
+            }
         };
         let Message::Text(text) = msg else { continue };
         let Ok(v) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        match v["type"].as_str() {
+        let kind = v["type"].as_str();
+        if !joined && kind != Some("hello") {
+            continue;
+        }
+        match kind {
             Some("hello") => {
                 if v["protocol"].as_u64() != Some(PROTOCOL as u64) {
                     let _ = out_tx.send(json!({ "type": "error", "code": "protocol",
                         "message": "このページはホストと版が合いません。ページを再読み込みしてください（直らなければ komenagare を更新してください）" }).to_string());
-                    // 送り終えてから切る
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     break;
                 }
-                if let Some(n) = v["name"].as_str().map(str::trim).filter(|n| !n.is_empty()) {
-                    name = n.chars().take(40).collect();
+                if let Some(a) = server.auth() {
+                    // 名前はセッションのもの（自分で名乗り直せない）
+                    match v["session"].as_str().and_then(|t| a.verify(t)) {
+                        Some(s) => {
+                            name = s.name;
+                            session = Some(s.id);
+                        }
+                        None => {
+                            kick(&out_tx);
+                            break;
+                        }
+                    }
+                } else if let Some(n) = v["name"].as_str().and_then(auth::clean_name) {
+                    name = n;
                 }
                 if let Some(c) = v["client"]
                     .as_str()
@@ -280,6 +628,7 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
                     client = c.chars().take(40).collect();
                     email = format!("{client}@komenagare");
                 }
+                joined = true;
                 let mut inner = hub.inner.lock().await;
                 let (presence, color) = match inner.peers.remove(&conn) {
                     Some(p) => (p.presence, p.color),
@@ -296,7 +645,7 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
                 );
                 let comments: Vec<&Comment> = inner.store.sorted();
                 let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "comments": comments })
+                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "comments": comments })
                         .to_string(),
                 );
                 let _ = out_tx.send(conflicts_msg(&inner));
@@ -379,10 +728,18 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
             _ => {}
         }
     }
-    send_task.abort();
+    // 送り残し（エラーなど）を送り終えてから切る
+    drop(out_tx);
+    if tokio::time::timeout(Duration::from_millis(500), &mut send_task)
+        .await
+        .is_err()
+    {
+        send_task.abort();
+    }
     let inner = &mut *hub.inner.lock().await;
-    inner.peers.remove(&conn);
-    broadcast_peers(&hub, inner);
+    if inner.peers.remove(&conn).is_some() {
+        broadcast_peers(&hub, inner);
+    }
 }
 
 async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Change) -> String {

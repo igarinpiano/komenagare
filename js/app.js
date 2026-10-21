@@ -2877,7 +2877,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 3;
+const COLLAB_PROTOCOL = 4;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
@@ -2885,14 +2885,20 @@ const collab = {
   me: null, peerList: [], // 自分の接続 id と、参加者（{ id, name, client }）
   presence: new Map(), // 接続 id → { state, at }（ほかの人の再生位置・選択・カーソル）
   follow: null, // 追いかけている人の接続 id
-  workspace: document.querySelector('meta[name="komenagare-host"]')?.dataset.workspace || 'default',
+  // 入り方（token: URL の k= / otp: 参加者ごとのワンタイムパスワード / none）
+  auth: document.querySelector('meta[name="komenagare-host"]')?.dataset.auth || 'token',
+  session: null, // --otp のときのログイン（{ token, name, admin }。localStorage に控える）
+  project: null, projects: [], // 開いているプロジェクト（{ id, name }）と、ホストにあるプロジェクトの一覧
+  workspace: 'default', // 控え（IndexedDB）の名前に使う。プロジェクトの id
+  owner: null, // このタブがこのプロジェクトを開いている間の id（衝突の控えをタブごとに分ける）
+  serverName: null, // ホストが使っている自分の名前
   key: (() => {
     const k = new URLSearchParams(location.search).get('k');
     try { if (k) sessionStorage.setItem('komenagare.key', k); return k || sessionStorage.getItem('komenagare.key'); } catch { return k; }
   })(),
 };
 const collabLS = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch {} return null; };
-function collabName(){ return collabLS('komenagare.name') || ''; }
+function collabName(){ return collab.session?.name || collabLS('komenagare.name') || ''; }
 function collabClientId(){
   let id = collabLS('komenagare.clientId');
   if (!isUuid(id)){ id = uuidv7(); collabLS('komenagare.clientId', id); }
@@ -2935,12 +2941,18 @@ function collabSend(change){
   collabUI();
 }
 
+function collabHello(){
+  return { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId(), session: collab.session?.token };
+}
 function collabConnect(){
   clearTimeout(collab.timer);
-  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + (collab.key ? '?k=' + encodeURIComponent(collab.key) : '');
+  const q = new URLSearchParams();
+  if (collab.project) q.set('p', collab.project.id);
+  if (collab.key) q.set('k', collab.key);
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?' + q;
   const ws = new WebSocket(url);
   collab.ws = ws;
-  ws.onopen = () => { ws.send(JSON.stringify({ type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId() })); };
+  ws.onopen = () => { ws.send(JSON.stringify(collabHello())); };
   ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } collabHandle(m); };
   ws.onclose = () => {
     if (collab.ws !== ws) return;
@@ -2962,7 +2974,7 @@ function collabHandle(m){
     store.reset(m.comments.map(c => ({ ...c, mine: mine.has(c.id) })));
     for (const e of collab.outbox) store.apply(e.change);
     commentsChanged();
-    collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null;
+    collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null;
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
     collabShareConflicts();
     presence.sent = ''; presenceDirty();
@@ -3007,8 +3019,15 @@ function collabHandle(m){
     collab.conflicts = collab.conflicts.filter(r => !keys.has(r.key));
     conflictsChanged();
   } else if (m.type === 'error'){
+    if (m.code === 'auth'){ collab.ws.close(); collabRelogin(); return; }
+    if (m.code === 'project'){
+      collab.blocked = 'project'; collab.ws.close();
+      toast('ホスト: ' + m.message, { type:'error', timeout:6000 });
+      projectsOpen();
+      return;
+    }
     toast('ホスト: ' + m.message, { type:'error', timeout: m.code === 'protocol' ? 20000 : 3800 });
-    if (m.code === 'protocol'){ collab.blocked = true; collab.ws.close(); }
+    if (m.code === 'protocol'){ collab.blocked = 'protocol'; collab.ws.close(); }
   }
 }
 
@@ -3058,46 +3077,320 @@ function collabUI(){
     el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで参加者の一覧（追いかける・表示名の変更）`;
   } else {
     el.className = 'collab off';
-    el.textContent = (collab.blocked ? '○ ページを再読み込みしてください' : collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン') + (pending ? `（未送信 ${pending}）` : '');
+    const blocked = { protocol: '○ ページを再読み込みしてください', auth: '○ ログインしてください', project: '○ プロジェクトを選んでください' }[collab.blocked];
+    el.textContent = (blocked || (collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン')) + (pending ? `（未送信 ${pending}）` : '');
     el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
   }
 }
 
+/* ---------- ホストへの問い合わせ（合言葉・ログインを付ける） ---------- */
+async function collabApi(path, body){
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  if (collab.session) headers.Authorization = 'Bearer ' + collab.session.token;
+  const url = path + (collab.key ? (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(collab.key) : '');
+  const r = await fetch(url, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.message || `ホストがエラーを返しました（${r.status}）`), { status: r.status });
+  return j;
+}
+// URL の検索部分を書き換える（ページは読み込み直さない）
+function collabSetQuery(fn){
+  const q = new URLSearchParams(location.search);
+  fn(q);
+  const s = q.toString();
+  window.history.replaceState(null, '', location.pathname + (s ? '?' + s : '') + location.hash);
+}
+
+/* ---------- ログイン（--otp） ---------- */
+const SESSION_KEY = 'komenagare.session';
+function sessionLoad(){ try { const v = JSON.parse(collabLS(SESSION_KEY) || 'null'); return v && v.token ? v : null; } catch { return null; } }
+function sessionSave(v){ collab.session = v; try { if (v) localStorage.setItem(SESSION_KEY, JSON.stringify(v)); else localStorage.removeItem(SESSION_KEY); } catch {} }
+async function collabLogin(code){
+  const r = await collabApi('/api/login', { code });
+  sessionSave({ token: r.token, name: r.name, admin: r.admin });
+  return r;
+}
+// ログインできるまで待つ（URL の otp= があれば使い、なければ入力してもらう）
+async function ensureLogin(){
+  const code = new URLSearchParams(location.search).get('otp');
+  if (code) collabSetQuery(q => q.delete('otp'));
+  collab.session = sessionLoad();
+  if (collab.session){
+    try { const me = await collabApi('/api/me'); sessionSave({ ...collab.session, ...me }); return; }
+    catch (e) { if (e.status === 401) sessionSave(null); else return; } // ホストにつながらなければ控えのまま進める
+  }
+  if (code){
+    try { await collabLogin(code); return; } catch (e) { $('#loginErr').textContent = e.message; }
+  }
+  await loginOpen();
+}
+let loginWait = null;
+function loginOpen(){
+  const dlg = $('#loginDlg');
+  if (!dlg.open){ dlg.showModal(); setTimeout(() => $('#loginCode').focus(), 0); }
+  return loginWait || (loginWait = new Promise(r => { dlg._done = r; }));
+}
+$('#loginDlg').addEventListener('cancel', (e) => e.preventDefault()); // ログインするまで閉じない
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const code = $('#loginCode').value.trim();
+  if (!code) return;
+  $('#loginOk').disabled = true; $('#loginErr').textContent = '';
+  try {
+    await collabLogin(code);
+    $('#loginCode').value = '';
+    $('#loginDlg').close();
+    const done = $('#loginDlg')._done; loginWait = null;
+    done?.();
+  } catch (err) { $('#loginErr').textContent = err.message; }
+  finally { $('#loginOk').disabled = false; }
+});
+// ホストにログインし直すよう言われたとき（取り消された・期限切れ）
+async function collabRelogin(){
+  sessionSave(null);
+  collab.blocked = 'auth';
+  collabUI();
+  $('#loginErr').textContent = 'ログインし直してください（ホストの人に新しいワンタイムパスワードをもらってください）';
+  await loginOpen();
+  collab.blocked = false; collab.retry = 0;
+  peersUI();
+  collabConnect();
+}
+
+/* ---------- タブごとの控え ----------
+   同じプロジェクトを複数のタブで開けるように、衝突の控えはタブ（owner）ごとに分けて置く。
+   タブは数秒おきに localStorage へ生きている印を書き、印が古いタブ（閉じたタブ）の控えは次に開いたタブが引き継ぐ */
+const ALIVE_PREFIX = 'komenagare.alive.', ALIVE_MS = 5000, ALIVE_STALE = 20000;
+function ownerAlive(id){ const t = +collabLS(ALIVE_PREFIX + id); return t > 0 && Date.now() - t < ALIVE_STALE; }
+function ownerBeat(){ if (collab.owner) collabLS(ALIVE_PREFIX + collab.owner, String(Date.now())); }
+function ownerRelease(){ if (collab.owner){ try { localStorage.removeItem(ALIVE_PREFIX + collab.owner); } catch {} } }
+setInterval(ownerBeat, ALIVE_MS);
+window.addEventListener('pagehide', ownerRelease);
+window.addEventListener('pageshow', (e) => { if (e.persisted) ownerBeat(); });
+// 自分の衝突の控えと、閉じたタブの分を読み込む
+async function loadConflicts(){
+  const keys = (await collabTx('meta', 'readonly', s => s.getAllKeys())) || [];
+  const mine = [], adopted = [];
+  for (const k of keys){
+    if (typeof k !== 'string' || !(k === 'conflicts' || k.startsWith('conflicts:'))) continue;
+    const owner = k.slice('conflicts:'.length);
+    if (k !== 'conflicts' && (owner === collab.owner || ownerAlive(owner))) continue;
+    const list = await collabTx('meta', 'readonly', s => s.get(k));
+    if (Array.isArray(list)) mine.push(...list.filter(r => !mine.some(x => x.key === r.key)));
+    adopted.push(k);
+  }
+  for (const k of adopted) await collabTx('meta', 'readwrite', s => s.delete(k));
+  // 古い生存印を片付ける
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith(ALIVE_PREFIX) && Date.now() - +localStorage.getItem(k) > 86400000) localStorage.removeItem(k); } catch {}
+  return mine;
+}
+
+/* ---------- プロジェクト ---------- */
 async function collabInit(){
   if (!state.collab) return;
   $('#collabStatus').onclick = peersOpen;
+  $('#projectBtn').onclick = () => projectsOpen();
+  $('#projectBtn').hidden = false;
+  $('#projectBtn').textContent = '📁 プロジェクト';
   $('#peersRename').onclick = () => {
     const n = prompt('共同編集で表示する名前', collabName());
     if (n == null) return;
     collabLS('komenagare.name', n.trim().slice(0, 40));
-    if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId() }));
+    if (collab.connected) collab.ws.send(JSON.stringify(collabHello()));
   };
   presence.ready = true;
-  if (!collabName()){
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  if (collab.auth === 'otp') await ensureLogin();
+  else if (!collabName()){
     const n = prompt('共同編集で表示する名前を入力してください（コミットの作者名になります）', '');
     if (n && n.trim()) collabLS('komenagare.name', n.trim().slice(0, 40));
   }
+  peersUI();
+  collabUI();
+  let list = null;
+  try { list = await projectsFetch(); } catch (e) { toast('ホスト: ' + e.message, { type:'error', timeout:8000 }); }
+  const want = new URLSearchParams(location.search).get('p');
+  const saved = (() => { try { return JSON.parse(sessionStorage.getItem('komenagare.project') || 'null'); } catch { return null; } })();
+  let p = list ? list.find(x => x.id === want) || (list.length === 1 ? list[0] : null)
+    // ホストにつながらないときは、このタブで前に開いていたプロジェクトの控えで作業を続ける
+    : saved && (!want || saved.id === want) ? saved : null;
+  if (!p && list) p = await projectsOpen(true);
+  if (p) await collabOpen(p);
+}
+async function projectsFetch(){
+  const r = await collabApi('/api/projects');
+  collab.projects = r.projects || [];
+  if (r.me && collab.session) sessionSave({ ...collab.session, ...r.me });
+  return collab.projects;
+}
+
+// プロジェクトを開く（開いていたものは閉じる）。同じタブで切り替えても動画はそのまま
+async function collabOpen(p){
+  if (collab.project) collabClose();
+  collab.project = { id: p.id, name: p.name };
+  collab.workspace = p.id;
+  collab.owner = uuidv7(); ownerBeat();
+  try { sessionStorage.setItem('komenagare.project', JSON.stringify(collab.project)); } catch {}
+  collabSetQuery(q => q.set('p', p.id));
+  document.title = `${p.name} - コメナガレ`;
+  $('#projectBtn').textContent = '📁 ' + p.name;
+  store.reset([]);
   try {
     collab.db = await collabIdb();
-    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    const [snap, outbox, conflicts] = await Promise.all([collabTx('meta', 'readonly', s => s.get('snapshot')), collabTx('outbox', 'readonly', s => s.getAll()), collabTx('meta', 'readonly', s => s.get('conflicts'))]);
+    const [snap, outbox] = await Promise.all([collabTx('meta', 'readonly', s => s.get('snapshot')), collabTx('outbox', 'readonly', s => s.getAll())]);
     collab.outbox = (outbox || []).sort((a, b) => a.seq - b.seq);
-    collab.conflicts = Array.isArray(conflicts) ? conflicts : [];
-    if (collab.conflicts.length) conflictsChanged();
+    collab.conflicts = await loadConflicts();
+    conflictsChanged();
     // 前回の控えをすぐに表示する（ホストにつながる前やオフラインでも作業できるように）
-    if (snap && snap.comments){
-      store.reset(snap.comments);
-      for (const e of collab.outbox) store.apply(e.change);
-      commentsChanged();
-    }
+    if (snap && snap.comments) store.reset(snap.comments);
+    for (const e of collab.outbox) store.apply(e.change);
   } catch (e) {
     console.warn('IndexedDB を使えません', e);
     toast('このブラウザに控えを保存できないため、オフラインの間の変更は失われることがあります', { type:'error', timeout:8000 });
   }
+  commentsChanged();
   updateStatus();
   collabUI();
   collabConnect();
 }
+// 開いているプロジェクトを閉じて、そのプロジェクトのものを片付ける
+function collabClose(){
+  const ws = collab.ws;
+  collab.ws = null;
+  clearTimeout(collab.timer); clearTimeout(collab.saveTimer); clearTimeout(presence.timer); presence.timer = 0;
+  if (ws){ try { ws.close(); } catch {} }
+  if (collab.db){ collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts:' + collab.owner)).catch(() => {}); }
+  ownerRelease();
+  const db = collab.db;
+  setTimeout(() => db?.close(), 1000); // 書きかけの控えを書き終えてから閉じる
+  Object.assign(collab, { db: null, connected: false, blocked: false, retry: 0, failed: 0, me: null, serverName: null,
+    outbox: [], conflicts: [], shared: [], peers: [], peerList: [], follow: null, project: null });
+  collab.presence.clear();
+  presence.sent = '';
+  followUI();
+  hist.entries = null;
+  history.undo = []; history.redo = []; updateUndoUI();
+  TL.sel = new Set(); tlSelChanged();
+  if ($('#conflictDlg').open) $('#conflictDlg').close();
+  conflictsChanged();
+}
+
+/* ---------- プロジェクトの一覧 ---------- */
+// required: 起動時に選んでもらうとき（選ぶまで閉じられない。選んだプロジェクトを返す）
+let projectsWait = null, projectsTimer = 0;
+function projectsOpen(required = false){
+  const dlg = $('#projectsDlg');
+  dlg.dataset.required = required ? '1' : '';
+  $('#projectsClose').hidden = required;
+  $('#projectsAuth').hidden = !(collab.auth === 'otp' && collab.session?.admin);
+  $('#projectsLogout').hidden = collab.auth !== 'otp' || !collab.session;
+  projectsRender();
+  projectsFetch().then(projectsRender).catch(e => { $('#projectsList').replaceChildren(mkEl('p', 'muted', 'ホスト: ' + e.message)); });
+  clearInterval(projectsTimer);
+  projectsTimer = setInterval(() => { if (dlg.open) projectsFetch().then(projectsRender).catch(() => {}); else clearInterval(projectsTimer); }, 4000);
+  if (!dlg.open) dlg.showModal();
+  if (!required) return null;
+  return projectsWait || (projectsWait = new Promise(r => { dlg._done = r; }));
+}
+// 新しいタブで開く URL（合言葉はタブごとに持つので付けて渡す）
+function projectUrl(p){
+  const q = new URLSearchParams();
+  q.set('p', p.id);
+  if (collab.key) q.set('k', collab.key);
+  return location.pathname + '?' + q;
+}
+function projectsRender(){
+  const frag = document.createDocumentFragment();
+  if (!collab.projects.length) frag.append(mkEl('p', 'muted', '読み込んでいます…'));
+  for (const p of collab.projects){
+    const cur = collab.project?.id === p.id;
+    const row = mkEl('div', 'proj-row' + (cur ? ' on' : ''));
+    const info = mkEl('div', 'proj-info');
+    info.append(mkEl('div', 'proj-name', p.name + (cur ? '（このタブで開いています）' : '')));
+    info.append(mkEl('div', 'proj-peers', p.peers?.length ? `${p.peers.length}人: ${p.peers.join('、')}` : 'だれもいません'));
+    row.append(info);
+    if (!cur){
+      const b = mkEl('button', 'primary', '開く');
+      b.onclick = () => {
+        const dlg = $('#projectsDlg'), done = dlg._done;
+        dlg._done = null; projectsWait = null; dlg.dataset.required = '';
+        dlg.close();
+        if (done) done(p); else collabOpen(p); // 起動時の選択なら collabInit が開く
+      };
+      row.append(b);
+    }
+    const a = mkEl('a', 'btn', '新しいタブ');
+    a.href = projectUrl(p); a.target = '_blank'; a.rel = 'noopener';
+    row.append(a);
+    frag.append(row);
+  }
+  $('#projectsList').replaceChildren(frag);
+}
+$('#projectsDlg').addEventListener('cancel', (e) => { if ($('#projectsDlg').dataset.required) e.preventDefault(); });
+$('#projectsDlg').addEventListener('close', () => clearInterval(projectsTimer));
+$('#projectsClose').onclick = () => $('#projectsDlg').close();
+$('#projectsLogout').onclick = async () => {
+  if (!confirm('ログアウトしますか？（もう一度入るには新しいワンタイムパスワードが要ります）')) return;
+  try { await collabApi('/api/logout', {}); } catch {}
+  sessionSave(null);
+  location.reload();
+};
+$('#projectsAuth').onclick = authOpen;
+
+/* ---------- 招待とログインの管理（管理者） ---------- */
+function authOpen(){ authRender(); $('#authResult').hidden = true; if (!$('#authDlg').open) $('#authDlg').showModal(); setTimeout(() => $('#authName').focus(), 0); }
+const fmtDate = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+async function authRender(){
+  let r;
+  try { r = await collabApi('/api/admin/auth'); } catch (e) { $('#authLists').replaceChildren(mkEl('p', 'muted', e.message)); return; }
+  const frag = document.createDocumentFragment();
+  const revoke = (id, label) => {
+    const b = mkEl('button', null, '取り消す');
+    b.onclick = async () => {
+      if (!confirm(`${label} を取り消しますか？`)) return;
+      try { await collabApi('/api/admin/revoke', { id }); } catch (e) { toast(e.message, { type:'error' }); }
+      authRender();
+    };
+    return b;
+  };
+  frag.append(mkEl('h4', null, `ログイン中（${r.sessions.length}）`));
+  for (const x of r.sessions){
+    const row = mkEl('div', 'auth-row');
+    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? '（管理者）' : '') + (x.you ? '（あなた）' : '')), mkEl('span', 'muted', fmtDate(x.created) + ' から'));
+    if (!x.you) row.append(revoke(x.id, `${x.name} のログイン`));
+    frag.append(row);
+  }
+  frag.append(mkEl('h4', null, `未使用のワンタイムパスワード（${r.otps.length}）`));
+  if (!r.otps.length) frag.append(mkEl('p', 'muted', 'ありません'));
+  for (const x of r.otps){
+    const row = mkEl('div', 'auth-row');
+    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? '（管理者）' : '')), mkEl('span', 'muted', (x.kind === 'numeric' ? '数字' : '英数字') + '・' + fmtDate(x.expires) + ' まで'), revoke(x.id, `${x.name} のワンタイムパスワード`));
+    frag.append(row);
+  }
+  $('#authLists').replaceChildren(frag);
+}
+$('#authKind').onchange = () => { $('#authTtl').value = $('#authKind').value === 'numeric' ? '600' : '604800'; };
+$('#authForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = $('#authName').value.trim();
+  if (!name) return;
+  try {
+    const r = await collabApi('/api/admin/otp', { name, kind: $('#authKind').value, ttl: +$('#authTtl').value, admin: $('#authAdmin').checked });
+    const link = location.origin + location.pathname + '?otp=' + r.code;
+    $('#authCode').textContent = r.code;
+    $('#authLink').value = link;
+    $('#authExpires').textContent = `${name} 用・${fmtDate(r.expires)} まで・1回だけ使えます`;
+    $('#authResult').hidden = false;
+    $('#authName').value = '';
+    authRender();
+  } catch (err) { toast(err.message, { type:'error' }); }
+});
+$('#authCopy').onclick = () => { const v = $('#authLink').value; (navigator.clipboard?.writeText(v) || Promise.reject()).then(() => toast('リンクをコピーしました', { timeout:1500 }), () => { $('#authLink').select(); document.execCommand('copy'); }); };
+$('#authClose').onclick = () => $('#authDlg').close();
+
+// 表示名の変更（--otp のときはホストが決めるので出さない）
+function peersUI(){ $('#peersRename').hidden = collab.auth === 'otp'; }
 
 /* =====================================================================
    変更履歴
@@ -3251,7 +3544,7 @@ function conflictResolve(rec, action){
   conflictDrop([rec]);
 }
 function conflictsChanged(){
-  collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts')).catch(e => console.warn(e));
+  if (collab.owner) collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts:' + collab.owner)).catch(e => console.warn(e));
   const n = allConflicts().length;
   for (const b of [$('#conflictBtn'), $('#histConflicts')]){ b.hidden = !n; b.textContent = `⚠ 衝突 ${n}`; }
   if ($('#conflictDlg').open){ if (n) conflictRender(); else $('#conflictDlg').close(); }
@@ -3517,7 +3810,7 @@ function peersRender(){
     const row = mkEl('div', 'peer-row' + (on ? ' on' : ''));
     row.style.setProperty('--peer', peerColor(p));
     const info = mkEl('div', 'peer-info'), st = mkEl('div', 'peer-state');
-    info.append(mkEl('div', 'peer-name', p.name + (me ? '（あなた）' : '')), st);
+    info.append(mkEl('div', 'peer-name', p.name + (me ? '（あなた）' : p.client === collabClientId() ? '（あなた・別のタブ）' : '')), st);
     row.append(mkEl('span', 'peer-dot'), info);
     if (!me){
       const b = mkEl('button', on ? 'primary' : null, on ? '追いかけるのをやめる' : '追いかける');

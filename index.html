@@ -27,6 +27,7 @@
   <div class="status">
     <span id="videoStatus">動画: なし</span>
     <span id="fileStatus"></span>
+    <button id="projectBtn" class="collab proj" hidden title="プロジェクトの一覧（切り替え・新しいタブで開く）"></button>
     <button id="collabStatus" class="collab" hidden></button>
     <button id="conflictBtn" class="collab warn" hidden title="ほかの人の変更と重なった変更を確認する"></button>
   </div>
@@ -295,6 +296,49 @@
   <div class="dlg-foot"><button id="conflictLater">あとで</button><button id="conflictKeepAll">すべて今のままにする</button></div>
 </dialog>
 
+<dialog id="projectsDlg">
+  <div class="dlg-head">プロジェクト</div>
+  <div class="dlg-body">
+    <div id="projectsList" class="projects"></div>
+    <p class="muted" style="margin:10px 0 0">「開く」はこのタブのまま切り替えます（読み込んだ動画はそのまま）。「新しいタブ」なら、ほかのプロジェクトや同じプロジェクトを並べて作業できます。</p>
+  </div>
+  <div class="dlg-foot"><button id="projectsAuth" hidden>招待・ログインの管理</button><button id="projectsLogout" hidden>ログアウト</button><span class="spacer"></span><button id="projectsClose" class="primary">閉じる</button></div>
+</dialog>
+
+<dialog id="loginDlg">
+  <form id="loginForm">
+    <div class="dlg-head">ログイン</div>
+    <div class="dlg-body">
+      <p class="muted" style="margin:0 0 10px">このホストに入るには、ホストの人から受け取ったワンタイムパスワードを入れてください（1回だけ使えます。一度入れば、このブラウザでは次から入れ直す必要はありません）。</p>
+      <input id="loginCode" class="login-code" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" placeholder="ワンタイムパスワード">
+      <p id="loginErr" class="login-err"></p>
+    </div>
+    <div class="dlg-foot"><button id="loginOk" class="primary" type="submit">ログイン</button></div>
+  </form>
+</dialog>
+
+<dialog id="authDlg">
+  <div class="dlg-head">招待・ログインの管理</div>
+  <div class="dlg-body">
+    <form id="authForm" class="form-grid">
+      <label for="authName">名前</label><input id="authName" maxlength="40" placeholder="参加する人の名前（作者名になります）" autocomplete="off">
+      <label for="authKind">種類</label>
+      <select id="authKind"><option value="random">ランダム（英数字 10 文字）</option><option value="numeric">数字（6 桁）</option></select>
+      <label for="authTtl">有効期限</label>
+      <select id="authTtl"><option value="600">10 分</option><option value="3600">1 時間</option><option value="86400">1 日</option><option value="604800" selected>7 日</option></select>
+      <label for="authAdmin">管理者にする</label><label class="chk"><input type="checkbox" id="authAdmin"> 招待・取り消しもできる</label>
+      <span></span><button class="primary" type="submit">ワンタイムパスワードを発行</button>
+    </form>
+    <div id="authResult" class="auth-result" hidden>
+      <div class="auth-code" id="authCode"></div>
+      <div class="muted" id="authExpires"></div>
+      <div class="auth-link"><input id="authLink" readonly><button id="authCopy" type="button">リンクをコピー</button></div>
+    </div>
+    <div id="authLists"></div>
+  </div>
+  <div class="dlg-foot"><button id="authClose" class="primary">閉じる</button></div>
+</dialog>
+
 <dialog id="peersDlg">
   <div class="dlg-head">共同編集の参加者</div>
   <div class="dlg-body">
@@ -364,6 +408,7 @@
 
     <h4>みんなで編集する</h4>
     <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、「⚠ 衝突」から自分の変更にする・相手のままにする・両方残すを選べます。「あとで」にした衝突はほかの参加者にも出て、誰でも選べます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
+    <p class="muted" style="margin:6px 0 0">ホストが複数のプロジェクトを共有しているときは、右上の「📁」からプロジェクトを切り替えたり、新しいタブで開いたりできます（同じプロジェクトを複数のタブで開いてもかまいません）。ホストがワンタイムパスワードを使っているときは、最初に受け取ったワンタイムパスワードでログインします。</p>
     <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます）。</p>
 
     <h4>ファイル形式</h4>

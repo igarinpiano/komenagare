@@ -1,10 +1,11 @@
 //! komenagare: コメナガレを複数人で編集するためのホスト
 //!
-//!   komenagare [フォルダ] [--host 0.0.0.0] [--port 8764] ...
+//!   komenagare [フォルダ...] [--host 0.0.0.0] [--port 8764] [--otp] ...
 //!
-//! フォルダの comments.jsonl を読み込み、Web アプリを配信する。ブラウザから届いた変更は
-//! comments.jsonl に書き込み、git があれば変更ごとにコミットする。
+//! フォルダ（1フォルダ1プロジェクト。複数渡すとまとめて共有する）の comments.jsonl を読み込み、
+//! Web アプリを配信する。ブラウザから届いた変更は comments.jsonl に書き込み、git があれば変更ごとにコミットする。
 
+mod auth;
 mod files;
 mod firewall;
 mod render;
@@ -32,9 +33,9 @@ use workspace::{GitMode, LogEntry, Workspace};
 struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,
-    /// 作業フォルダ（komenagare init で作ったもの）
+    /// 作業フォルダ（komenagare init で作ったもの）。複数渡すと、まとめて共有して画面で切り替えられる
     #[arg(default_value = ".")]
-    dir: PathBuf,
+    dirs: Vec<PathBuf>,
     /// 待ち受けるアドレス。同じネットワークの人と共有するときは 0.0.0.0
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -47,6 +48,12 @@ struct Args {
     /// 参加用の合言葉を指定する（指定しなければ起動ごとに作る）
     #[arg(long, conflicts_with = "no_token")]
     token: Option<String>,
+    /// 合言葉の代わりに、参加者ごとのワンタイムパスワードで入る（komenagare otp new や画面の「招待」で発行する）
+    #[arg(long, conflicts_with_all = ["no_token", "token"])]
+    otp: bool,
+    /// ワンタイムパスワードとログインの記録を置く場所（既定は ~/.config/komenagare/auth など）
+    #[arg(long, value_name = "DIR", env = "KOMENAGARE_AUTH_DIR")]
+    auth_dir: Option<PathBuf>,
     /// 履歴（git）が残せなければ起動しない
     #[arg(long, conflicts_with = "no_git")]
     require_git: bool,
@@ -100,6 +107,14 @@ enum Cmd {
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
+    /// 参加者ごとのワンタイムパスワード（komenagare --otp で使う）を発行・一覧・取り消しする
+    Otp {
+        #[command(subcommand)]
+        cmd: OtpCmd,
+        /// ワンタイムパスワードとログインの記録を置く場所（ホストと同じにする）
+        #[arg(long, value_name = "DIR", env = "KOMENAGARE_AUTH_DIR", global = true)]
+        auth_dir: Option<PathBuf>,
+    },
     /// Web アプリの最新版を取ってくる（起動時にも自動で確かめる）
     UpdateWeb {
         /// Web アプリの取得元
@@ -143,6 +158,34 @@ enum Cmd {
         /// 文字の大きさの補正（省略するとフォントから求める）
         #[arg(long)]
         font_scale: Option<f64>,
+    },
+}
+
+#[derive(Subcommand)]
+enum OtpCmd {
+    /// ワンタイムパスワードを発行する（1回だけ使える。使うとその人の名前でログインした状態になる）
+    New {
+        /// 参加者の名前（変更履歴や git の作者になる）
+        name: String,
+        /// 数字 6 桁にする（既定は英数字 10 文字。数字は打ちやすいが、期限は短めに）
+        #[arg(long)]
+        numeric: bool,
+        /// 有効期限（例 10m・1h・7d。既定は数字なら 10m、英数字なら 7d）
+        #[arg(long, value_parser = auth::parse_ttl)]
+        expires: Option<std::time::Duration>,
+        /// 管理者にする（画面からワンタイムパスワードの発行・取り消しができる）
+        #[arg(long)]
+        admin: bool,
+        /// ホストの URL（例 https://komenagare.example.com）。付けるとそのまま開けるリンクも出す
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// ログイン中の人と、未使用のワンタイムパスワードの一覧
+    List,
+    /// 名前か id でセッションとワンタイムパスワードを取り消す（つながっていれば切れる）
+    Revoke {
+        /// 名前か id
+        who: String,
     },
 }
 
@@ -268,13 +311,30 @@ async fn run(args: Args) -> Result<()> {
         }
         return Ok(());
     }
-    let ws = Workspace::open(&args.dir, git_mode(args.no_git, args.require_git))?;
-    let mut store = Store::new(ws.load_comments()?);
-    let (seen, rev, history) = ws.load_log(server::HISTORY_KEEP)?;
-
-    if let Some(file) = &args.import {
-        let n = import(&ws, &mut store, file)?;
-        println!("{} から {} 件のコメントを取り込みました", file.display(), n);
+    if let Some(Cmd::Otp { cmd, auth_dir }) = &args.cmd {
+        return run_otp(cmd, auth_dir.as_deref());
+    }
+    if args.import.is_some() && args.dirs.len() > 1 {
+        bail!("--import は作業フォルダを1つだけ指定したときに使えます");
+    }
+    let mode = git_mode(args.no_git, args.require_git);
+    let mut opened: Vec<Opened> = vec![];
+    for dir in &args.dirs {
+        let ws = Workspace::open(dir, mode)?;
+        if let Some((other, ..)) = opened.iter().find(|(o, ..)| o.id == ws.id) {
+            bail!(
+                "{} と {} は同じ作業フォルダです（同じフォルダを2回指定したか、作業フォルダをコピーしています）",
+                other.dir.display(),
+                ws.dir.display()
+            );
+        }
+        let mut store = Store::new(ws.load_comments()?);
+        let (seen, rev, history) = ws.load_log(server::HISTORY_KEEP)?;
+        if let Some(file) = &args.import {
+            let n = import(&ws, &mut store, file)?;
+            println!("{} から {} 件のコメントを取り込みました", file.display(), n);
+        }
+        opened.push((ws, store, seen, rev, history));
     }
 
     // komenagare 自身の新しい版があるか（Web アプリの用意と並べて確かめる）
@@ -289,31 +349,54 @@ async fn run(args: Args) -> Result<()> {
             .flatten(),
         None => None,
     };
-    let token = if args.no_token {
-        None
+    let access = if args.otp {
+        let dir = match &args.auth_dir {
+            Some(d) => d.clone(),
+            None => auth::Auth::default_dir().context("ログインの記録の置き場所（ホームフォルダ）が分かりません。--auth-dir で指定してください")?,
+        };
+        server::Access::Otp(auth::Auth::open(&dir)?)
+    } else if args.no_token {
+        server::Access::None
     } else {
-        Some(args.token.clone().unwrap_or_else(random_token))
+        server::Access::Token(args.token.clone().unwrap_or_else(random_token))
     };
-    let dir = ws.dir.clone();
-    let workspace_id = ws.id.clone();
-    let git = ws.git;
-    let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
-    let (writer, writer_thread) = server::spawn_writer(ws);
-    let count = store.len();
-    let hub = server::Hub::new(
-        store,
-        rev,
-        seen,
-        history,
-        writer,
-        token.clone(),
+
+    let mut projects = vec![];
+    let mut writers = vec![];
+    let mut lines = vec![];
+    for (ws, store, seen, rev, history) in opened {
+        let base = ws
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ws.dir.display().to_string());
+        // 同じ名前のフォルダがあれば番号を付けて見分ける
+        let mut name = base.clone();
+        let mut n = 2;
+        while projects.iter().any(|p: &server::Project| p.name == name) {
+            name = format!("{base} ({n})");
+            n += 1;
+        }
+        lines.push(format!(
+            "{name}: {}（コメント {} 件、履歴: {}）",
+            ws.dir.display(),
+            store.len(),
+            if ws.git { "git" } else { "なし" }
+        ));
+        let id = ws.id.clone();
+        let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
+        let (writer, writer_thread) = server::spawn_writer(ws);
+        writers.push(writer_thread);
+        let hub = server::Hub::new(store, rev, seen, history, writer, conflicts, conflicts_file);
+        projects.push(server::Project { id, name, hub });
+    }
+    let server = server::Server::new(
+        projects,
+        access,
         match web_source {
             web::Source::Dir(d) => Some(d),
             web::Source::Bundled => None,
         },
-        workspace_id,
-        conflicts,
-        conflicts_file,
     );
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -323,10 +406,12 @@ async fn run(args: Args) -> Result<()> {
         format!("{addr} で待ち受けできません（--port で別のポートを指定してください）")
     })?;
 
-    let query = token
-        .as_ref()
-        .map(|t| format!("?k={t}"))
-        .unwrap_or_default();
+    // 開く URL に付けるもの（合言葉、または管理者用のワンタイムパスワード）
+    let (share_query, open_query) = match &server.access {
+        server::Access::Token(t) => (format!("?k={t}"), format!("?k={t}")),
+        server::Access::Otp(a) => (String::new(), format!("?otp={}", a.issue_startup()?.code)),
+        server::Access::None => (String::new(), String::new()),
+    };
     let local = format!(
         "http://{}:{}/{}",
         if addr.ip().is_unspecified() {
@@ -335,26 +420,50 @@ async fn run(args: Args) -> Result<()> {
             addr.ip().to_string()
         },
         addr.port(),
-        query
+        open_query
     );
     println!("komenagare {}", env!("CARGO_PKG_VERSION"));
-    println!(
-        "  作業フォルダ: {}（履歴: {}）",
-        dir.display(),
-        if git { "git" } else { "なし" }
-    );
-    println!("  コメント: {count} 件");
+    if lines.len() == 1 {
+        let l = &lines[0];
+        println!(
+            "  作業フォルダ: {}",
+            &l[l.find(": ").map_or(0, |i| i + 2)..]
+        );
+    } else {
+        println!(
+            "  プロジェクト: {} 件（画面の「プロジェクト」で切り替えられます）",
+            lines.len()
+        );
+        for l in &lines {
+            println!("    - {l}");
+        }
+    }
     println!("  Web アプリ: {web_label}");
-    println!("  開く: {local}");
+    match &server.access {
+        server::Access::Otp(a) => {
+            println!(
+                "  入り方: 参加者ごとのワンタイムパスワード（記録: {}）",
+                a.dir().display()
+            );
+            println!("  開く（管理者・この URL は1回だけ使えます）: {local}");
+        }
+        _ => println!("  開く: {local}"),
+    }
     if addr.ip().is_unspecified() {
         if let Some(ip) = lan_ip() {
-            println!("  共有: http://{ip}:{}/{query}", addr.port());
+            println!("  共有: http://{ip}:{}/{share_query}", addr.port());
         }
     } else if addr.ip().is_loopback() {
-        println!("  ほかの人と共有するには --host 0.0.0.0 を付けて起動してください");
+        println!("  ほかの人と共有するには --host 0.0.0.0 を付けて起動してください（サーバーで動かすなら前に HTTPS のリバースプロキシを置く）");
     }
-    if token.is_none() {
-        println!("  注意: 合言葉なしで起動しています。URL を知っている人は誰でも編集できます");
+    match &server.access {
+        server::Access::None => {
+            println!("  注意: 合言葉なしで起動しています。URL を知っている人は誰でも編集できます")
+        }
+        server::Access::Otp(_) => println!(
+            "  参加者の招待: 画面の「プロジェクト」→「招待」、または komenagare otp new <名前>"
+        ),
+        server::Access::Token(_) => {}
     }
     if let Some(tag) = newer {
         println!("  新しい版: komenagare {tag} があります（komenagare update で更新できます）");
@@ -372,10 +481,10 @@ async fn run(args: Args) -> Result<()> {
         firewall::check_in_background(ip, addr.port());
     }
 
-    let stop = hub.shutdown.clone();
-    axum::serve(listener, server::router(hub))
+    let stop = server.shutdown.clone();
+    axum::serve(listener, server::router(server))
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             // つながっている WebSocket を閉じないと終われない
             let _ = stop.send(true);
         })
@@ -383,9 +492,130 @@ async fn run(args: Args) -> Result<()> {
     println!("終了しています（書き込み中の変更を保存します）…");
     // Hub が持つ送り口が全部閉じると書き込み担当が終わる
     tokio::task::spawn_blocking(move || {
-        let _ = writer_thread.join();
+        for w in writers {
+            let _ = w.join();
+        }
     })
     .await?;
+    Ok(())
+}
+
+/// 読み込んだ作業フォルダ（作業フォルダ・コメント・適用済みの変更セット・通し番号・最近の変更）
+type Opened = (
+    Workspace,
+    Store,
+    std::collections::HashSet<String>,
+    u64,
+    std::collections::VecDeque<LogEntry>,
+);
+
+/// Ctrl+C（SIGINT）か、systemd などからの SIGTERM を待つ
+async fn shutdown_signal() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
+    }
+}
+
+/// komenagare otp
+fn run_otp(cmd: &OtpCmd, dir: Option<&Path>) -> Result<()> {
+    let dir = match dir {
+        Some(d) => d.to_path_buf(),
+        None => auth::Auth::default_dir().context(
+            "記録の置き場所（ホームフォルダ）が分かりません。--auth-dir で指定してください",
+        )?,
+    };
+    let a = auth::Auth::open(&dir)?;
+    let date = |ms: u64| {
+        let secs = ms.saturating_sub(auth::now_ms()) / 1000;
+        if secs >= 86400 {
+            format!("あと {} 日", secs / 86400)
+        } else if secs >= 3600 {
+            format!("あと {} 時間", secs / 3600)
+        } else {
+            format!("あと {} 分", secs.div_ceil(60))
+        }
+    };
+    match cmd {
+        OtpCmd::New {
+            name,
+            numeric,
+            expires,
+            admin,
+            url,
+        } => {
+            let kind = if *numeric {
+                auth::Kind::Numeric
+            } else {
+                auth::Kind::Random
+            };
+            let i = a.issue(
+                name,
+                *admin,
+                kind,
+                expires.unwrap_or_else(|| kind.default_ttl()),
+            )?;
+            println!("{name} のワンタイムパスワード: {}", i.code);
+            println!("  有効期限: {}（1回だけ使えます）", date(i.expires));
+            if let Some(u) = url {
+                println!("  リンク: {}/?otp={}", u.trim_end_matches('/'), i.code);
+            }
+        }
+        OtpCmd::List => {
+            let sessions = a.sessions();
+            let otps: Vec<_> = a.otps().into_iter().filter(|o| !o.startup).collect();
+            println!("ログイン中: {} 人", sessions.len());
+            for s in &sessions {
+                println!(
+                    "  {}  {}{}",
+                    s.id,
+                    s.name,
+                    if s.admin { "（管理者）" } else { "" }
+                );
+            }
+            println!("未使用のワンタイムパスワード: {} 件", otps.len());
+            for o in &otps {
+                println!(
+                    "  {}  {}{}  {}  {}",
+                    o.id,
+                    o.name,
+                    if o.admin { "（管理者）" } else { "" },
+                    if o.kind == auth::Kind::Numeric {
+                        "数字"
+                    } else {
+                        "英数字"
+                    },
+                    date(o.expires)
+                );
+            }
+            println!("記録の置き場所: {}", a.dir().display());
+        }
+        OtpCmd::Revoke { who } => {
+            let (sessions, otps) = a.revoke(who);
+            if sessions.is_empty() && otps == 0 {
+                bail!("「{who}」に合うものはありません（komenagare otp list で確かめられます）");
+            }
+            println!(
+                "取り消しました: ログイン {} 件、ワンタイムパスワード {} 件（つながっている人は 15 秒ほどで切れます）",
+                sessions.len(),
+                otps
+            );
+        }
+    }
     Ok(())
 }
 
