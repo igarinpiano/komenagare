@@ -19,6 +19,8 @@ function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.
 /* ---------- 状態 ---------- */
 // コメントの追加・変更・削除はすべて store（js/comment-store.js）の変更セットで行う
 const store = new CommentStore();
+// 共同編集で自分の様子（再生位置・選択・カーソル）を送るための状態（送る処理は「ほかの参加者の様子」）
+const presence = { ready: false, timer: 0, last: 0, sent: '', cursor: null, dirty: false, dlgAt: 0, dlgRows: new Map() };
 const state = {
   get comments(){ return store.comments; }, layouts: [],
   changeLog: [], // この画面で行った変更（変更履歴の表示用。新しいものが後ろ）
@@ -327,6 +329,7 @@ function loop(){
   }
   tlFrame(playing, t);
   vimFrame(playing, t);
+  presenceFrame();
 }
 
 /* =====================================================================
@@ -669,12 +672,15 @@ palette.addEventListener('keydown', (e) => { if (e.key === 'Escape'){ setPalette
    コメントリスト
    ===================================================================== */
 let listItems = [], listRows = [], currentRowIdx = -1, lastHL = NaN, listHover = false;
+const listRowOf = new Map(); // コメントの id → リストの行
+let listPeerRows = []; // ほかの人の選択で色を付けた行
 list.addEventListener('mouseenter', () => { listHover = true; });
 list.addEventListener('mouseleave', () => { listHover = false; });
 function renderList(){
   const q = $('#search').value.trim().toLowerCase();
   listItems = q ? state.comments.filter(c => c.text.toLowerCase().includes(q) || c.cmd.toLowerCase().includes(q)) : state.comments.slice();
   const frag = document.createDocumentFragment();
+  listRowOf.clear(); listPeerRows = [];
   listRows = listItems.map((c, i) => {
     const row = document.createElement('div');
     row.className = 'row' + (c.mine ? ' mine' : '') + (parseCmd(c.cmd).invisible ? ' inv' : '');
@@ -688,6 +694,7 @@ function renderList(){
     const del = document.createElement('button'); del.className = 'del'; del.title = '削除'; del.textContent = '×';
     row.append(rt, rc, rm, del);
     frag.append(row);
+    listRowOf.set(c.id, row);
     return row;
   });
   list.replaceChildren(frag);
@@ -700,6 +707,7 @@ function renderList(){
   $('#listCount').textContent = q ? `${listItems.length} / ${state.comments.length}件` : `${state.comments.length}件`;
   currentRowIdx = -1; lastHL = NaN;
   highlightCurrent(video.currentTime || 0);
+  listMarkPeers();
 }
 $('#search').addEventListener('input', renderList);
 list.addEventListener('click', (e) => {
@@ -1536,6 +1544,7 @@ function tlClampView(){
   TL.dirty = true;
   const v = b.maxPps > b.minPps ? Math.log(TL.pps / b.minPps) / Math.log(b.maxPps / b.minPps) : 0;
   $('#tlZoom').value = Math.round(v * 1000);
+  presenceDirty();
 }
 function tlZoomAt(factor, x){
   const t = xt(x);
@@ -1669,6 +1678,7 @@ function tlDraw(){
     tlDrawClip(g, c, sp, y, lh, pos.g);
   }
   if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
+  tlDrawPeerSel(g, t1);
   g.restore();
   // 見出し列
   g.fillStyle = '#101010'; g.fillRect(0, TL_RULER, TL_HEAD, H);
@@ -1703,6 +1713,7 @@ function tlDraw(){
     g.fillRect(Math.round(px) - 0.5, 0, 1.5, H);
     g.beginPath(); g.moveTo(px - 6, 0); g.lineTo(px + 6, 0); g.lineTo(px + 6, 8); g.lineTo(px, 14); g.lineTo(px - 6, 8); g.closePath(); g.fill();
   }
+  tlDrawPeers(g);
   tlSyncVbar();
 }
 /* ---------- 縦スクロールバー ---------- */
@@ -1820,6 +1831,7 @@ function tlSelChanged(){
   $('#tlEdit').disabled = n !== 1;
   $('#tlDelete').disabled = !n;
   TL.dirty = true; state.needsDraw = true;
+  presenceDirty();
   if (n === 1) tlShowInfo(tlSelected()[0]);
   else $('#tlInfo').textContent = n ? `${n} 件選択中` : 'ダブルクリックで作成・編集';
 }
@@ -2861,10 +2873,14 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 2;
+const COLLAB_PROTOCOL = 3;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
+  shared: [], // 「あとで」にされてホストに預けられた衝突（全員のもの。author・client 付き）
+  me: null, peerList: [], // 自分の接続 id と、参加者（{ id, name, client }）
+  presence: new Map(), // 接続 id → { state, at }（ほかの人の再生位置・選択・カーソル）
+  follow: null, // 追いかけている人の接続 id
   workspace: document.querySelector('meta[name="komenagare-host"]')?.dataset.workspace || 'default',
   key: (() => {
     const k = new URLSearchParams(location.search).get('k');
@@ -2926,7 +2942,9 @@ function collabConnect(){
     if (collab.ws !== ws) return;
     if (collab.blocked){ collab.connected = false; collabUI(); return; }
     const was = collab.connected;
-    collab.connected = false; collab.peers = [];
+    collab.connected = false; collab.peers = []; collab.peerList = []; collab.presence.clear();
+    if (collab.follow != null) collabUnfollow();
+    presenceChanged();
     if (!was) collab.failed++;
     collabUI();
     collab.timer = setTimeout(collabConnect, Math.min(10000, 1000 * 2 ** Math.min(collab.retry++, 4)));
@@ -2940,8 +2958,10 @@ function collabHandle(m){
     store.reset(m.comments.map(c => ({ ...c, mine: mine.has(c.id) })));
     for (const e of collab.outbox) store.apply(e.change);
     commentsChanged();
-    collab.connected = true; collab.retry = 0; collab.failed = 0;
+    collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null;
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
+    collabShareConflicts();
+    presence.sent = ''; presenceDirty();
     collabSaveSoon();
     collabUI();
     histChanged();
@@ -2966,7 +2986,22 @@ function collabHandle(m){
     histRender();
   } else if (m.type === 'peers'){
     collab.peers = m.names || [];
-    collabUI();
+    collab.peerList = m.peers || [];
+    const ids = new Set(collab.peerList.map(p => p.id));
+    for (const id of [...collab.presence.keys()]) if (!ids.has(id)) collab.presence.delete(id);
+    if (collab.follow != null && !ids.has(collab.follow)) collabUnfollow('追いかけていた人が抜けました');
+    collabUI(); presenceChanged();
+  } else if (m.type === 'presence'){
+    if (m.id === collab.me) return;
+    collab.presence.set(m.id, { state: m.state || {}, at: performance.now() });
+    presenceChanged();
+    if (m.id === collab.follow) followApply(true);
+  } else if (m.type === 'conflicts'){
+    collab.shared = Array.isArray(m.list) ? m.list : [];
+    // ホストに預けられたものは手元の控えから外す
+    const keys = new Set(collab.shared.map(r => r.key));
+    collab.conflicts = collab.conflicts.filter(r => !keys.has(r.key));
+    conflictsChanged();
   } else if (m.type === 'error'){
     toast('ホスト: ' + m.message, { type:'error', timeout: m.code === 'protocol' ? 20000 : 3800 });
     if (m.code === 'protocol'){ collab.blocked = true; collab.ws.close(); }
@@ -3016,7 +3051,7 @@ function collabUI(){
   if (collab.connected){
     el.className = 'collab on';
     el.textContent = `● 共同編集 ${collab.peers.length}人` + (pending ? `（送信中 ${pending}）` : '');
-    el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで表示名を変更（今: ${collabName() || 'ゲスト'}）`;
+    el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで参加者の一覧（追いかける・表示名の変更）`;
   } else {
     el.className = 'collab off';
     el.textContent = (collab.blocked ? '○ ページを再読み込みしてください' : collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン') + (pending ? `（未送信 ${pending}）` : '');
@@ -3026,12 +3061,14 @@ function collabUI(){
 
 async function collabInit(){
   if (!state.collab) return;
-  $('#collabStatus').onclick = () => {
+  $('#collabStatus').onclick = peersOpen;
+  $('#peersRename').onclick = () => {
     const n = prompt('共同編集で表示する名前', collabName());
     if (n == null) return;
     collabLS('komenagare.name', n.trim().slice(0, 40));
     if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId() }));
   };
+  presence.ready = true;
   if (!collabName()){
     const n = prompt('共同編集で表示する名前を入力してください（コミットの作者名になります）', '');
     if (n && n.trim()) collabLS('komenagare.name', n.trim().slice(0, 40));
@@ -3159,11 +3196,37 @@ const CONFLICT_WHY = {
   'modified:delete': 'あなたは削除しようとしましたが、ほかの人が先に変更していました',
   'exists:add': '同じ id のコメントが既にありました',
 };
+const allConflicts = () => [...collab.conflicts, ...collab.shared];
+// 自分の変更か（ホストに預けたものも、同じブラウザから出したものなら自分の分）
+const conflictOwn = (rec) => !rec.author || rec.client === collabClientId();
+// 今の内容（ホストに預けた衝突はあとから変わっていることがあるので、いつも今の値を見る）
+const conflictNow = (rec) => { const c = store.get(rec.id); return c ? pickFields(c) : null; };
 function conflictActions(rec){
-  if (rec.opType === 'update' && rec.theirs) return [['mine', 'あなたの変更にする'], ['keep', '相手のままにする'], ['both', '両方残す']];
-  if (rec.opType === 'update') return [['mine', 'あなたの内容で復活させる'], ['keep', '削除のままにする']];
+  const own = conflictOwn(rec), who = own ? 'あなた' : rec.author;
+  if (rec.opType === 'update' && conflictNow(rec)) return [['mine', `${who}の変更にする`], ['keep', own ? '相手のままにする' : '今のままにする'], ['both', '両方残す']];
+  if (rec.opType === 'update') return [['mine', `${who}の内容で復活させる`], ['keep', '削除のままにする']];
   if (rec.opType === 'delete') return [['mine', 'それでも削除する'], ['keep', '残す']];
   return [['both', '新しいコメントとして追加する'], ['keep', '追加しない']];
+}
+// 衝突を一覧から外す（ホストに預けたものは全員の一覧から外す）
+function conflictDrop(recs){
+  const shared = recs.filter(r => collab.shared.includes(r)).map(r => r.key);
+  if (shared.length && collab.connected) collab.ws.send(JSON.stringify({ type: 'conflict_done', keys: shared }));
+  collab.conflicts = collab.conflicts.filter(r => !recs.includes(r));
+  collab.shared = collab.shared.filter(r => !recs.includes(r));
+  conflictsChanged();
+}
+// 「あとで」にした衝突をホストに預けて、ほかの参加者にも見せる（つながっていなければ、つながったときに送る）
+function collabShareConflicts(){
+  const recs = collab.conflicts.filter(r => r.share);
+  if (!recs.length || !collab.connected) return;
+  collab.ws.send(JSON.stringify({ type: 'conflict_add', conflicts: recs.map(({ share, ...r }) => r) }));
+}
+function conflictLater(){
+  if (!state.collab || !collab.conflicts.some(r => !r.share)) return;
+  for (const r of collab.conflicts) r.share = true;
+  conflictsChanged();
+  collabShareConflicts();
 }
 function conflictResolve(rec, action){
   const cur = store.get(rec.id);
@@ -3181,12 +3244,11 @@ function conflictResolve(rec, action){
     ops = [addOp(c)];
   }
   if (ops.length) commitOps(ops);
-  collab.conflicts = collab.conflicts.filter(x => x !== rec);
-  conflictsChanged();
+  conflictDrop([rec]);
 }
 function conflictsChanged(){
   collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts')).catch(e => console.warn(e));
-  const n = collab.conflicts.length;
+  const n = allConflicts().length;
   for (const b of [$('#conflictBtn'), $('#histConflicts')]){ b.hidden = !n; b.textContent = `⚠ 衝突 ${n}`; }
   if ($('#conflictDlg').open){ if (n) conflictRender(); else $('#conflictDlg').close(); }
 }
@@ -3194,16 +3256,19 @@ function conflictRender(){
   const label = { t: '時刻', cmd: 'コマンド', text: '本文' };
   const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : (v || '（なし）');
   const frag = document.createDocumentFragment();
-  for (const rec of collab.conflicts){
+  for (const rec of allConflicts()){
     const box = mkEl('div', 'cf-item');
-    const base = rec.theirs || rec.mine || {};
+    const own = conflictOwn(rec), now = conflictNow(rec);
+    const base = now || rec.mine || {};
     box.append(mkEl('div', 'cf-title', `「${clip(base.text, 60)}」 ${fmtPrecise(base.t ?? 0)}`));
-    box.append(mkEl('div', 'cf-why', CONFLICT_WHY[`${rec.reason}:${rec.opType}`] || 'ほかの人の変更と重なりました'));
+    const why = CONFLICT_WHY[`${rec.reason}:${rec.opType}`] || 'ほかの人の変更と重なりました';
+    box.append(mkEl('div', 'cf-why', own ? why : `${rec.author} の変更：${why.replace(/^あなたは/, '')}`));
+    if (rec.author || rec.share) box.append(mkEl('div', 'cf-shared', own ? 'ほかの参加者にも表示しています' : `${rec.author} が「あとで」にしたものです。誰が選んでもかまいません`));
     // 3-way：元の値（共通の祖先）・あなた・相手（今の内容）を並べ、どれかが違う項目だけ出す
     const table = mkEl('table', 'cf-table');
     const cols = [];
     if (rec.base) cols.push(['元の値', rec.base, '（なし）']);
-    cols.push(['あなた', rec.mine, '（削除）'], ['相手（今の内容）', rec.theirs, '（削除済み）']);
+    cols.push([own ? 'あなた' : rec.author, rec.mine, '（削除）'], [own ? '相手（今の内容）' : '今の内容', now, '（削除済み）']);
     const head = mkEl('tr'); head.append(mkEl('th'), ...cols.map(([name]) => mkEl('th', null, name))); table.append(head);
     const vals = cols.map(([, v]) => v).filter(Boolean);
     let keys = COMMENT_FIELDS.filter(k => vals.some(v => v[k] !== vals[0][k]));
@@ -3230,11 +3295,288 @@ function conflictRender(){
   }
   $('#conflictList').replaceChildren(frag);
 }
-function conflictOpen(){ if (!collab.conflicts.length) return; conflictRender(); if (!$('#conflictDlg').open) $('#conflictDlg').showModal(); }
+function conflictOpen(){ if (!allConflicts().length) return; conflictRender(); if (!$('#conflictDlg').open) $('#conflictDlg').showModal(); }
 $('#conflictBtn').onclick = conflictOpen;
 $('#histConflicts').onclick = conflictOpen;
 $('#conflictLater').onclick = () => $('#conflictDlg').close();
-$('#conflictKeepAll').onclick = () => { collab.conflicts = []; conflictsChanged(); };
+// 閉じたら（「あとで」・Esc）残っている衝突をほかの参加者にも見せる
+$('#conflictDlg').addEventListener('close', conflictLater);
+$('#conflictKeepAll').onclick = () => conflictDrop(allConflicts());
+
+/* =====================================================================
+   ほかの参加者の様子（共同編集）
+   - 再生位置・選択中のコメント・タイムラインの表示範囲・マウスカーソルをホスト経由で配り合い、
+     シークバー・タイムライン・リスト・プレビューに相手の色で薄く出す
+   - 参加者の一覧で「追いかける」を選ぶと、その人の再生位置とタイムラインの表示に合わせ続ける
+     （自分で操作したらやめる）
+   ===================================================================== */
+const PRESENCE_MS = 100; // 送る間隔の最短
+// 人ごとの色（番号はホストが今いる人の中で重ならないように決める）
+const PEER_HUES = [140, 205, 25, 290, 50, 330, 175, 0, 245, 90];
+const peerColor = (p, a = 1) => `hsla(${PEER_HUES[(p.color ?? hashStr(String(p.client))) % PEER_HUES.length]}, 85%, 62%, ${a})`;
+const peerOf = (id) => collab.peerList.find(p => p.id === id);
+// ほかの人の今の再生位置（再生中なら、届いてからの時間だけ進める）
+function peerTime(pr){
+  const s = pr.state;
+  if (typeof s.t !== 'number') return null;
+  return s.playing ? s.t + (performance.now() - pr.at) / 1000 * (s.rate || 1) : s.t;
+}
+// タイムラインの縦位置は、段の高さが人によって違う（タッチ端末は高い）ので「グループと段」で表す
+function tlYToLane(cy){
+  for (let gi = 0; gi < TL.groups.length; gi++){
+    const G = TL.groups[gi];
+    if (cy < G.y + G.n * laneH() + TL_GAP || gi === TL.groups.length - 1) return { g: gi, l: +((cy - G.y) / laneH()).toFixed(3) };
+  }
+  return { g: 0, l: 0 };
+}
+function tlLaneToY(p){ const G = p && TL.groups[p.g]; return G ? G.y + p.l * laneH() : 0; }
+
+function presenceState(){
+  return {
+    t: +(video.currentTime || 0).toFixed(3), playing: state.videoLoaded && !video.paused && !video.ended, rate: video.playbackRate,
+    sel: [...TL.sel].slice(0, 200),
+    view: TL.inited && tlShown() ? { t0: +TL.t0.toFixed(3), span: +((TL.W - TL_HEAD) / TL.pps).toFixed(3), y: tlYToLane(TL.scrollY) } : null,
+    cur: presence.cursor,
+  };
+}
+function presenceDirty(){
+  if (!presence.ready || !collab.connected || presence.timer) return;
+  presence.timer = setTimeout(presenceSend, Math.max(0, PRESENCE_MS - (performance.now() - presence.last)));
+}
+function presenceSend(){
+  presence.timer = 0;
+  if (!collab.connected) return;
+  const json = JSON.stringify(presenceState());
+  if (json === presence.sent) return;
+  presence.sent = json; presence.last = performance.now();
+  collab.ws.send(`{"type":"presence","state":${json}}`);
+}
+for (const ev of ['play', 'pause', 'seeked', 'ratechange']) video.addEventListener(ev, presenceDirty);
+setInterval(() => { if (!video.paused) presenceDirty(); }, 1000);
+function presenceCursor(cur){ presence.cursor = cur; presenceDirty(); }
+TL.main.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') return;
+  const { x, y } = tlLocal(e);
+  presenceCursor(x > TL_HEAD && y > TL_RULER ? { a:'tl', t: +xt(x).toFixed(3), y: tlYToLane(y - TL_RULER + TL.scrollY) } : null);
+});
+stage.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') return;
+  const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+  presenceCursor(x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { a:'st', x: +x.toFixed(4), y: +y.toFixed(4) } : null);
+});
+for (const el of [TL.main, stage]) el.addEventListener('pointerleave', () => presenceCursor(null));
+
+/* ---------- ほかの人の様子を出す ---------- */
+function presenceChanged(){ TL.dirty = true; presence.dirty = true; }
+function presenceFrame(){
+  if (!state.collab) return;
+  let moving = false;
+  for (const pr of collab.presence.values()) if (pr.state.playing) moving = true;
+  if (moving) TL.dirty = true;
+  const changed = presence.dirty;
+  if (changed || moving){ presence.dirty = false; seekMarks(); stageCursors(); }
+  if (changed) listMarkPeers();
+  if ($('#peersDlg').open && (changed || performance.now() - presence.dlgAt > 300)) peersUpdate();
+}
+// box の子要素を n 個にそろえて返す
+function syncEls(box, n, make){
+  while (box.children.length < n) box.append(make());
+  while (box.children.length > n) box.lastChild.remove();
+  return [...box.children];
+}
+function seekMarks(){
+  const d = video.duration, items = [];
+  if (isFinite(d) && d > 0) for (const [id, pr] of collab.presence){
+    const p = peerOf(id), t = peerTime(pr);
+    if (p && t != null) items.push([p, t]);
+  }
+  const els = syncEls($('#peerMarks'), items.length, () => mkEl('div', 'peer-mark'));
+  items.forEach(([p, t], i) => {
+    els[i].style.left = (clamp(t / d, 0, 1) * 100) + '%';
+    els[i].style.background = peerColor(p);
+    els[i].title = `${p.name} ${fmt(t)}`;
+  });
+}
+function stageCursors(){
+  const items = [];
+  for (const [id, pr] of collab.presence){
+    const p = peerOf(id), cur = pr.state.cur;
+    if (p && cur && cur.a === 'st') items.push([p, cur]);
+  }
+  const els = syncEls($('#peerCursors'), items.length, () => {
+    const el = mkEl('div', 'peer-cursor');
+    el.innerHTML = '<svg width="14" height="18" viewBox="0 0 14 18"><path d="M1 1v14l4-4h7z" fill="currentColor" stroke="rgba(0,0,0,.6)"/></svg><span></span>';
+    return el;
+  });
+  items.forEach(([p, cur], i) => {
+    const el = els[i];
+    el.style.left = (canvas.offsetLeft + cur.x * canvas.offsetWidth) + 'px';
+    el.style.top = (canvas.offsetTop + cur.y * canvas.offsetHeight) + 'px';
+    el.style.setProperty('--peer', peerColor(p));
+    el.lastChild.textContent = p.name;
+  });
+}
+function listMarkPeers(){
+  for (const row of listPeerRows) row.classList.remove('peer-sel');
+  listPeerRows = [];
+  if (!state.collab) return;
+  for (const [id, pr] of collab.presence){
+    const p = peerOf(id);
+    if (!p) continue;
+    for (const cid of pr.state.sel || []){
+      const row = listRowOf.get(cid);
+      if (!row) continue;
+      row.classList.add('peer-sel'); row.style.setProperty('--peer', peerColor(p));
+      listPeerRows.push(row);
+    }
+  }
+}
+// タイムライン：ほかの人が選んでいるコメントを、その人の色の点線で囲む
+function tlDrawPeerSel(g, t1){
+  if (!state.collab || !collab.presence.size) return;
+  const lh = laneH();
+  g.save(); g.lineWidth = 2; g.setLineDash([5, 3]);
+  for (const [id, pr] of collab.presence){
+    const p = peerOf(id);
+    if (!p || !pr.state.sel || !pr.state.sel.length) continue;
+    g.strokeStyle = peerColor(p, 0.95); g.fillStyle = peerColor(p, 0.18);
+    for (const cid of pr.state.sel){
+      const c = store.get(cid), pos = c && TL.laneOf.get(cid);
+      if (!pos) continue;
+      const sp = spanOf(c);
+      if (sp.e < TL.t0 || sp.s > t1) continue;
+      const y = laneTop(pos.g, pos.lane), x0 = tx(sp.s), w = Math.max(3, tx(sp.e) - x0);
+      rr(g, x0 + 0.5, y + 2, w - 1, lh - 4, 4); g.fill();
+      rr(g, x0 - 0.5, y + 1, w + 1, lh - 2, 5); g.stroke();
+    }
+  }
+  g.restore();
+}
+// タイムライン：ほかの人の再生位置とマウスカーソル
+function tlDrawPeers(g){
+  if (!state.collab || !collab.presence.size) return;
+  const W = TL.W, H = TL.H;
+  g.save(); g.beginPath(); g.rect(TL_HEAD, 0, W - TL_HEAD, H); g.clip();
+  g.font = '600 10px system-ui,sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle';
+  for (const [id, pr] of collab.presence){
+    const p = peerOf(id);
+    if (!p) continue;
+    const t = peerTime(pr);
+    if (t != null){
+      const x = tx(t);
+      if (x >= TL_HEAD - 5 && x <= W + 5){
+        g.fillStyle = peerColor(p, 0.5); g.fillRect(Math.round(x) - 0.5, TL_RULER, 1.5, H);
+        g.fillStyle = peerColor(p, 0.9);
+        g.beginPath(); g.moveTo(x - 4, TL_RULER - 9); g.lineTo(x + 4, TL_RULER - 9); g.lineTo(x, TL_RULER - 1); g.closePath(); g.fill();
+      }
+    }
+    const cur = pr.state.cur;
+    if (cur && cur.a === 'tl'){
+      const x = tx(cur.t), y = TL_RULER + tlLaneToY(cur.y) - TL.scrollY;
+      if (x >= TL_HEAD && x <= W && y >= TL_RULER && y <= H) tlDrawCursor(g, x, y, p);
+    }
+  }
+  g.restore();
+}
+function tlDrawCursor(g, x, y, p){
+  g.fillStyle = peerColor(p); g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 14); g.lineTo(x + 4, y + 10); g.lineTo(x + 10, y + 10); g.closePath(); g.fill(); g.stroke();
+  const label = clip(p.name, 12), w = g.measureText(label).width + 8;
+  g.fillStyle = peerColor(p, 0.9); rr(g, x + 8, y + 12, w, 14, 3); g.fill();
+  g.fillStyle = '#111'; g.fillText(label, x + 12, y + 19.5);
+}
+
+/* ---------- 参加者の一覧と追いかける ---------- */
+function presenceText(s, t = s.t){
+  if (typeof t !== 'number') return '—';
+  const parts = [(s.playing ? '再生中 ' : '停止中 ') + fmt(t)];
+  if (s.sel && s.sel.length) parts.push(`${s.sel.length} 件選択中`);
+  return parts.join('　');
+}
+function peersRender(){
+  const frag = document.createDocumentFragment();
+  presence.dlgRows.clear();
+  if (!collab.connected) frag.append(mkEl('p', 'muted', 'ホストにつながっていません'));
+  for (const p of collab.peerList){
+    const me = p.id === collab.me, on = collab.follow === p.id;
+    const row = mkEl('div', 'peer-row' + (on ? ' on' : ''));
+    row.style.setProperty('--peer', peerColor(p));
+    const info = mkEl('div', 'peer-info'), st = mkEl('div', 'peer-state');
+    info.append(mkEl('div', 'peer-name', p.name + (me ? '（あなた）' : '')), st);
+    row.append(mkEl('span', 'peer-dot'), info);
+    if (!me){
+      const b = mkEl('button', on ? 'primary' : null, on ? '追いかけるのをやめる' : '追いかける');
+      b.onclick = () => { if (on) collabUnfollow(); else { collabFollow(p.id); $('#peersDlg').close(); } };
+      row.append(b);
+    }
+    presence.dlgRows.set(p.id, st);
+    frag.append(row);
+  }
+  $('#peersList').replaceChildren(frag);
+  peersUpdate();
+}
+// 一覧の再生位置などだけを書き換える（ボタンは作り直さない）
+function peersUpdate(){
+  presence.dlgAt = performance.now();
+  for (const [id, el] of presence.dlgRows){
+    const pr = collab.presence.get(id);
+    el.textContent = id === collab.me ? presenceText(presenceState()) : pr ? presenceText(pr.state, peerTime(pr)) : '—';
+  }
+}
+function peersOpen(){ peersRender(); if (!$('#peersDlg').open) $('#peersDlg').showModal(); }
+$('#peersClose').onclick = () => $('#peersDlg').close();
+
+function collabFollow(id){
+  if (id == null || id === collab.me) return collabUnfollow();
+  collab.follow = id;
+  followUI();
+  followApply();
+}
+function collabUnfollow(msg){
+  if (collab.follow == null) return;
+  collab.follow = null;
+  followUI();
+  if (msg) toast(msg, { timeout: 2500 });
+}
+function followUI(){
+  const p = collab.follow != null ? peerOf(collab.follow) : null;
+  $('#followBar').hidden = !p;
+  $('#player').classList.toggle('following', !!p);
+  if (p){ $('#player').style.setProperty('--peer', peerColor(p)); $('#followName').textContent = p.name; }
+  if ($('#peersDlg').open) peersRender();
+}
+// 追いかけている人の再生位置・速さ・タイムラインの表示に合わせる（その人の様子が届くたび）
+function followApply(){
+  const pr = collab.presence.get(collab.follow);
+  if (!pr) return;
+  const s = pr.state;
+  if (state.videoLoaded && typeof s.t === 'number'){
+    if (s.rate && video.playbackRate !== s.rate){ video.playbackRate = s.rate; $('#rate').value = String(s.rate); }
+    const playing = !video.paused && !video.ended;
+    if (!!s.playing !== playing){ if (s.playing) video.play().catch(() => {}); else video.pause(); }
+    const t = peerTime(pr);
+    if (Math.abs(video.currentTime - t) > (s.playing ? 0.4 : 0.02)) seekTo(t);
+  }
+  if (s.view && tlShown()){
+    TL.pps = (TL.W - TL_HEAD) / Math.max(0.01, s.view.span);
+    // 再生中の横位置は、自分の再生位置への追従（⇥ 追従）に任せる（届く間隔ごとにがたつかないように）
+    if (!(s.playing && TL.follow)) TL.t0 = s.view.t0;
+    TL.scrollY = tlLaneToY(s.view.y);
+    tlClampView();
+  }
+}
+$('#followStop').onclick = (e) => { e.stopPropagation(); collabUnfollow(); };
+for (const ev of ['pointerdown', 'click', 'dblclick']) $('#followBar').addEventListener(ev, (e) => e.stopPropagation());
+// 自分で操作したら追いかけるのをやめる
+for (const el of [TL.main, TL.ovBox, tlVbar, seekEl, stage, list, $('#btnPlay'), $('#rate'), $('#tlZoom'), $('#tlZoomIn'), $('#tlZoomOut'), $('#tlFit')]){
+  el.addEventListener('pointerdown', () => collabUnfollow(), true);
+}
+for (const el of [TL.main, TL.ovBox]) el.addEventListener('wheel', () => collabUnfollow(), { capture: true, passive: true });
+document.addEventListener('keydown', (e) => {
+  if (collab.follow == null || e.ctrlKey || e.metaKey || e.altKey || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || document.querySelector('dialog[open]')) return;
+  collabUnfollow();
+}, true);
 
 /* =====================================================================
    設定UI・ショートカット・その他

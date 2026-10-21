@@ -1,15 +1,20 @@
 //! Web アプリの配信と、WebSocket での変更のやりとり。
 //!
 //! クライアント → サーバー
-//!   {"type":"hello","protocol":2,"name":"表示名","client":"ブラウザごとの id"}
+//!   {"type":"hello","protocol":3,"name":"表示名","client":"ブラウザごとの id"}
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
+//!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
+//!   {"type":"conflict_add","conflicts":[{"key":..,...}]}     「あとで」にした衝突を全員に見せる
+//!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"comments":[...]}            接続直後の全体
+//!   {"type":"snapshot","rev":N,"you":接続id,"comments":[...]} 接続直後の全体
+//!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
+//!   {"type":"conflicts","list":[{"key",..,"author","client"}]} 保留中の衝突（変わるたびに全体）
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
 //!   {"type":"history","entries":[{"rev","time","author","change"},...]} 最近の変更（新しい順）
 //!   {"type":"ack","id":"変更セットid","rev":N,"dup":bool,"conflicts":[...],"fix":[{"id":..,"comment":..|null}]}
-//!   {"type":"peers","names":[...]}                           参加者
+//!   {"type":"peers","names":[...],"peers":[{"id","name","client","color"}]} 参加者（color は色の番号。今いる人の中で空いている一番小さい番号）
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
 //! hello の protocol が PROTOCOL と違えば {"type":"error","code":"protocol"} を返して切る。
 
@@ -31,7 +36,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -48,6 +53,7 @@ pub struct Hub {
     token: Option<String>,
     web_dir: Option<PathBuf>,
     workspace_id: String,
+    conflicts_file: PathBuf,
     next_conn: AtomicU64,
     /// 終了するときに接続を閉じる合図
     pub shutdown: tokio::sync::watch::Sender<bool>,
@@ -57,10 +63,25 @@ struct Inner {
     store: Store,
     rev: u64,
     seen: HashSet<String>,
-    peers: HashMap<u64, String>,
+    peers: HashMap<u64, Peer>,
     /// 最近の変更（古い順。変更履歴の表示用）
     history: VecDeque<LogEntry>,
+    /// 「あとで」にした衝突（全員に見せる）
+    conflicts: Vec<Value>,
 }
+
+struct Peer {
+    name: String,
+    client: String,
+    color: u32,
+    /// 最後に届いた状態（後から入った人に渡す）
+    presence: Option<Value>,
+}
+
+/// 保留中の衝突として覚えておく件数の上限
+const CONFLICTS_KEEP: usize = 500;
+/// presence 1件の大きさの上限（バイト）
+const PRESENCE_MAX: usize = 16 * 1024;
 
 /// 変更履歴として覚えておく件数
 pub const HISTORY_KEEP: usize = 1000;
@@ -108,6 +129,8 @@ impl Hub {
         token: Option<String>,
         web_dir: Option<PathBuf>,
         workspace_id: String,
+        conflicts: Vec<Value>,
+        conflicts_file: PathBuf,
     ) -> Arc<Hub> {
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Hub {
@@ -117,12 +140,14 @@ impl Hub {
                 seen,
                 peers: HashMap::new(),
                 history,
+                conflicts,
             }),
             tx,
             writer,
             token,
             web_dir,
             workspace_id,
+            conflicts_file,
             next_conn: AtomicU64::new(1),
             shutdown: tokio::sync::watch::channel(false).0,
         })
@@ -225,6 +250,7 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
 
     let mut name = String::from("名無し");
     let mut email = String::from("anonymous@komenagare");
+    let mut client = String::new();
     let mut shutdown = hub.shutdown.subscribe();
     loop {
         let msg = tokio::select! {
@@ -251,16 +277,87 @@ async fn connection(hub: Arc<Hub>, socket: WebSocket) {
                     .as_str()
                     .filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))
                 {
-                    email = format!("{}@komenagare", c.chars().take(40).collect::<String>());
+                    client = c.chars().take(40).collect();
+                    email = format!("{client}@komenagare");
                 }
                 let mut inner = hub.inner.lock().await;
-                inner.peers.insert(conn, name.clone());
+                let (presence, color) = match inner.peers.remove(&conn) {
+                    Some(p) => (p.presence, p.color),
+                    None => (None, free_color(&inner.peers)),
+                };
+                inner.peers.insert(
+                    conn,
+                    Peer {
+                        name: name.clone(),
+                        client: client.clone(),
+                        color,
+                        presence,
+                    },
+                );
                 let comments: Vec<&Comment> = inner.store.sorted();
                 let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "comments": comments })
+                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "comments": comments })
                         .to_string(),
                 );
+                let _ = out_tx.send(conflicts_msg(&inner));
+                for (id, p) in &inner.peers {
+                    if let (true, Some(state)) = (*id != conn, &p.presence) {
+                        let _ = out_tx.send(
+                            json!({ "type": "presence", "id": id, "state": state }).to_string(),
+                        );
+                    }
+                }
                 broadcast_peers(&hub, &inner);
+            }
+            Some("presence") => {
+                let state = &v["state"];
+                if !state.is_object() || text.len() > PRESENCE_MAX {
+                    continue;
+                }
+                let mut inner = hub.inner.lock().await;
+                let Some(p) = inner.peers.get_mut(&conn) else {
+                    continue;
+                };
+                p.presence = Some(state.clone());
+                let msg = json!({ "type": "presence", "id": conn, "state": state }).to_string();
+                let _ = hub.tx.send((conn, msg.into()));
+            }
+            Some("conflict_add") => {
+                let mut inner = hub.inner.lock().await;
+                let mut changed = false;
+                for rec in v["conflicts"].as_array().into_iter().flatten() {
+                    let Some(rec) = accept_conflict(rec, &name, &client) else {
+                        continue;
+                    };
+                    if inner.conflicts.iter().any(|c| c["key"] == rec["key"]) {
+                        continue;
+                    }
+                    inner.conflicts.push(rec);
+                    changed = true;
+                }
+                if changed {
+                    let n = inner.conflicts.len();
+                    if n > CONFLICTS_KEEP {
+                        inner.conflicts.drain(..n - CONFLICTS_KEEP);
+                    }
+                    conflicts_changed(&hub, &inner);
+                }
+            }
+            Some("conflict_done") => {
+                let keys: HashSet<&str> = v["keys"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let mut inner = hub.inner.lock().await;
+                let n = inner.conflicts.len();
+                inner
+                    .conflicts
+                    .retain(|c| !c["key"].as_str().is_some_and(|k| keys.contains(k)));
+                if inner.conflicts.len() != n {
+                    conflicts_changed(&hub, &inner);
+                }
             }
             Some("history") => {
                 let limit = v["limit"].as_u64().unwrap_or(200).min(HISTORY_KEEP as u64) as usize;
@@ -345,14 +442,55 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
 }
 
 fn broadcast_peers(hub: &Hub, inner: &Inner) {
-    let mut names: Vec<&String> = inner.peers.values().collect();
+    let mut names: Vec<&String> = inner.peers.values().map(|p| &p.name).collect();
     names.sort();
+    let mut peers: Vec<Value> = inner
+        .peers
+        .iter()
+        .map(|(id, p)| json!({ "id": id, "name": p.name, "client": p.client, "color": p.color }))
+        .collect();
+    peers.sort_by_key(|p| p["id"].as_u64());
     let _ = hub.tx.send((
         0,
-        json!({ "type": "peers", "names": names })
+        json!({ "type": "peers", "names": names, "peers": peers })
             .to_string()
             .into(),
     ));
+}
+
+/// 今いる人が使っていない一番小さい色の番号
+fn free_color(peers: &HashMap<u64, Peer>) -> u32 {
+    let used: HashSet<u32> = peers.values().map(|p| p.color).collect();
+    (0..).find(|c| !used.contains(c)).unwrap_or(0)
+}
+
+/// 届いた衝突の記録を確かめ、誰のものかを書き足す（形がおかしければ None）
+fn accept_conflict(rec: &Value, name: &str, client: &str) -> Option<Value> {
+    let mut rec = rec.as_object()?.clone();
+    let key = rec.get("key")?.as_str()?;
+    if key.is_empty() || key.len() > 200 || serde_json::to_string(&rec).ok()?.len() > 64 * 1024 {
+        return None;
+    }
+    rec.insert("author".into(), json!(name));
+    rec.insert("client".into(), json!(client));
+    Some(Value::Object(rec))
+}
+
+fn conflicts_msg(inner: &Inner) -> String {
+    json!({ "type": "conflicts", "list": inner.conflicts }).to_string()
+}
+
+/// 保留中の衝突を書き残して、全員に配る
+fn conflicts_changed(hub: &Hub, inner: &Inner) {
+    let tmp = hub.conflicts_file.with_extension("json.tmp");
+    let r = serde_json::to_vec(&inner.conflicts)
+        .map_err(std::io::Error::other)
+        .and_then(|body| std::fs::write(&tmp, body))
+        .and_then(|_| std::fs::rename(&tmp, &hub.conflicts_file));
+    if let Err(e) = r {
+        eprintln!("衝突の記録に失敗しました: {e}");
+    }
+    let _ = hub.tx.send((0, conflicts_msg(inner).into()));
 }
 
 fn now_ms() -> u64 {
@@ -360,4 +498,26 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accept_conflict_checks_shape() {
+        let rec = accept_conflict(
+            &json!({ "key": "a:b", "id": "x", "author": "偽物" }),
+            "Aさん",
+            "c1",
+        )
+        .unwrap();
+        assert_eq!(rec["author"], "Aさん");
+        assert_eq!(rec["client"], "c1");
+        assert_eq!(rec["id"], "x");
+        assert!(accept_conflict(&json!({ "id": "x" }), "A", "c").is_none());
+        assert!(accept_conflict(&json!({ "key": "" }), "A", "c").is_none());
+        assert!(accept_conflict(&json!("key"), "A", "c").is_none());
+        assert!(accept_conflict(&json!({ "key": "k".repeat(201) }), "A", "c").is_none());
+    }
 }

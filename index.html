@@ -38,6 +38,8 @@
       <div class="stage" id="stage">
         <video id="video" playsinline preload="auto"></video>
         <canvas id="commentCanvas"></canvas>
+        <div class="peer-cursors" id="peerCursors"></div>
+        <div class="follow-bar" id="followBar" hidden><span class="dot"></span><span><b id="followName"></b> を追いかけています</span><button id="followStop">やめる</button></div>
         <div class="empty" id="emptyState">
           <div class="empty-title">動画ファイルをここにドロップ</div>
           <div class="empty-sub">または上の「動画を開く」から選択してください。<br>
@@ -48,6 +50,7 @@
         <div class="seek" id="seek">
           <canvas id="density"></canvas>
           <div class="seek-track"><div class="seek-fill" id="seekFill"></div><div class="seek-knob" id="seekKnob"></div></div>
+          <div class="peer-marks" id="peerMarks"></div>
           <div class="seek-tip" id="seekTip">0:00</div>
         </div>
         <div class="ctrl-row">
@@ -286,10 +289,19 @@
 <dialog id="conflictDlg">
   <div class="dlg-head">ほかの人の変更と重なった変更</div>
   <div class="dlg-body">
-    <p class="muted" style="margin:0 0 10px">同じコメントを同時に変えたため、あなたの変更はまだ反映されていません（今はホストにある内容になっています）。「元の値」はあなたが変更を始めたときの内容です。コメントごとにどうするか選んでください。</p>
+    <p class="muted" style="margin:0 0 10px">同じコメントを同時に変えたため、変更はまだ反映されていません（今はホストにある内容になっています）。「元の値」は変更を始めたときの内容です。コメントごとにどうするか選んでください。<br>「あとで」にすると、ほかの参加者の一覧にも出て、誰でも選べるようになります。</p>
     <div id="conflictList"></div>
   </div>
-  <div class="dlg-foot"><button id="conflictLater">あとで</button><button id="conflictKeepAll">すべて相手のままにする</button></div>
+  <div class="dlg-foot"><button id="conflictLater">あとで</button><button id="conflictKeepAll">すべて今のままにする</button></div>
+</dialog>
+
+<dialog id="peersDlg">
+  <div class="dlg-head">共同編集の参加者</div>
+  <div class="dlg-body">
+    <div id="peersList" class="peers"></div>
+    <p class="muted" style="margin:10px 0 0">ほかの人の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバーやタイムラインに出ます。<br>「追いかける」を押すと、その人の再生位置とタイムラインの表示に合わせ続けます（自分で操作するとやめます）。</p>
+  </div>
+  <div class="dlg-foot"><button id="peersRename">表示名を変更</button><span class="spacer"></span><button id="peersClose" class="primary">閉じる</button></div>
 </dialog>
 
 <dialog id="helpDlg">
@@ -351,7 +363,8 @@
     <p class="muted" style="margin:0">右の「変更履歴」タブで、コメントの追加・変更・削除を新しい順に見られます。「取り消す」でその変更を打ち消す変更を加え（その後に同じコメントが変わっていれば止まります）、「移動」でそのコメントの時刻へ移ります。共同編集中は全員の変更が出ます。</p>
 
     <h4>みんなで編集する</h4>
-    <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます。クリックで表示名を変更）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、「⚠ 衝突」から自分の変更にする・相手のままにする・両方残すを選べます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
+    <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、「⚠ 衝突」から自分の変更にする・相手のままにする・両方残すを選べます。「あとで」にした衝突はほかの参加者にも出て、誰でも選べます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
+    <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます）。</p>
 
     <h4>ファイル形式</h4>
     <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
