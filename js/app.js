@@ -375,7 +375,7 @@ function unloadVideo(){
   if (!state.videoFile) return;
   video.pause();
   if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
-  Object.assign(state, { videoUrl: null, videoName: null, videoFile: null, videoLoaded: false, videoRestoreAt: null, needsDraw: true });
+  Object.assign(state, { videoUrl: null, videoName: null, videoFile: null, videoLoaded: false, videoRestoreAt: null, viewRestore: null, needsDraw: true });
   video.removeAttribute('src');
   video.load();
   $('#emptyState').hidden = false;
@@ -385,6 +385,7 @@ video.addEventListener('loadedmetadata', () => {
   state.videoLoaded = true; drawDensity(); state.needsDraw = true; updateStatus();
   tlResetView();
   if (state.videoRestoreAt != null){ video.currentTime = Math.min(state.videoRestoreAt, video.duration || 0); state.videoRestoreAt = null; }
+  if (state.viewRestore){ tlRestoreView(state.viewRestore); state.viewRestore = null; }
 });
 video.addEventListener('error', () => {
   if (!video.src) return;
@@ -1575,6 +1576,19 @@ function tlZoomCenterX(){
   return px >= TL_HEAD && px <= TL.W ? px : TL_HEAD + (TL.W - TL_HEAD) / 2;
 }
 function tlFit(){ TL.pps = 0; TL.t0 = -1; tlClampView(); }
+// 表示範囲の控え（幅が変わっても同じ範囲が見えるよう、拡大率ではなく見えている秒数で持つ）
+function tlSaveView(){
+  if (TL.pendingView || !TL.inited || TL.W <= 60) return TL.pendingView || null; // 隠れていて幅が分からないとき
+  return { t0: TL.t0, span: (TL.W - TL_HEAD) / TL.pps, scrollY: TL.scrollY };
+}
+function tlRestoreView(v){
+  if (TL.W <= 60){ TL.pendingView = v; return; }
+  TL.pendingView = null;
+  TL.pps = (TL.W - TL_HEAD) / Math.max(0.01, v.span);
+  tlClampView();
+  TL.t0 = v.t0; TL.scrollY = v.scrollY;
+  tlClampView();
+}
 function tlResetView(){
   TL.t0 = -1;
   TL.pps = Math.max(10, TL.W - TL_HEAD) / (Math.min(tlDuration(), 60) + 1);
@@ -1593,6 +1607,8 @@ function tlEnsureVisible(c){
 }
 function tlResize(){
   const dpr = window.devicePixelRatio || 1;
+  // 隠れる（スマホでほかのタブにするなど）ときは表示範囲を控え、また見えたら戻す
+  if (TL.main.clientWidth <= 60 && TL.W > 60 && TL.inited && !TL.pendingView) TL.pendingView = tlSaveView();
   TL.W = Math.max(1, TL.main.clientWidth); TL.H = Math.max(1, TL.main.clientHeight);
   TL.ovW = Math.max(1, TL.ovBox.clientWidth); TL.ovH = Math.max(1, TL.ovBox.clientHeight);
   TL.dpr = dpr;
@@ -1603,6 +1619,8 @@ function tlResize(){
   if (!TL.inited && TL.W > 60){ TL.inited = true; tlResetView(); }
   TL.ovDirty = true;
   tlClampView();
+  // 隠れている間の表示範囲は、見えるようになってから戻す
+  if (TL.pendingView && TL.W > 60){ const v = TL.pendingView; TL.pendingView = null; tlRestoreView(v); }
 }
 new ResizeObserver(tlResize).observe(TL.main);
 new ResizeObserver(tlResize).observe(TL.ovBox);
@@ -3242,7 +3260,7 @@ async function projectsFetch(){
   return collab.projects;
 }
 
-// プロジェクトを開く（開いていたものは閉じる）。動画はプロジェクトごとに覚えておき、戻ってきたら開き直す
+// プロジェクトを開く（開いていたものは閉じる）。動画・再生位置・タイムラインの表示はプロジェクトごとに覚えておき、戻ってきたら戻す
 async function collabOpen(p){
   if (collab.project) collabClose();
   collab.project = { id: p.id, name: p.name };
@@ -3267,9 +3285,11 @@ async function collabOpen(p){
     toast('このブラウザに控えを保存できないため、オフラインの間の変更は失われることがあります', { type:'error', timeout:8000 });
   }
   commentsChanged();
+  // このタブで前に開いていたなら、動画（再生位置）とタイムラインの表示（位置・拡大縮小・縦の位置）を戻す
   const v = projectVideos.get(p.id);
-  if (v) loadVideo(v.file, { at: v.t });
+  if (v?.file){ state.viewRestore = v.view; loadVideo(v.file, { at: v.t }); } // 表示は動画の長さが分かってから戻す
   else {
+    if (v?.view) tlRestoreView(v.view); else { TL.pendingView = null; tlResetView(); }
     const name = collabLS(VIDEO_HINT + p.id);
     if (name) toast(`このプロジェクトでは前に「${name}」を開いていました。動画を開き直してください`, { timeout: 6000 });
   }
@@ -3277,14 +3297,14 @@ async function collabOpen(p){
   collabUI();
   collabConnect();
 }
-// プロジェクトごとの動画（このタブで開いたもの）と、前に開いた動画の名前（localStorage）
+// プロジェクトごとの動画・再生位置・タイムラインの表示（このタブで開いたもの）と、前に開いた動画の名前（localStorage）
 const projectVideos = new Map();
 const VIDEO_HINT = 'komenagare.video.';
 function collabVideoOpened(file){ if (collab.project) collabLS(VIDEO_HINT + collab.project.id, file.name); }
 // 開いているプロジェクトを閉じて、そのプロジェクトのものを片付ける
 function collabClose(){
-  // このプロジェクトで開いていた動画を覚えて閉じる（このタブで戻ってきたら開き直す）
-  if (collab.project && state.videoFile) projectVideos.set(collab.project.id, { file: state.videoFile, t: video.currentTime || 0 });
+  // このプロジェクトで開いていた動画とタイムラインの表示を覚えて閉じる（このタブで戻ってきたら戻す）
+  if (collab.project) projectVideos.set(collab.project.id, { file: state.videoFile, t: video.currentTime || 0, view: tlSaveView() });
   unloadVideo();
   const ws = collab.ws;
   collab.ws = null;
