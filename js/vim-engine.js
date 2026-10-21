@@ -2717,6 +2717,11 @@ function createVimEngine(hooks = {}){
     hooks.onChange?.();
   };
   E.feedKeys = (arr) => { for (const k of arr) E.feed(k); };
+  // 次のキーを文字として待っているか（r・f・t など。IME で確定した日本語をノーマルモードでも受け取るため）
+  E.wantsChar = () => {
+    const n = pending.length;
+    return (E.mode === 'normal' || E.mode === 'visual') && n > 0 && ['r','f','F','t','T'].includes(pending[n - 1]) && pending[n - 2] !== '"';
+  };
   E.ex = (text) => { try { if (E.mode !== 'normal'){ if (isInsertLike()) exitInsert(false); else if (E.mode === 'visual') exitVisual(); else if (E.mode === 'cmdline'){ E.cmd = null; E.mode = 'normal'; } } lastEx = text; pushHist(':', text); runEx(text); } catch (e){ if (!(e instanceof VimError)) throw e; setMsg(e.message, true); } finishCmd(); hooks.onChange?.(); };
   E.load = (text, { keepUndo = false } = {}) => {
     if (!keepUndo){ undoStack = []; redoStack = []; }

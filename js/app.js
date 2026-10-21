@@ -1789,6 +1789,7 @@ function tlDrawOverview(){
   rr(g, a + 0.75, 0.75, Math.max(3, b - a - 1.5), H - 1.5, 3); g.stroke();
   g.fillStyle = '#ffb300';
   g.fillRect(a, H / 2 - 7, 3, 14); g.fillRect(b - 3, H / 2 - 7, 3, 14);
+  tlDrawOverviewPeers(g, H);
   g.fillStyle = '#ff4d4d'; g.fillRect(ovX(video.currentTime || 0) - 0.5, 0, 1.5, H);
 }
 function tlFrame(playing, t){
@@ -2673,10 +2674,12 @@ function vimKeyToken(e){
   if ([...k].length !== 1) return null;
   return k === ' ' ? ' ' : k;
 }
+// IME で確定した文字を受け取るか（挿入・コマンドラインと、r・f・t などが次の1文字を待っているとき）
+const vimTakesIme = () => ['insert', 'replace', 'cmdline'].includes(vim.E.mode) || vim.E.wantsChar();
 vimInput.addEventListener('keydown', (e) => {
   if (!vim.E) return;
   if (e.isComposing || e.keyCode === 229){
-    if (e.key === 'Process' && !['insert', 'replace', 'cmdline'].includes(vim.E.mode)){ vim.E.msg = 'IME がオンになっています（ノーマルモードではオフにしてください）'; vim.E.msgErr = true; vimScheduleRender(); }
+    if (e.key === 'Process' && !vimTakesIme()){ vim.E.msg = 'IME がオンになっています（ノーマルモードではオフにしてください）'; vim.E.msgErr = true; vimScheduleRender(); }
     return;
   }
   let tok = vimKeyToken(e);
@@ -2710,8 +2713,9 @@ vimInput.addEventListener('compositionstart', () => { vim.composing = true; vim.
 vimInput.addEventListener('input', (e) => {
   if (!vim.E) return;
   if (vim.composing){
-    // ノーマルモードでは確定を待たずにキーとして扱う（Android のキーボード対策）
-    if (!['insert', 'replace', 'cmdline'].includes(vim.E.mode)){
+    // ノーマルモードでは確定を待たずにキーとして扱う（Android のキーボード対策）。
+    // r・f・t の後はローマ字の途中（「か」の k など）を渡さないよう、確定を待つ
+    if (!vimTakesIme()){
       const v = vimInput.value, add = v.slice(vim.comp);
       vim.comp = v.length;
       for (const ch of add) if (/^[\x21-\x7e]$/.test(ch)) vimFeed(ch);
@@ -2722,7 +2726,7 @@ vimInput.addEventListener('input', (e) => {
 });
 vimInput.addEventListener('compositionend', () => {
   vim.composing = false;
-  if (vim.E && !['insert', 'replace', 'cmdline'].includes(vim.E.mode)){ vim.comp = vimInput.value.length; }
+  if (vim.E && !vimTakesIme()){ vim.comp = vimInput.value.length; }
   setTimeout(vimFlush, 0);
 });
 vimInput.addEventListener('paste', (e) => {
@@ -3477,6 +3481,17 @@ function tlDrawPeers(g){
     }
   }
   g.restore();
+}
+// 全体表示：ほかの人の再生位置（自分の再生位置より下に、その人の色で）
+function tlDrawOverviewPeers(g, H){
+  if (!state.collab || !collab.presence.size) return;
+  for (const [id, pr] of collab.presence){
+    const p = peerOf(id), t = p && peerTime(pr);
+    if (t == null) continue;
+    const x = ovX(t);
+    g.fillStyle = peerColor(p, 0.9); g.fillRect(x - 1, 0, 2, H);
+    g.beginPath(); g.moveTo(x - 4, 0); g.lineTo(x + 4, 0); g.lineTo(x, 5); g.closePath(); g.fill();
+  }
 }
 function tlDrawCursor(g, x, y, p){
   g.fillStyle = peerColor(p); g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 1;

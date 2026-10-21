@@ -161,6 +161,17 @@ t('text chunk', 'ab', 'i', 'ab');
   const E = mk('ab'); E.feed('i'); E.feed({ text:'日本語' }); E.feed('<Esc>');
   if (E.getText() === '日本語ab' && E.cur.col === 2) pass++; else { fail++; console.log('FAIL chunk', E.getText(), E.cur); }
 }
+t('r に日本語', 'abc', 'rあ', 'あbc', [0,0]);
+t('f で日本語へ', 'ab語c', 'f語', 'ab語c', [0,2]);
+t('dt で日本語の前まで', 'ab語c', 'dt語', '語c', [0,0]);
+{
+  // r・f・t の後だけ文字を待つ（IME の確定を受け取るかの判断に使う）
+  const E = mk('abc');
+  const w = (k) => { if (k) E.feed(k); return E.wantsChar(); };
+  const got = [w(), w('r'), w('<Esc>'), w('2'), w('f'), w('x'), w('d'), w('t'), w('<Esc>'), w('"'), w('r'), w('<Esc>'), w('i'), w('<Esc>')];
+  const want = [false, true, false, false, true, false, false, true, false, false, false, false, false, false];
+  if (JSON.stringify(got) === JSON.stringify(want)) pass++; else { fail++; console.log('FAIL wantsChar', got); }
+}
 // --- undo/redo/dot
 t('u', 'abc', 'xu', 'abc', [0,0]);
 t('u insert', 'abc', 'iXY<Esc>u', 'abc');
