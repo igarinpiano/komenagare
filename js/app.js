@@ -2922,6 +2922,8 @@ const collab = {
   follow: null, // 追いかけている人の接続 id
   // 入り方（token: URL の k= / otp: 参加者ごとのワンタイムパスワード / none）
   auth: document.querySelector('meta[name="komenagare-host"]')?.dataset.auth || 'token',
+  // 外から入るときの URL（ホストの --tunnel / --public-url。招待のリンクに使う。localhost で開いていても外の人に渡せるように）
+  publicUrl: document.querySelector('meta[name="komenagare-host"]')?.dataset.publicUrl || '',
   session: null, // --otp のときのログイン（{ token, name, admin }。localStorage に控える）
   project: null, projects: [], // 開いているプロジェクト（{ id, name }）と、ホストにあるプロジェクトの一覧
   workspace: 'default', // 控え（IndexedDB）の名前に使う。プロジェクトの id
@@ -3428,7 +3430,7 @@ $('#authForm').addEventListener('submit', async (e) => {
   if (!name) return;
   try {
     const r = await collabApi('/api/admin/otp', { name, kind: $('#authKind').value, ttl: +$('#authTtl').value, admin: $('#authAdmin').checked });
-    const link = location.origin + location.pathname + '?otp=' + r.code;
+    const link = (collab.publicUrl || location.origin + location.pathname) + '?otp=' + r.code;
     $('#authCode').textContent = r.code;
     $('#authLink').value = link;
     $('#authExpires').textContent = `${name} 用・${fmtDate(r.expires)} まで・1回だけ使えます`;

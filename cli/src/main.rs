@@ -11,6 +11,7 @@ mod firewall;
 mod render;
 mod server;
 mod store;
+mod tunnel;
 mod update;
 mod web;
 mod workspace;
@@ -54,6 +55,17 @@ struct Args {
     /// ワンタイムパスワードとログインの記録を置く場所（既定は ~/.config/komenagare/auth など）
     #[arg(long, value_name = "DIR", env = "KOMENAGARE_AUTH_DIR")]
     auth_dir: Option<PathBuf>,
+    /// トンネルを始めて、ローカルネットワークの外から入れるようにする（cloudflared / tailscale / ngrok が必要）
+    #[arg(long, value_enum, value_name = "KIND")]
+    tunnel: Option<tunnel::Kind>,
+    /// 外から入るときの URL（自分で用意したトンネルやリバースプロキシのもの。共有・招待のリンクに使う）
+    #[arg(
+        long,
+        value_name = "URL",
+        env = "KOMENAGARE_PUBLIC_URL",
+        conflicts_with = "tunnel"
+    )]
+    public_url: Option<String>,
     /// 履歴（git）が残せなければ起動しない
     #[arg(long, conflicts_with = "no_git")]
     require_git: bool,
@@ -176,8 +188,9 @@ enum OtpCmd {
         /// 管理者にする（画面からワンタイムパスワードの発行・取り消しができる）
         #[arg(long)]
         admin: bool,
-        /// ホストの URL（例 https://komenagare.example.com）。付けるとそのまま開けるリンクも出す
-        #[arg(long)]
+        /// ホストの URL（例 https://komenagare.example.com）。そのまま開けるリンクも出す。
+        /// 省略すると、動いているホストの公開 URL（--tunnel / --public-url）を使う
+        #[arg(long, env = "KOMENAGARE_PUBLIC_URL")]
         url: Option<String>,
     },
     /// ログイン中の人と、未使用のワンタイムパスワードの一覧
@@ -406,6 +419,29 @@ async fn run(args: Args) -> Result<()> {
         format!("{addr} で待ち受けできません（--port で別のポートを指定してください）")
     })?;
 
+    // 外から入れるようにする（トンネルを始めるか、渡された公開 URL を使う）
+    if args.tunnel.is_some() && matches!(server.access, server::Access::None) {
+        bail!("トンネルでインターネットに公開するときは --no-token は使えません（--otp か合言葉で入るようにしてください）");
+    }
+    let mut tunnel = None;
+    let public = match args.tunnel {
+        Some(kind) => {
+            println!("{} を始めています…", kind.label());
+            let (t, url) = tunnel::start(kind, addr.port()).await?;
+            tunnel = Some(t);
+            Some(url)
+        }
+        None => args
+            .public_url
+            .as_deref()
+            .map(tunnel::normalize_url)
+            .transpose()?,
+    };
+    server.set_public_url(public.clone());
+    if let (server::Access::Otp(a), Some(u)) = (&server.access, &public) {
+        tunnel::write_url_file(a.dir(), Some(u))?;
+    }
+
     // 開く URL に付けるもの（合言葉、または管理者用のワンタイムパスワード）
     let (share_query, open_query) = match &server.access {
         server::Access::Token(t) => (format!("?k={t}"), format!("?k={t}")),
@@ -449,12 +485,27 @@ async fn run(args: Args) -> Result<()> {
         }
         _ => println!("  開く: {local}"),
     }
+    if let Some(u) = &public {
+        let how = args.tunnel.map_or("--public-url", |k| k.label());
+        println!("  公開 URL（{how}）: {u}{share_query}");
+        if let server::Access::Otp(_) = &server.access {
+            println!(
+                "  公開 URL で管理者として開く（上の「開く」とどちらか1回だけ）: {u}{open_query}"
+            );
+        }
+        if args.tunnel == Some(tunnel::Kind::Cloudflare) {
+            println!("  ※ Quick Tunnel の URL は起動のたびに変わります（変わるとワンタイムパスワードでのログインもやり直しです）");
+        }
+    }
     if addr.ip().is_unspecified() {
         if let Some(ip) = lan_ip() {
-            println!("  共有: http://{ip}:{}/{share_query}", addr.port());
+            println!(
+                "  共有（同じネットワーク）: http://{ip}:{}/{share_query}",
+                addr.port()
+            );
         }
-    } else if addr.ip().is_loopback() {
-        println!("  ほかの人と共有するには --host 0.0.0.0 を付けて起動してください（サーバーで動かすなら前に HTTPS のリバースプロキシを置く）");
+    } else if addr.ip().is_loopback() && public.is_none() {
+        println!("  ほかの人と共有するには --host 0.0.0.0（同じネットワーク）か --tunnel（インターネット越し）を付けて起動してください");
     }
     match &server.access {
         server::Access::None => {
@@ -482,6 +533,11 @@ async fn run(args: Args) -> Result<()> {
     }
 
     let stop = server.shutdown.clone();
+    // 終わるときに公開 URL の控えを消すため、記録の置き場所を覚えておく
+    let otp_dir = match &server.access {
+        server::Access::Otp(a) => Some(a.dir().to_path_buf()),
+        _ => None,
+    };
     axum::serve(listener, server::router(server))
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
@@ -490,6 +546,12 @@ async fn run(args: Args) -> Result<()> {
         })
         .await?;
     println!("終了しています（書き込み中の変更を保存します）…");
+    if let Some(t) = tunnel {
+        t.stop().await;
+    }
+    if let (Some(dir), Some(_)) = (&otp_dir, &public) {
+        let _ = tunnel::write_url_file(dir, None);
+    }
     // Hub が持つ送り口が全部閉じると書き込み担当が終わる
     tokio::task::spawn_blocking(move || {
         for w in writers {
@@ -571,7 +633,8 @@ fn run_otp(cmd: &OtpCmd, dir: Option<&Path>) -> Result<()> {
             )?;
             println!("{name} のワンタイムパスワード: {}", i.code);
             println!("  有効期限: {}（1回だけ使えます）", date(i.expires));
-            if let Some(u) = url {
+            // URL を渡されなければ、動いているホストの公開 URL（--tunnel / --public-url）を使う
+            if let Some(u) = url.clone().or_else(|| tunnel::read_url_file(a.dir())) {
                 println!("  リンク: {}/?otp={}", u.trim_end_matches('/'), i.code);
             }
         }

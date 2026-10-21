@@ -79,7 +79,7 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
   反映されなかった側には「衝突」の知らせが出て、自分の変更にする・相手のままにする・両方残すを選べます。
 - 「変更履歴」タブで、誰がいつ何を変えたかを見られます。どの変更も「取り消す」で打ち消せます（git revert と同じ）。
 - ホストとの接続が切れても編集を続けられます。変更はブラウザに保存され、つながり直したときに送られます。
-- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）。一覧は `komenagare --help`。
+- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
   取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
 
@@ -106,9 +106,55 @@ komenagare otp revoke 山田                       # 取り消す（つながっ
 管理者は画面の「📁」→「招待・ログインの管理」からも発行・取り消しができます。
 記録は `~/.config/komenagare/auth`（macOS は `~/Library/Application Support/komenagare/auth`、Windows は `%APPDATA%\komenagare\auth`）に置きます（`--auth-dir` で変更可。`komenagare otp` にも同じものを指定）。
 
-### サーバーで動かす（ローカルネットワークの外から使う）
+### ローカルネットワークの外から使う
 
-komenagare 自体は HTTPS を持たないので、前に HTTPS のリバースプロキシを置きます（WebSocket もそのまま通ります）。たとえば Caddy なら:
+komenagare を自分の PC（またはサーバー）で動かしたまま、インターネット越しに入れるようにする方法はいくつかあります。どれも無料で始められます。
+インターネットに出すときは、`--otp`（参加者ごとのワンタイムパスワード）か合言葉（`?k=`）で入るようにしてください（`--tunnel` と `--no-token` は一緒に使えません）。
+
+| 方法 | URL | 参加者 | 向いているとき |
+|---|---|---|---|
+| `--tunnel tailscale`（Tailscale Funnel） | 固定（`https://<PC名>.<tailnet>.ts.net/`） | ブラウザだけ | **おすすめ**。URL が変わらないのでログインも保たれる |
+| `--tunnel cloudflare`（Cloudflare Quick Tunnel） | 起動のたびに変わる | ブラウザだけ | アカウントなしでまず試す・一度きりの作業 |
+| `--tunnel ngrok` | 固定（無料のアカウントで1つ） | ブラウザだけ（初回に ngrok の確認画面が出る） | ngrok を使い慣れている（無料は月 1GB まで） |
+| Tailscale（仲間内ネットワーク） | 仲間内だけ | 各自 Tailscale を入れる | 外に一切出したくない |
+| `--public-url`（自分で用意したもの） | 自由 | ブラウザだけ | 名前付きの Cloudflare Tunnel、VPS と Caddy、会社のリバースプロキシなど |
+
+Firebase のような静的なホスティングには、komenagare（ずっと動いて変更を受け取るホスト）は置けません。
+
+#### トンネルを komenagare から始める（--tunnel）
+
+komenagare がトンネルのコマンドを起動し、公開 URL を読み取って表示します。止めればトンネルも止まります。
+表示される「公開 URL」を参加者に渡します（画面の「招待」や `komenagare otp new` のリンクも公開 URL になります）。
+
+```sh
+# Tailscale Funnel（https://tailscale.com/download から入れてログイン。初回は表示される案内に従って Funnel を有効にする）
+komenagare ~/projects/a --otp --tunnel tailscale
+
+# Cloudflare Quick Tunnel（cloudflared を入れるだけ。アカウント不要）
+komenagare ~/projects/a --tunnel cloudflare
+
+# ngrok（入れたあと ngrok config add-authtoken <トークン>）
+komenagare ~/projects/a --otp --tunnel ngrok
+```
+
+- Quick Tunnel の URL は起動のたびに変わります。`--otp` のログインはブラウザが URL ごとに覚えるので、URL が変わるとログインし直しになります（Quick Tunnel なら合言葉の方が手軽です）。
+- Linux の Tailscale で権限のエラーが出たら、一度 `sudo tailscale set --operator=$USER` を実行してください。
+
+#### 自分で用意したトンネル・サーバー（--public-url）
+
+トンネルやリバースプロキシを自分で動かすときは、その URL を `--public-url` で渡します（環境変数 `KOMENAGARE_PUBLIC_URL` でも可）。共有・招待のリンクがその URL になります。
+
+```sh
+# 名前付きの Cloudflare Tunnel（自分のドメインを Cloudflare に置いている場合）
+cloudflared tunnel run --url http://127.0.0.1:8764 my-tunnel
+komenagare ~/projects/* --otp --public-url https://komenagare.example.com
+
+# ngrok で自分の決まったドメインを使う
+ngrok http 8764 --url https://my-name.ngrok-free.app
+komenagare ~/projects/* --otp --public-url https://my-name.ngrok-free.app
+```
+
+いつでも入れるようにしたいなら、無料の VPS（Oracle Cloud の Always Free など）で動かし、前に HTTPS のリバースプロキシを置きます（WebSocket もそのまま通ります）。たとえば Caddy なら:
 
 ```
 komenagare.example.com {
@@ -117,12 +163,12 @@ komenagare.example.com {
 ```
 
 ```sh
-komenagare /srv/komenagare/* --otp --no-update   # 127.0.0.1 で待ち受けたまま、プロキシ経由で公開する
+komenagare /srv/komenagare/* --otp --no-update --public-url https://komenagare.example.com
 ```
 
 systemd などで常駐させる場合も、止めるとき（SIGTERM）は書き込み中の変更を保存してから終わります。
+`komenagare otp new` は、動いているホストの公開 URL を使ってリンクを出します（別の URL にするなら `--url`）。
 動画はサーバーから配らないので、今まで通り各自が手元の動画を開きます。
-自分たちだけで使うなら、Tailscale などの仲間内ネットワークでつなぐのも手軽です。
 
 ### コメントを動画に焼き込む（komenagare render）
 

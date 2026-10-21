@@ -93,6 +93,8 @@ pub struct Server {
     pub projects: Vec<Project>,
     pub access: Access,
     web_dir: Option<PathBuf>,
+    /// 外から入るときの URL（--tunnel / --public-url。招待のリンクに使う）
+    public_url: std::sync::RwLock<Option<String>>,
     next_conn: AtomicU64,
     /// 終了するときに接続を閉じる合図
     pub shutdown: tokio::sync::watch::Sender<bool>,
@@ -114,11 +116,16 @@ impl Server {
             projects,
             access,
             web_dir,
+            public_url: std::sync::RwLock::new(None),
             next_conn: AtomicU64::new(1),
             shutdown: tokio::sync::watch::channel(false).0,
             revoked: broadcast::channel(64).0,
             login_fails: std::sync::Mutex::new(VecDeque::new()),
         })
+    }
+
+    pub fn set_public_url(&self, url: Option<String>) {
+        *self.public_url.write().unwrap() = url;
     }
 
     fn project(&self, id: Option<&str>) -> Option<&Project> {
@@ -273,11 +280,18 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
         return StatusCode::NOT_FOUND.into_response();
     };
     if path == "index.html" {
-        // ホストから配信していることをページに知らせる（共同編集を有効にする）
+        // ホストから配信していることをページに知らせる（共同編集を有効にする）。公開 URL は招待のリンクに使う
+        let public = server
+            .public_url
+            .read()
+            .unwrap()
+            .as_deref()
+            .map(|u| format!(" data-public-url=\"{}\"", html_attr(u)))
+            .unwrap_or_default();
         let html = String::from_utf8_lossy(&data).replacen(
             "</head>",
             &format!(
-                "<meta name=\"komenagare-host\" content=\"{}\" data-auth=\"{}\">\n</head>",
+                "<meta name=\"komenagare-host\" content=\"{}\" data-auth=\"{}\"{public}>\n</head>",
                 env!("CARGO_PKG_VERSION"),
                 server.access.label()
             ),
@@ -300,6 +314,13 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
 struct KeyQuery {
     k: Option<String>,
     p: Option<String>,
+}
+
+fn html_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn api_error(status: StatusCode, message: &str) -> Response {
