@@ -356,20 +356,35 @@ updatePlayIcon(); updateCommentIcon();
 video.volume = settings.volume; video.muted = settings.muted;
 $('#volume').value = settings.volume; updateVolIcon();
 
-function loadVideo(file){
+// at: 読み込んだらその位置へ（プロジェクトを切り替えて戻ってきたとき）
+function loadVideo(file, { at = null } = {}){
   if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
   state.videoUrl = URL.createObjectURL(file);
   state.videoName = file.name;
   state.videoFile = file;
   state.videoLoaded = false;
+  state.videoRestoreAt = at;
   video.src = state.videoUrl;
   video.load();
   $('#emptyState').hidden = true;
   updateStatus();
+  if (state.collab) collabVideoOpened(file);
+}
+// 動画を閉じる（共同編集でプロジェクトを切り替えたとき）
+function unloadVideo(){
+  if (!state.videoFile) return;
+  video.pause();
+  if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
+  Object.assign(state, { videoUrl: null, videoName: null, videoFile: null, videoLoaded: false, videoRestoreAt: null, needsDraw: true });
+  video.removeAttribute('src');
+  video.load();
+  $('#emptyState').hidden = false;
+  drawDensity(); updateTimeUI(0); updatePlayIcon(); updateStatus();
 }
 video.addEventListener('loadedmetadata', () => {
   state.videoLoaded = true; drawDensity(); state.needsDraw = true; updateStatus();
   tlResetView();
+  if (state.videoRestoreAt != null){ video.currentTime = Math.min(state.videoRestoreAt, video.duration || 0); state.videoRestoreAt = null; }
 });
 video.addEventListener('error', () => {
   if (!video.src) return;
@@ -988,11 +1003,13 @@ window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; if (--dr
 window.addEventListener('drop', (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault(); dragDepth = 0; dropOverlay.classList.remove('show');
-  // ハンドル取得はイベント中に同期的に開始する必要がある
-  const entries = [...e.dataTransfer.items].filter(i => i.kind === 'file').map(i => ({
-    file: i.getAsFile(),
-    handleP: typeof i.getAsFileSystemHandle === 'function' ? i.getAsFileSystemHandle().catch(() => null) : Promise.resolve(null),
-  }));
+  // ハンドル取得（上書き保存に使う）はイベント中に同期的に開始する必要がある。
+  // 安全でないページ（http の LAN のアドレスなど）で呼ぶと Chrome はタブごと落ちるので、https・localhost のときのコメントファイルだけにする
+  const entries = [...e.dataTransfer.items].filter(i => i.kind === 'file').map(i => {
+    const file = i.getAsFile();
+    const want = window.isSecureContext && typeof i.getAsFileSystemHandle === 'function' && file && !isVideoFile(file) && isCommentFile(file);
+    return { file, handleP: want ? i.getAsFileSystemHandle().catch(() => null) : Promise.resolve(null) };
+  });
   handleDropped(entries);
 });
 async function handleDropped(entries){
@@ -3225,7 +3242,7 @@ async function projectsFetch(){
   return collab.projects;
 }
 
-// プロジェクトを開く（開いていたものは閉じる）。同じタブで切り替えても動画はそのまま
+// プロジェクトを開く（開いていたものは閉じる）。動画はプロジェクトごとに覚えておき、戻ってきたら開き直す
 async function collabOpen(p){
   if (collab.project) collabClose();
   collab.project = { id: p.id, name: p.name };
@@ -3250,12 +3267,25 @@ async function collabOpen(p){
     toast('このブラウザに控えを保存できないため、オフラインの間の変更は失われることがあります', { type:'error', timeout:8000 });
   }
   commentsChanged();
+  const v = projectVideos.get(p.id);
+  if (v) loadVideo(v.file, { at: v.t });
+  else {
+    const name = collabLS(VIDEO_HINT + p.id);
+    if (name) toast(`このプロジェクトでは前に「${name}」を開いていました。動画を開き直してください`, { timeout: 6000 });
+  }
   updateStatus();
   collabUI();
   collabConnect();
 }
+// プロジェクトごとの動画（このタブで開いたもの）と、前に開いた動画の名前（localStorage）
+const projectVideos = new Map();
+const VIDEO_HINT = 'komenagare.video.';
+function collabVideoOpened(file){ if (collab.project) collabLS(VIDEO_HINT + collab.project.id, file.name); }
 // 開いているプロジェクトを閉じて、そのプロジェクトのものを片付ける
 function collabClose(){
+  // このプロジェクトで開いていた動画を覚えて閉じる（このタブで戻ってきたら開き直す）
+  if (collab.project && state.videoFile) projectVideos.set(collab.project.id, { file: state.videoFile, t: video.currentTime || 0 });
+  unloadVideo();
   const ws = collab.ws;
   collab.ws = null;
   clearTimeout(collab.timer); clearTimeout(collab.saveTimer); clearTimeout(presence.timer); presence.timer = 0;
@@ -3313,6 +3343,7 @@ function projectsRender(){
     if (!cur){
       const b = mkEl('button', 'primary', '開く');
       b.onclick = () => {
+        if (exportState.running){ toast('書き出し中はプロジェクトを切り替えられません', { type:'error' }); return; }
         const dlg = $('#projectsDlg'), done = dlg._done;
         dlg._done = null; projectsWait = null; dlg.dataset.required = '';
         dlg.close();
