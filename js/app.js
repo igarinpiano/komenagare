@@ -2744,9 +2744,10 @@ vimInput.addEventListener('beforeinput', (e) => {
     else for (const ch of e.data){ const c = ch.charCodeAt(0); vimFeed(c >= 0xff01 && c <= 0xff5e ? String.fromCharCode(c - 0xfee0) : ch); }
   }
 });
-vimInput.addEventListener('compositionstart', () => { vim.composing = true; vim.comp = 0; });
+vimInput.addEventListener('compositionstart', () => { vim.composing = true; vim.comp = 0; vim.skipComp = false; });
 vimInput.addEventListener('input', (e) => {
   if (!vim.E) return;
+  if (vim.skipComp) return;
   if (vim.composing){
     // ノーマルモードでは確定を待たずにキーとして扱う（Android のキーボード対策）。
     // r・f・t の後はローマ字の途中（「か」の k など）を渡さないよう、確定を待つ
@@ -2761,6 +2762,7 @@ vimInput.addEventListener('input', (e) => {
 });
 vimInput.addEventListener('compositionend', () => {
   vim.composing = false;
+  if (vim.skipComp){ vim.skipComp = false; vim.comp = 0; vimInput.value = ''; return; }
   if (vim.E && !vimTakesIme()){ vim.comp = vimInput.value.length; }
   setTimeout(vimFlush, 0);
 });
@@ -2823,15 +2825,34 @@ vimScreen.addEventListener('wheel', (e) => {
   if (n) vim.E.scrollBy(n);
 }, { passive:false });
 $('#vimMore').addEventListener('pointerdown', (e) => { e.preventDefault(); vimInput.focus({ preventScroll:true }); vim.E?.feed('<CR>'); });
-$('#vimKeys').addEventListener('pointerdown', (e) => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  e.preventDefault();
+// キーのボタン（スマホのキーバーと上の Esc）。押してもフォーカスを奪わず、キーボードを閉じない
+function vimKeyButton(b) {
   vimInput.focus({ preventScroll:true });
   const k = b.dataset.k;
+  // IME の変換中なら、そこまでの文字を確定してから押す（変換が終わったときにもう一度渡さない）
+  if (vim.composing && vim.E){
+    const text = vimInput.value.slice(vim.comp);
+    if (text && ['insert', 'replace', 'cmdline'].includes(vim.E.mode)) vimFeed({ text });
+    vimInput.value = '';
+    vim.comp = 0;
+    vim.skipComp = true;
+  }
   if (k === 'ctrl') vimSetCtrl(!vim.ctrl);
-  else { vimSetCtrl(false); vim.E?.feed(k); }
-});
+  else { vimSetCtrl(false); vimEnsure().feed(k); }
+}
+for (const bar of [$('#vimKeys'), $('.vim-head')]) {
+  bar.addEventListener('pointerdown', (e) => {
+    const b = e.target.closest('button[data-k]');
+    if (!b) return;
+    e.preventDefault();
+    vimKeyButton(b);
+  });
+  // キーボードで押したとき（pointerdown が来ない）
+  bar.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-k]');
+    if (b && e.detail === 0) vimKeyButton(b);
+  });
+}
 for (const b of document.querySelectorAll('[data-ex]')) b.onclick = () => { vimEnsure().ex(b.dataset.ex); vimInput.focus({ preventScroll:true }); };
 $('#vim').addEventListener('pointerdown', (e) => { if (e.target === vimEl) vimInput.focus({ preventScroll:true }); });
 
