@@ -2890,16 +2890,15 @@ function applyPhoneLandscape(){
     : innerWidth > innerHeight;
   document.documentElement.classList.toggle('phone-landscape', land && Math.min(screen.width, screen.height) <= 540);
 }
-// 表示領域の高さ（スマホの縦持ちで動画の大きさを決める）。キーボードで縮んだ高さは使わない
-let stableH = 0, stableTimer = 0;
+// 表示領域の高さ（スマホの縦持ちで動画の大きさを決める）。
+// キーボードの開け閉めでは測り直さない（縮んだ高さを使うと動画が細くなり、開く途中で配置が動くとキーボードが閉じてしまう）。
+// 測り直すのは、最初・向きが変わったとき・幅が変わったときと、入力中でないときに広がったとき（ツールバーが隠れたときなど）だけ
+let stableH = 0, stableW = 0;
 const isTyping = () => { const el = document.activeElement; return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)); };
-function setStableHeight(h){ stableH = h; document.documentElement.style.setProperty('--stable-h', h + 'px'); }
 function applyStableHeight(reset){
-  if (reset || !stableH || innerHeight > stableH){ setStableHeight(innerHeight); return; }
-  // 縮んだときは、しばらく待っても縮んだままで、入力中でもなければ測り直す。
-  // キーボードは入力欄から離れたあとも閉じ切るまで時間がかかり、その間に測ると動画が細くなってしまうため
-  clearTimeout(stableTimer);
-  stableTimer = setTimeout(() => { if (!isTyping() && innerHeight < stableH) setStableHeight(innerHeight); }, 1000);
+  if (!(reset || !stableH || innerWidth !== stableW || (innerHeight > stableH && !isTyping()))) return;
+  stableH = innerHeight; stableW = innerWidth;
+  document.documentElement.style.setProperty('--stable-h', stableH + 'px');
 }
 function onViewportChange(e){
   applyPhoneLandscape();
@@ -2917,9 +2916,8 @@ function resetStrayScroll(){
   const se = document.scrollingElement;
   if (se && se.scrollTop > 0 && se.scrollHeight <= innerHeight + 1) window.scrollTo(0, 0);
 }
-// キーボードが閉じたあと（入力欄から離れたあと）に測り直す
-document.addEventListener('focusout', () => setTimeout(() => { applyStableHeight(false); resetStrayScroll(); }, 300));
-window.visualViewport?.addEventListener('resize', () => { applyStableHeight(false); setTimeout(resetStrayScroll, 300); });
+document.addEventListener('focusout', () => setTimeout(resetStrayScroll, 300));
+window.visualViewport?.addEventListener('resize', () => setTimeout(resetStrayScroll, 300));
 // タイムラインの高さの上限（PC の配置で、動画と右のパネルが潰れないように。窓を小さくしたときや iPad を回したときも）
 function tlMaxHeight(){ return Math.max(140, innerHeight - ($('.topbar')?.offsetHeight || 0) - 340); }
 function applyLayoutVars(){
