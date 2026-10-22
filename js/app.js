@@ -9,9 +9,11 @@ const hasFS = typeof window.showOpenFilePicker === 'function' && typeof window.s
 
 /* ---------- 設定 ---------- */
 const SIDE_W = 400; // 右のパネルの既定の幅（ドラッグで変えられる）
+const TL_H = 270; // タイムラインの既定の高さ（PC）
+const M_VIDEO = 0.32; // 縦向きのスマホで、動画の高さが画面の高さに占める割合の既定（タイムラインの上端をドラッグして変える）
 const settings = Object.assign(
   { show:true, opacity:1, pauseOnInput:false, mineBorder:true, autosave:true, saveFormat:'json', volume:1, muted:false,
-    timeline:true, tlHeight:270, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000' },
+    timeline:true, tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000' },
   (() => { try { return JSON.parse(localStorage.getItem('komenagare.settings') || '{}'); } catch { return {}; } })()
 );
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
@@ -2218,17 +2220,27 @@ $('#tlZoom').oninput = (e) => {
   const b = tlBounds();
   tlZoomAt(b.minPps * Math.pow(b.maxPps / b.minPps, e.target.value / 1000) / TL.pps, tlZoomCenterX());
 };
+// タイムラインの上端をドラッグして高さを変える（ダブルクリックで元に戻す）。
+// PC ではタイムラインの高さ、縦向きのスマホでは動画の大きさを変えて、タイムラインがその残りに広がる
 (() => {
   const h = $('#tlResize');
   let st = null;
-  h.addEventListener('pointerdown', (e) => { st = { y: e.clientY, h: Math.min(settings.tlHeight, tlMaxHeight()) }; h.setPointerCapture(e.pointerId); h.classList.add('on'); });
+  // 縦向きのスマホで動画をどこまで大きくできるか（横幅いっぱいまで）
+  const mVideoMax = () => Math.max(0.12, Math.min(0.6, ($('.player-col').clientWidth - 16) * 9 / 16 / stableH));
+  h.addEventListener('pointerdown', (e) => {
+    st = mq.matches ? { y: e.clientY, f: Math.min(settings.mVideo, mVideoMax()), mobile: true } : { y: e.clientY, h: Math.min(settings.tlHeight, tlMaxHeight()) };
+    h.setPointerCapture(e.pointerId); h.classList.add('on');
+  });
   h.addEventListener('pointermove', (e) => {
     if (!st) return;
-    settings.tlHeight = Math.round(clamp(st.h - (e.clientY - st.y), 140, tlMaxHeight()));
+    const dy = e.clientY - st.y;
+    if (st.mobile) settings.mVideo = Math.round(clamp(st.f + dy / stableH, 0.12, mVideoMax()) * 1000) / 1000;
+    else settings.tlHeight = Math.round(clamp(st.h - dy, 140, tlMaxHeight()));
     applyLayoutVars();
   });
   const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
   h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
+  h.addEventListener('dblclick', () => { if (mq.matches) settings.mVideo = M_VIDEO; else settings.tlHeight = TL_H; applyLayoutVars(); saveSettings(); });
 })();
 // 右のパネルの幅：左端をドラッグして変える（ダブルクリックで元に戻す）
 (() => {
@@ -2915,6 +2927,7 @@ function applyLayoutVars(){
   root.setProperty('--tl-h', tlH + 'px');
   root.setProperty('--tl-space', (!mq.matches && settings.timeline) ? tlH + 'px' : '0px');
   root.setProperty('--side-w', settings.sideWidth + 'px');
+  root.setProperty('--m-video', settings.mVideo);
 }
 window.addEventListener('resize', applyLayoutVars);
 function applyPanes(){
