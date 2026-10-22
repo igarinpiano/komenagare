@@ -2744,20 +2744,31 @@ vimInput.addEventListener('beforeinput', (e) => {
     else for (const ch of e.data){ const c = ch.charCodeAt(0); vimFeed(c >= 0xff01 && c <= 0xff5e ? String.fromCharCode(c - 0xfee0) : ch); }
   }
 });
-vimInput.addEventListener('compositionstart', () => { vim.composing = true; vim.comp = 0; vim.skipComp = false; });
+vimInput.addEventListener('compositionstart', () => { vim.composing = true; vim.comp = 0; vim.compFed = []; vim.skipComp = false; });
+// 変換中の文字をノーマルモードのキーとして渡す（確定を待たない。Android のキーボード対策）。
+// 渡した文字があとで置き換わったり消えたりしたら（Gboard の 12 キーで g を打ってから「大⇔小」で G にするなど）、
+// 打つ前に戻してから新しい文字を渡す。r・f・t の後はローマ字の途中（「か」の k など）を渡さないよう、確定を待つ
+function vimComposeInput(){
+  const fed = vim.compFed, chars = [...vimInput.value];
+  let same = 0;
+  while (same < fed.length && same < chars.length && fed[same].ch === chars[same]) same++;
+  if (same < fed.length){
+    const first = fed.slice(same).find((f) => f.cp);
+    if (first){ vim.E.rewind(first.cp); vimSetCtrl(first.ctrl); }
+    fed.length = same;
+  }
+  for (const ch of chars.slice(same)){
+    if (vimTakesIme()) break;
+    const key = /^[\x21-\x7e]$/.test(ch);
+    fed.push({ ch, cp: key ? vim.E.checkpoint() : null, ctrl: vim.ctrl });
+    if (key) vimFeed(ch);
+  }
+  vim.comp = fed.map((f) => f.ch).join('').length;
+}
 vimInput.addEventListener('input', (e) => {
   if (!vim.E) return;
   if (vim.skipComp) return;
-  if (vim.composing){
-    // ノーマルモードでは確定を待たずにキーとして扱う（Android のキーボード対策）。
-    // r・f・t の後はローマ字の途中（「か」の k など）を渡さないよう、確定を待つ
-    if (!vimTakesIme()){
-      const v = vimInput.value, add = v.slice(vim.comp);
-      vim.comp = v.length;
-      for (const ch of add) if (/^[\x21-\x7e]$/.test(ch)) vimFeed(ch);
-    }
-    return;
-  }
+  if (vim.composing){ vimComposeInput(); return; }
   vimFlush();
 });
 vimInput.addEventListener('compositionend', () => {

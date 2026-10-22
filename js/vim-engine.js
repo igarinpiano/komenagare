@@ -2722,6 +2722,33 @@ function createVimEngine(hooks = {}){
     const n = pending.length;
     return (E.mode === 'normal' || E.mode === 'visual') && n > 0 && ['r','f','F','t','T'].includes(pending[n - 1]) && pending[n - 2] !== '"';
   };
+  // キーを打つ前の状態の控えと、そこへの巻き戻し（スマホのキーボードが打った文字をあとから置き換えたとき。
+  // 例: Gboard の 12 キーで g を打ってから「大⇔小」で G にする）。ノーマル・ビジュアルモードで控える
+  const copyMarks = (o) => { const r = Object.create(null); for (const k in o) r[k] = { ...o[k] }; return r; };
+  const copyVisual = (v) => v && { ...v, start: { ...v.start }, end: { ...v.end } };
+  E.checkpoint = () => ({
+    L: L.slice(), ver, inChange, undo: undoStack.slice(), redo: redoStack.slice(),
+    line: cur.line, col: cur.col, want, top: E.top, mode: E.mode, vmode: E.vmode, vstart: E.vstart && P(E.vstart.line, E.vstart.col),
+    pending: pending.slice(), cmdKeys: cmdKeys.slice(), regs: { ...regs }, marks: copyMarks(marks),
+    jumps: jumps.map((j) => ({ ...j })), jumpIdx, lastChange, lastVisual: copyVisual(lastVisual), recording: E.recording, recLen: recKeys.length,
+    msg: E.msg, msgErr: E.msgErr, hlOff: E.hlOff,
+  });
+  E.rewind = (c) => {
+    L = c.L.slice(); ver = c.ver; inChange = c.inChange; undoStack = c.undo.slice(); redoStack = c.redo.slice();
+    E.mode = c.mode; E.vmode = c.vmode; E.vstart = c.vstart && P(c.vstart.line, c.vstart.col);
+    E.cmd = null; E.more = null; E.oneShot = false; blockIns = null; dotRec = null;
+    pending = c.pending.slice(); cmdKeys = c.cmdKeys.slice(); E.showcmd = pending.map(keyLabel).join('');
+    for (const k of Object.keys(regs)) delete regs[k];
+    Object.assign(regs, c.regs);
+    for (const k of Object.keys(marks)) delete marks[k];
+    Object.assign(marks, copyMarks(c.marks));
+    jumps = c.jumps.map((j) => ({ ...j })); jumpIdx = c.jumpIdx; lastChange = c.lastChange; lastVisual = copyVisual(c.lastVisual);
+    E.recording = c.recording; recKeys.length = Math.min(recKeys.length, c.recLen);
+    E.msg = c.msg; E.msgErr = c.msgErr; E.hlOff = c.hlOff;
+    cur.line = c.line; cur.col = c.col; want = c.want; E.top = c.top;
+    clampCur();
+    hooks.onChange?.();
+  };
   E.ex = (text) => { try { if (E.mode !== 'normal'){ if (isInsertLike()) exitInsert(false); else if (E.mode === 'visual') exitVisual(); else if (E.mode === 'cmdline'){ E.cmd = null; E.mode = 'normal'; } } lastEx = text; pushHist(':', text); runEx(text); } catch (e){ if (!(e instanceof VimError)) throw e; setMsg(e.message, true); } finishCmd(); hooks.onChange?.(); };
   E.load = (text, { keepUndo = false } = {}) => {
     if (!keepUndo){ undoStack = []; redoStack = []; }

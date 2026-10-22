@@ -303,6 +303,38 @@ t('p into empty', '', 'ifoo<Esc>yyddp', '\nfoo');
 t('u after p', 'a', 'yyppuu', 'a');
 t('Esc in pending', 'abc', 'd<Esc>x', 'bc');
 t('ZZ', 'a', 'ZZ', 'a');
+// --- 打ったキーの取り消し（スマホのキーボードが文字を置き換えたとき）。prev を打ってから取り消し、next を打つ
+function rw(name, text, before, prev, next, expText, expCur, opt = {}){
+  const E = mk(text, { write: () => ({ ok:true, msg:'w' }), quit(){} });
+  for (const k of toks(before)) E.feed(k);
+  const ref = mk(text, { write: () => ({ ok:true, msg:'w' }), quit(){} });
+  for (const k of toks(before + next)) ref.feed(k);
+  const cp = E.checkpoint();
+  for (const k of toks(prev)) E.feed(k);
+  E.rewind(cp);
+  for (const k of toks(next)) E.feed(k);
+  const got = E.getText();
+  const same = got === ref.getText() && E.cur.line === ref.cur.line && E.cur.col === ref.cur.col && E.mode === ref.mode;
+  const okT = expText === undefined || got === expText;
+  const okC = !expCur || (E.cur.line === expCur[0] && E.cur.col === expCur[1]);
+  const okM = !opt.mode || E.mode === opt.mode;
+  if (same && okT && okC && okM) pass++;
+  else { fail++; console.log(`FAIL ${name}\n  got:  ${JSON.stringify(got)} cur=${E.cur.line},${E.cur.col} mode=${E.mode}\n  ref:  ${JSON.stringify(ref.getText())} cur=${ref.cur.line},${ref.cur.col} mode=${ref.mode}`); }
+  return E;
+}
+rw('rewind g → G', 'a\nb\nc', '', 'g', 'G', undefined, [2,0]);
+rw('rewind keeps pending', 'ab cd', '$g', 'g', 'e', undefined, [0,1]);
+rw('rewind w → W', 'foo.bar baz', '', 'w', 'W', undefined, [0,8]);
+rw('rewind x → X', 'abc', '$', 'x', 'X', 'ac');
+{ const E = rw('rewind x keeps undo', 'abc', 'x', 'x', 'X', 'bc'); E.feed('u'); if (E.getText() === 'abc') pass++; else { fail++; console.log('FAIL rewind x keeps undo: ' + E.getText()); } }
+rw('rewind o → O', 'a\nb', 'j', 'o', 'O', 'a\n\nb', [1,0], { mode:'insert' });
+rw('rewind a → A', 'abc', '', 'a', 'A', 'abc', [0,3], { mode:'insert' });
+rw('rewind p → P', 'ab', 'yl$', 'p', 'P', 'aab');
+rw('rewind v → V', 'ab\ncd', '', 'v', 'V', undefined, undefined, { mode:'visual' });
+rw('rewind d → D', 'abc', 'l', 'd', 'D', 'a');
+rw('rewind : (cmdline)', 'abc', '', ':', 'x', 'bc');
+rw('rewind u', 'abc', 'x', 'u', 'x', 'c');
+{ const E = mk('abc'); const cp = E.checkpoint(); E.feed('d'); E.feed('d'); E.rewind(cp); if (E.getText() === 'abc' && !E.modified) pass++; else { fail++; console.log('FAIL rewind modified: ' + E.getText()); } }
 console.log(`\n${pass} passed, ${fail} failed`);
 // --- round 2
 t('c2w', 'a b c d', 'c2wX<Esc>', 'X c d');
