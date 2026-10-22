@@ -2220,10 +2220,9 @@ $('#tlZoom').oninput = (e) => {
   const b = tlBounds();
   tlZoomAt(b.minPps * Math.pow(b.maxPps / b.minPps, e.target.value / 1000) / TL.pps, tlZoomCenterX());
 };
-// タイムラインの上端をドラッグして高さを変える（ダブルクリックで元に戻す）。
-// PC ではタイムラインの高さ、縦向きのスマホでは動画の大きさを変えて、タイムラインがその残りに広がる
-(() => {
-  const h = $('#tlResize');
+// 高さを変えるつまみ（ダブルクリックで元に戻す）。PC ではタイムラインの上端でタイムラインの高さを、
+// 縦向きのスマホではタブの上で動画の大きさを変えて、下の画面（タイムライン・リスト・Vim・履歴）がその残りに広がる
+for (const h of [$('#tlResize'), $('#mResize')]) {
   let st = null;
   // 縦向きのスマホで動画をどこまで大きくできるか（横幅いっぱいまで）
   const mVideoMax = () => Math.max(0.12, Math.min(0.6, ($('.player-col').clientWidth - 16) * 9 / 16 / stableH));
@@ -2241,7 +2240,7 @@ $('#tlZoom').oninput = (e) => {
   const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
   h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
   h.addEventListener('dblclick', () => { if (mq.matches) settings.mVideo = M_VIDEO; else settings.tlHeight = TL_H; applyLayoutVars(); saveSettings(); });
-})();
+}
 // 右のパネルの幅：左端をドラッグして変える（ダブルクリックで元に戻す）
 (() => {
   const h = $('#sideResize');
