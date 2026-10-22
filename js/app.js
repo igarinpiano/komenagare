@@ -2731,8 +2731,11 @@ vimInput.addEventListener('keydown', (e) => {
   let tok = vimKeyToken(e);
   if (!tok) return;
   if (tok === '<C-s>') return;
-  e.preventDefault();
   e.stopPropagation();
+  // ふつうの文字は入力（beforeinput）で受け取る。iPhone のキーボードは文字も keydown で知らせるが、
+  // ここで止めると変換が始まらず、12 キーの「a/A」で g を G にするといった置き換えができなくなるため
+  if ([...tok].length === 1 && !e.ctrlKey) return;
+  e.preventDefault();
   vimFeed(tok);
 });
 function vimFlush(){
@@ -2808,6 +2811,10 @@ vimScreen.addEventListener('pointerdown', (e) => {
   vim.mouse = { id: e.pointerId, start: pos, active: false };
   vimScheduleRender();
 });
+// iPhone では、タップのあとに来る mousedown で入力欄からフォーカスが外れ、キーボードが出てすぐ閉じてしまう
+// （長押しだと mousedown が来ないので開いたままになる）。フォーカスを動かさず、click でも入力欄に戻す
+vimEl.addEventListener('mousedown', (e) => { if (e.target !== vimInput) e.preventDefault(); });
+vimScreen.addEventListener('click', () => { if (vim.E && document.activeElement !== vimInput) vimInput.focus({ preventScroll:true }); });
 vimScreen.addEventListener('pointermove', (e) => {
   const E = vim.E;
   if (!E) return;
