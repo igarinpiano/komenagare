@@ -2902,9 +2902,12 @@ function applyPhoneLandscape(){
 // 測り直すのは、最初・向きが変わったとき・幅が変わったときと、入力中でないときに広がったとき（ツールバーが隠れたときなど）だけ
 let stableH = 0, stableW = 0;
 const isTyping = () => { const el = document.activeElement; return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)); };
+// 測るのはページの表示枠（documentElement.clientWidth/Height）。window.innerWidth/Height は iPhone では拡大
+// （入力欄に触れたときの自動の拡大を含む）で変わり、コメントの編集画面を開け閉めしたあとに動画が細くなっていた
 function applyStableHeight(reset){
-  if (!(reset || !stableH || innerWidth !== stableW || (innerHeight > stableH && !isTyping()))) return;
-  stableH = innerHeight; stableW = innerWidth;
+  const w = document.documentElement.clientWidth, h = document.documentElement.clientHeight;
+  if (!(reset || !stableH || w !== stableW || (h > stableH && !isTyping()))) return;
+  stableH = h; stableW = w;
   document.documentElement.style.setProperty('--stable-h', stableH + 'px');
 }
 function onViewportChange(e){
@@ -2926,7 +2929,7 @@ function resetStrayScroll(){
 document.addEventListener('focusout', () => setTimeout(resetStrayScroll, 300));
 window.visualViewport?.addEventListener('resize', () => setTimeout(resetStrayScroll, 300));
 // タイムラインの高さの上限（PC の配置で、動画と右のパネルが潰れないように。窓を小さくしたときや iPad を回したときも）
-function tlMaxHeight(){ return Math.max(140, innerHeight - ($('.topbar')?.offsetHeight || 0) - 340); }
+function tlMaxHeight(){ return Math.max(140, document.documentElement.clientHeight - ($(".topbar")?.offsetHeight || 0) - 340); }
 function applyLayoutVars(){
   const root = document.documentElement.style;
   const tlH = Math.min(settings.tlHeight, tlMaxHeight());
