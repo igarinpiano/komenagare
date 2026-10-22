@@ -2221,10 +2221,10 @@ $('#tlZoom').oninput = (e) => {
 (() => {
   const h = $('#tlResize');
   let st = null;
-  h.addEventListener('pointerdown', (e) => { st = { y: e.clientY, h: settings.tlHeight }; h.setPointerCapture(e.pointerId); h.classList.add('on'); });
+  h.addEventListener('pointerdown', (e) => { st = { y: e.clientY, h: Math.min(settings.tlHeight, tlMaxHeight()) }; h.setPointerCapture(e.pointerId); h.classList.add('on'); });
   h.addEventListener('pointermove', (e) => {
     if (!st) return;
-    settings.tlHeight = Math.round(clamp(st.h - (e.clientY - st.y), 140, Math.max(160, window.innerHeight - 240)));
+    settings.tlHeight = Math.round(clamp(st.h - (e.clientY - st.y), 140, tlMaxHeight()));
     applyLayoutVars();
   });
   const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
@@ -2896,14 +2896,27 @@ onViewportChange();
 screen.orientation?.addEventListener('change', onViewportChange);
 window.addEventListener('orientationchange', onViewportChange);
 window.addEventListener('resize', onViewportChange);
+// iOS などでは、キーボードが閉じたあともページが上にずれたまま（画面の下が空白）になることがある。
+// ページがスクロールしない配置（PC・横向きのスマホ）なら元に戻す
+function resetStrayScroll(){
+  const el = document.activeElement;
+  if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+  const se = document.scrollingElement;
+  if (se && se.scrollTop > 0 && se.scrollHeight <= innerHeight + 1) window.scrollTo(0, 0);
+}
 // キーボードが閉じたあと（入力欄から離れたあと）に測り直す
-document.addEventListener('focusout', () => setTimeout(() => applyStableHeight(false), 300));
+document.addEventListener('focusout', () => setTimeout(() => { applyStableHeight(false); resetStrayScroll(); }, 300));
+window.visualViewport?.addEventListener('resize', () => setTimeout(resetStrayScroll, 300));
+// タイムラインの高さの上限（PC の配置で、動画と右のパネルが潰れないように。窓を小さくしたときや iPad を回したときも）
+function tlMaxHeight(){ return Math.max(140, innerHeight - ($('.topbar')?.offsetHeight || 0) - 340); }
 function applyLayoutVars(){
   const root = document.documentElement.style;
-  root.setProperty('--tl-h', settings.tlHeight + 'px');
-  root.setProperty('--tl-space', (!mq.matches && settings.timeline) ? settings.tlHeight + 'px' : '0px');
+  const tlH = Math.min(settings.tlHeight, tlMaxHeight());
+  root.setProperty('--tl-h', tlH + 'px');
+  root.setProperty('--tl-space', (!mq.matches && settings.timeline) ? tlH + 'px' : '0px');
   root.setProperty('--side-w', settings.sideWidth + 'px');
 }
+window.addEventListener('resize', applyLayoutVars);
 function applyPanes(){
   const mobile = mq.matches;
   const pane = mobile ? (settings.mobilePane === 'timeline' ? 'list' : settings.mobilePane) : settings.sidePane;
