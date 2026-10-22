@@ -174,7 +174,7 @@ a.btn:hover{background:#313131}
 .chk{font-size:12px;color:#ccc;display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .search{margin:0 12px 8px}
 .list-head{display:grid;grid-template-columns:54px 1fr 92px 22px;gap:6px;padding:4px 12px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--line)}
-.list{flex:1;min-height:120px;overflow-y:auto;position:relative}
+.list{flex:1;min-height:72px;overflow-y:auto;position:relative}
 .row{display:grid;grid-template-columns:54px 1fr 92px 22px;gap:6px;padding:4px 12px;font-size:12.5px;border-bottom:1px solid #242424;cursor:pointer;align-items:start}
 .row:hover{background:#262626}
 .row.current{background:#1d3150}
@@ -188,7 +188,8 @@ a.btn:hover{background:#313131}
 .row:hover .del{visibility:visible}
 .del:hover{color:var(--danger);background:none}
 .list-empty{padding:30px 16px;text-align:center;color:#777;font-size:13px;line-height:1.7}
-.settings{border-top:1px solid var(--line);padding:8px 12px 10px;font-size:13px}
+/* パネルが低いとき（タイムラインを高くしたときなど）は、開いた設定の中をスクロールする */
+.settings{border-top:1px solid var(--line);padding:8px 12px 10px;font-size:13px;flex:0 1 auto;min-height:40px;overflow-y:auto;overscroll-behavior:contain}
 .settings summary{cursor:pointer;color:#ccc;font-weight:600;padding:2px 0}
 .set-grid{display:grid;grid-template-columns:1fr auto;gap:8px 10px;align-items:center;margin-top:8px}
 .set-grid label{color:#ccc}
