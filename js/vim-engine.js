@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 'use strict';
 /* =====================================================================
    Vim エンジン（DOM 非依存）

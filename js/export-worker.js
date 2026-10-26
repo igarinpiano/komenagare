@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 'use strict';
 /* 高速書き出し用のワーカー。変換ライブラリ（d.lib）は開始時に読み込む */
 importScripts('comment-render.js', 'export-core.js');

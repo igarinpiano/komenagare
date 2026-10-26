@@ -30,7 +30,10 @@
 - `install.sh` — `curl … | sh` 用のインストーラー（Linux / macOS / Android / BSD など。OS と CPU から配布物を選ぶ。ターゲットを足したらここも合わせる）
 - `install.ps1` — `irm … | iex` 用のインストーラー（Windows。raw.githubusercontent.com から配る。UTF-8・BOM なしのまま保つ）
 - `.github/workflows/` — CI（Node と Rust のテスト）、リリース（`release.yml`）、全ターゲットのビルド（`build-matrix.yml`。ターゲットの一覧はここだけ）と、その確認（`build-check.yml`。依存やビルドの設定を変えた PR で走る）
-- `.github/package.sh` — ビルドした実行ファイルを配布物（`komenagare-<target>.tar.gz` / `.zip` と `.sha256`）にまとめる
+- `.github/package.sh` — ビルドした実行ファイルを配布物（`komenagare-<target>.tar.gz` / `.zip` と `.sha256`）にまとめる。LICENSE・NOTICE・THIRD-PARTY-LICENSES.html・README.md も入れる
+- `LICENSE`（Apache-2.0。付録のひな形は原文のまま）・`NOTICE`（著作権と同梱物の表示）
+- `about.toml` / `about.hbs` — 配布物に入れる依存クレートのライセンス一覧（`cargo about generate` で THIRD-PARTY-LICENSES.html を作る。release と build-check で生成し、許可していないライセンスの依存が入ると止まる）
+- `CONTRIBUTING.md`・`CODE_OF_CONDUCT.md`・`SECURITY.md`
 
 ## 守ること
 
@@ -52,6 +55,8 @@
 - WebSocket のやりとり（メッセージの形や意味）を変えるときは、取り決めの版数を上げる: `web.json` の protocol、`js/app.js` の `COLLAB_PROTOCOL`、`cli/src/server.rs` の `PROTOCOL` をそろえて上げ、CLI もリリースする。
   版数を変えない変更（画面の改善など）は Web 版（GitHub Pages）を更新するだけで、ホストしている CLI にも次の起動から届く。
 - UI の文言・コメントは日本語。
+- ソースファイル（`js/`・`css/`・`cli/` の .rs・`tests/`・`index.html`・インストーラー）の冒頭には `SPDX-FileCopyrightText: 2026 Igarin` と `SPDX-License-Identifier: Apache-2.0` の2行を置く。新しいファイルにも入れる。
+- ほかのプロジェクトのコードやライブラリを取り込んだら、`NOTICE` と README の「ライセンス」に追記する。
 
 ## テスト
 

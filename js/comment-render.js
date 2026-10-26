@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 'use strict';
 /* コメントの描画（画面・書き出し・書き出しワーカーで共通） */
 

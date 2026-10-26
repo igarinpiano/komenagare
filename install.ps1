@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Igarin
+# SPDX-License-Identifier: Apache-2.0
 # komenagare（コメナガレのホスト）を Windows にインストールする
 #
 #   irm https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.ps1 | iex

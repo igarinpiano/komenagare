@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! komenagare: コメナガレを複数人で編集するためのホスト
 //!
 //!   komenagare [フォルダ...] [--host 0.0.0.0] [--port 8764] [--otp] ...

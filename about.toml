@@ -1,0 +1,21 @@
+# komenagare の配布物に入れる THIRD-PARTY-LICENSES.html（cargo about generate）の設定。
+# 依存のライセンスがここにないと生成が止まる（build-check と release で生成する）。
+# 新しいライセンスを足すときは、配布物に入れてよいものかを確かめてから足す。
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+workarounds = ["ring"]
+# 配布物に入らないもの（komenagare 自身とテスト用の依存）は載せない
+private = { ignore = true }
+ignore-dev-dependencies = true

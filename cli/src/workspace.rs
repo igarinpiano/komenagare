@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! 作業フォルダ：コメント（comments.jsonl）、変更の記録（.komenagare/log.jsonl）、git の履歴。
 //!
 //! comments.jsonl は1行1コメント（時刻順）。git の差分やマージがコメント単位になる。

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! Web アプリの配信と、WebSocket での変更のやりとり。
 //!
 //! 1つのホストで複数のプロジェクト（作業フォルダ）を共有できる。プロジェクトは /ws?p=<id> で選ぶ
