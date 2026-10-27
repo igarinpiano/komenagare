@@ -3009,7 +3009,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 4;
+const COLLAB_PROTOCOL = 5;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
@@ -3026,6 +3026,7 @@ const collab = {
   workspace: 'default', // 控え（IndexedDB）の名前に使う。プロジェクトの id
   owner: null, // このタブがこのプロジェクトを開いている間の id（衝突の控えをタブごとに分ける）
   serverName: null, // ホストが使っている自分の名前
+  remote: null, // ホストでコマンドを打てるときの種類（'git' / 'shell'。ホストの --remote で、許された人だけ）
   key: (() => {
     const k = new URLSearchParams(location.search).get('k');
     try { if (k) sessionStorage.setItem('komenagare.key', k); return k || sessionStorage.getItem('komenagare.key'); } catch { return k; }
@@ -3093,6 +3094,7 @@ function collabConnect(){
     if (collab.blocked){ collab.connected = false; collabUI(); return; }
     const was = collab.connected;
     collab.connected = false; collab.peers = []; collab.peerList = []; collab.presence.clear();
+    termDropped('接続が切れたため');
     if (collab.follow != null) collabUnfollow();
     presenceChanged();
     if (!was) collab.failed++;
@@ -3109,6 +3111,8 @@ function collabHandle(m){
     for (const e of collab.outbox) store.apply(e.change);
     commentsChanged();
     collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null;
+    collab.remote = m.remote || null;
+    termDropped('接続し直したため');
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
     collabShareConflicts();
     presence.sent = ''; presenceDirty();
@@ -3131,6 +3135,10 @@ function collabHandle(m){
     }
     collabUI();
     histChanged();
+  } else if (m.type === 'run_out'){
+    if (m.id === term.running) termAppend(m.data, m.err ? 'err' : '');
+  } else if (m.type === 'run_end'){
+    if (m.id === term.running) termEnd(m);
   } else if (m.type === 'history'){
     hist.entries = m.entries || [];
     histRender();
@@ -3203,6 +3211,7 @@ function collabAddConflicts(entry, conflicts, fix, local){
 function collabUI(){
   const el = $('#collabStatus');
   if (!el) return;
+  termUI();
   el.hidden = !state.collab;
   const pending = collab.outbox.length;
   if (collab.connected){
@@ -3216,6 +3225,90 @@ function collabUI(){
     el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
   }
 }
+
+/* ---------- ターミナル（ホストの --remote。許された人だけがホストの作業フォルダでコマンドを打てる） ---------- */
+const TERM_HISTORY_KEY = 'komenagare.termHistory';
+const term = { running: null, seq: 0, history: [], hpos: 0, draft: '' };
+try { term.history = JSON.parse(localStorage.getItem(TERM_HISTORY_KEY) || '[]').filter(h => typeof h === 'string').slice(-100); } catch {}
+term.hpos = term.history.length;
+function termAppend(text, cls){
+  if (!text) return;
+  const out = $('#termOut'), stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
+  const last = out.lastChild;
+  if (last && last.className === (cls || '') && last.textContent.length < 4096) last.textContent += text;
+  else { const sp = document.createElement('span'); if (cls) sp.className = cls; sp.textContent = text; out.append(sp); }
+  // 表示が重くならないよう、古いものから消す
+  while (out.childNodes.length > 2000) out.firstChild.remove();
+  if (stick) out.scrollTop = out.scrollHeight;
+}
+function termUI(){
+  const btn = $('#termBtn');
+  btn.hidden = !(state.collab && collab.remote);
+  btn.classList.toggle('busy', !!term.running);
+  btn.textContent = term.running ? '⌨ 実行中…' : '⌨ ターミナル';
+  const ready = collab.connected && !!collab.remote;
+  $('#termRun').disabled = !ready || !!term.running;
+  $('#termStop').disabled = !term.running;
+  $('#termNote').textContent = !ready ? 'ホストにつながっていません。'
+    : (collab.remote === 'shell'
+      ? 'ホストのパソコンで、作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）を今の場所としてコマンドを打てます。'
+      : '作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）で git の決まったサブコマンドを打てます（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash など）。')
+      + ' 入力を求めるコマンド（エディタ・パスワードなど）は使えません。打ったコマンドはホストに記録されます。';
+}
+function termRun(line){
+  line = line.trim();
+  if (!line || term.running || !collab.connected || !collab.remote) return;
+  const id = 'r' + Date.now().toString(36) + (term.seq++);
+  term.running = id;
+  term.history = term.history.filter(h => h !== line);
+  term.history.push(line);
+  term.hpos = term.history.length; term.draft = '';
+  try { localStorage.setItem(TERM_HISTORY_KEY, JSON.stringify(term.history.slice(-100))); } catch {}
+  termAppend('$ ' + line + '\n', 'cmd');
+  collab.ws.send(JSON.stringify({ type: 'run', id, line }));
+  termUI();
+}
+function termEnd(m){
+  term.running = null;
+  const out = $('#termOut');
+  if (out.textContent && !out.textContent.endsWith('\n')) termAppend('\n', '');
+  if (m.message) termAppend(m.message + '\n', 'err');
+  if (m.code != null) termAppend(`（終了コード ${m.code}）\n`, 'info');
+  termUI();
+}
+// 接続が切れると、ホストは動いているコマンドを止める
+function termDropped(why){
+  if (!term.running) return;
+  termEnd({ code: null, message: why + '、コマンドは止まりました' });
+}
+function termStop(){
+  if (term.running && collab.connected) collab.ws.send(JSON.stringify({ type: 'run_stop', id: term.running }));
+}
+$('#termBtn').onclick = () => { termUI(); if (!$('#termDlg').open) $('#termDlg').showModal(); $('#termInput').focus(); };
+$('#termClose').onclick = () => $('#termDlg').close();
+$('#termClear').onclick = () => { $('#termOut').replaceChildren(); $('#termInput').focus(); };
+$('#termStop').onclick = () => { termStop(); $('#termInput').focus(); };
+$('#termForm').onsubmit = (e) => {
+  e.preventDefault();
+  const inp = $('#termInput');
+  if (term.running || !inp.value.trim()) return;
+  termRun(inp.value);
+  inp.value = '';
+};
+$('#termInput').addEventListener('keydown', (e) => {
+  const inp = e.target;
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'c' && term.running && inp.selectionStart === inp.selectionEnd){ e.preventDefault(); termStop(); return; }
+  if (e.ctrlKey && e.key.toLowerCase() === 'l'){ e.preventDefault(); $('#termOut').replaceChildren(); return; }
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown'){
+    if (!term.history.length) return;
+    e.preventDefault();
+    if (term.hpos === term.history.length) term.draft = inp.value;
+    term.hpos = Math.max(0, Math.min(term.history.length, term.hpos + (e.key === 'ArrowUp' ? -1 : 1)));
+    inp.value = term.hpos === term.history.length ? term.draft : term.history[term.hpos];
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  }
+});
 
 /* ---------- ホストへの問い合わせ（合言葉・ログインを付ける） ---------- */
 async function collabApi(path, body){

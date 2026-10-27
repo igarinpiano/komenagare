@@ -79,7 +79,7 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
   反映されなかった側には「衝突」の知らせが出て、自分の変更にする・相手のままにする・両方残すを選べます。
 - 「変更履歴」タブで、誰がいつ何を変えたかを見られます。どの変更も「取り消す」で打ち消せます（git revert と同じ）。
 - ホストとの接続が切れても編集を続けられます。変更はブラウザに保存され、つながり直したときに送られます。
-- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）。一覧は `komenagare --help`。
+- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）、`--remote`（画面からホストでコマンドを打つ）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
   取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
 
@@ -105,6 +105,24 @@ komenagare otp revoke 山田                       # 取り消す（つながっ
 
 管理者は画面の「📁」→「招待・ログインの管理」からも発行・取り消しができます。
 記録は `~/.config/komenagare/auth`（macOS は `~/Library/Application Support/komenagare/auth`、Windows は `%APPDATA%\komenagare\auth`）に置きます（`--auth-dir` で変更可。`komenagare otp` にも同じものを指定）。
+
+### リモートでコマンドを打つ（--remote）
+
+`--otp` と一緒に `--remote` を付けると、許された参加者が画面の「⌨ ターミナル」から、ホストの作業フォルダでコマンドを打てます（SSH のような使い方。ただし端末ではないので、エディタやパスワードなど入力を求めるコマンドは使えません）。
+
+```sh
+komenagare --otp --remote git                            # 管理者だけが git を使える
+komenagare --otp --remote git --remote-users all         # 全員が git を使える
+komenagare --otp --remote git --remote-users admin,山田  # 管理者と山田さん
+komenagare --otp --remote shell                          # 管理者だけが何でも打てる（シェル）
+```
+
+- `--remote git` は git の決まったサブコマンド（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / reset / stash / merge など）だけを、シェルを通さずに動かします。
+  `git config` や `git -c …`、`--upload-pack` のようにほかのプログラムを動かせるもの、`--output` や `-F` のように作業フォルダの外のファイルを読み書きできるものは断ります。
+- `--remote shell` は何でも打てます。**このパソコンを預けるのと同じ**なので、信頼できる人だけに許してください。
+- 使える人（`--remote-users`）は `admin`（管理者）・`all`（全員）・参加者の名前を `,` で区切って並べます（既定は `admin`）。名前は `komenagare otp new` で付けたものです。
+- 打ったコマンドはホストの画面と、作業フォルダの `.komenagare/commands.log` に残ります。止めるには「止める」（Ctrl+C）。接続が切れたときと 15 分たったときも止まります。
+- ホストはコメントを覚えたまま動いているので、`git reset` や `git checkout` で `comments.jsonl` を書き換えても読み込み直しません（次に誰かがコメントを変えると、ホストの内容で上書きされます）。
 
 ### ローカルネットワークの外から使う
 

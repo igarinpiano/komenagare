@@ -89,6 +89,18 @@ a.btn:hover{background:#313131}
 .auth-link input{flex:1;min-width:0}
 #authLists h4{margin:14px 0 4px;font-size:13px}
 .auth-row .auth-name{flex:1;min-width:0;word-break:break-all}
+/* ターミナル（ホストの --remote） */
+.collab.term{color:#cfe3ff;border-color:#35507a}
+.collab.term.busy{color:#ffd28a;border-color:#7a5420}
+dialog.term-dlg{width:min(880px,96vw)}
+.term-note{margin:0 0 8px;font-size:12px}
+.term-out{margin:0 0 8px;height:min(52vh,440px);overflow:auto;background:#0b0b0b;border:1px solid #333;border-radius:6px;padding:8px 10px;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#ddd}
+.term-out .cmd{color:#7ee2a8;font-weight:600}
+.term-out .err{color:#ff9b9b}
+.term-out .info{color:var(--muted)}
+.term-form{display:flex;gap:6px;align-items:center}
+.term-prompt{font:600 14px ui-monospace,Menlo,Consolas,monospace;color:#7ee2a8}
+.term-form input{flex:1;min-width:0;font-family:ui-monospace,Menlo,Consolas,monospace}
 
 /* ---------- layout ---------- */
 .layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) min(var(--side-w,400px), max(300px, calc(100% - 412px)));grid-template-rows:minmax(0,1fr);gap:12px;padding:12px}

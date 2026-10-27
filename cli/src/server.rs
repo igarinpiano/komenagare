@@ -21,24 +21,30 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":4,"name":"表示名","client":"ブラウザごとの id","session":"…"(--otp のとき)}
+//!   {"type":"hello","protocol":5,"name":"表示名","client":"ブラウザごとの id","session":"…"(--otp のとき)}
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
 //!   {"type":"conflict_add","conflicts":[{"key":..,...}]}     「あとで」にした衝突を全員に見せる
 //!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
+//!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
+//!   {"type":"run_stop","id":"…"}                             動いているコマンドを止める
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","comments":[...]} 接続直後の全体（name はホストが使う名前）
+//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","comments":[...],"remote":"git"|"shell"|null}
+//!                                                            接続直後の全体（name はホストが使う名前。remote はコマンドを打てるときの種類）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
 //!   {"type":"conflicts","list":[{"key",..,"author","client"}]} 保留中の衝突（変わるたびに全体）
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
 //!   {"type":"history","entries":[{"rev","time","author","change"},...]} 最近の変更（新しい順）
 //!   {"type":"ack","id":"変更セットid","rev":N,"dup":bool,"conflicts":[...],"fix":[{"id":..,"comment":..|null}]}
 //!   {"type":"peers","names":[...],"peers":[{"id","name","client","color"}]} 参加者（color は色の番号。今いる人の中で空いている一番小さい番号）
+//!   {"type":"run_out","id":"…","data":"出力","err":bool}       コマンドの出力（err は標準エラー出力）
+//!   {"type":"run_end","id":"…","code":N|null,"message":"…"|null} コマンドが終わった（message は止めた理由・断った理由）
 //!   {"type":"error","code":"protocol"|"auth"|"project","message":…} code があるものは送ったあと切る
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
 
 use crate::auth::{self, Auth, Kind, SessionRec};
+use crate::remote::{self, Remote};
 use crate::store::{Change, Comment, Store};
 use crate::workspace::{LogEntry, Workspace};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -58,7 +64,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -88,12 +94,16 @@ impl Access {
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// 作業フォルダ（リモートのコマンドはここで動かす）
+    pub dir: PathBuf,
     pub hub: Arc<Hub>,
 }
 
 pub struct Server {
     pub projects: Vec<Project>,
     pub access: Access,
+    /// リモートのコマンド（--remote。--otp のときだけ）
+    pub remote: Option<Remote>,
     web_dir: Option<PathBuf>,
     /// 外から入るときの URL（--tunnel / --public-url。招待のリンクに使う）
     public_url: std::sync::RwLock<Option<String>>,
@@ -113,10 +123,16 @@ const LOGIN_FAILS_MAX: usize = 30;
 const SESSION_CHECK: Duration = Duration::from_secs(15);
 
 impl Server {
-    pub fn new(projects: Vec<Project>, access: Access, web_dir: Option<PathBuf>) -> Arc<Server> {
+    pub fn new(
+        projects: Vec<Project>,
+        access: Access,
+        remote: Option<Remote>,
+        web_dir: Option<PathBuf>,
+    ) -> Arc<Server> {
         Arc::new(Server {
             projects,
             access,
+            remote,
             web_dir,
             public_url: std::sync::RwLock::new(None),
             next_conn: AtomicU64::new(1),
@@ -545,15 +561,29 @@ async fn ws_handler(
             return (StatusCode::UNAUTHORIZED, "invalid key").into_response();
         }
     }
-    let hub = server.project(q.p.as_deref()).map(|p| p.hub.clone());
+    let project = server
+        .project(q.p.as_deref())
+        .map(|p| (p.hub.clone(), p.dir.clone(), p.name.clone()));
     ws.max_message_size(64 << 20)
-        .on_upgrade(move |socket| connection(server, hub, socket))
+        .on_upgrade(move |socket| connection(server, project, socket))
 }
 
-async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocket) {
+/// 動いているリモートのコマンド
+struct Running {
+    id: String,
+    /// 送るか捨てると止まる
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+async fn connection(
+    server: Arc<Server>,
+    project: Option<(Arc<Hub>, PathBuf, String)>,
+    socket: WebSocket,
+) {
     let conn = server.next_conn.fetch_add(1, Ordering::Relaxed);
     let (mut sink, mut stream) = socket.split();
-    let Some(hub) = hub else {
+    let Some((hub, dir, project_name)) = project else {
         let _ = sink
             .send(Message::Text(
                 json!({ "type": "error", "code": "project", "message": "プロジェクトが見つかりません。プロジェクトを選び直してください" })
@@ -590,6 +620,9 @@ async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocke
     let mut client = String::new();
     let mut joined = false;
     let mut session: Option<String> = None;
+    // リモートのコマンドを打てるか（hello で決める）と、動いているもの
+    let mut can_run = false;
+    let mut running: Option<Running> = None;
     let mut shutdown = server.shutdown.subscribe();
     let mut revoked = server.revoked.subscribe();
     let mut check = tokio::time::interval(SESSION_CHECK);
@@ -633,6 +666,10 @@ async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocke
                     // 名前はセッションのもの（自分で名乗り直せない）
                     match v["session"].as_str().and_then(|t| a.verify(t)) {
                         Some(s) => {
+                            can_run = server
+                                .remote
+                                .as_ref()
+                                .is_some_and(|r| r.allows(&s.name, s.admin));
                             name = s.name;
                             session = Some(s.id);
                         }
@@ -667,8 +704,13 @@ async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocke
                     },
                 );
                 let comments: Vec<&Comment> = inner.store.sorted();
+                let remote = server
+                    .remote
+                    .as_ref()
+                    .filter(|_| can_run)
+                    .map(|r| r.mode.label());
                 let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "comments": comments })
+                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "comments": comments, "remote": remote })
                         .to_string(),
                 );
                 let _ = out_tx.send(conflicts_msg(&inner));
@@ -731,6 +773,54 @@ async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocke
                     conflicts_changed(&hub, &inner);
                 }
             }
+            Some("run") => {
+                let id: String = v["id"].as_str().unwrap_or("").chars().take(64).collect();
+                let line = v["line"].as_str().unwrap_or("").trim().to_string();
+                let refuse = |message: &str| {
+                    let _ = out_tx.send(
+                        json!({ "type": "run_end", "id": id, "code": null, "message": message })
+                            .to_string(),
+                    );
+                };
+                let Some(r) = server.remote.as_ref().filter(|_| can_run) else {
+                    refuse("このホストでは、あなたはコマンドを打てません");
+                    continue;
+                };
+                if running.as_ref().is_some_and(|r| !r.task.is_finished()) {
+                    refuse("前のコマンドがまだ動いています（止めてから打ってください）");
+                    continue;
+                }
+                let cmd = match remote::build(r.mode, &line, &dir) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        println!("[コマンド] {name}（{project_name}）: {line}（断りました: {e}）");
+                        refuse(&e);
+                        continue;
+                    }
+                };
+                println!("[コマンド] {name}（{project_name}）: {line}");
+                let out = out_tx.clone();
+                let send: remote::Sender = Box::new(move |m| {
+                    let _ = out.send(m);
+                });
+                let (stop, stop_rx) = tokio::sync::oneshot::channel();
+                let (dir, who, rid) = (dir.clone(), name.clone(), id.clone());
+                let task = tokio::spawn(async move {
+                    let code = remote::run(cmd, rid, send, stop_rx).await;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        remote::log(&dir, &who, &line, code, now_ms())
+                    })
+                    .await;
+                });
+                running = Some(Running { id, stop, task });
+            }
+            Some("run_stop") => {
+                if running.as_ref().is_some_and(|r| v["id"] == r.id.as_str()) {
+                    if let Some(r) = running.take() {
+                        let _ = r.stop.send(());
+                    }
+                }
+            }
             Some("history") => {
                 let limit = v["limit"].as_u64().unwrap_or(200).min(HISTORY_KEEP as u64) as usize;
                 let inner = hub.inner.lock().await;
@@ -751,6 +841,8 @@ async fn connection(server: Arc<Server>, hub: Option<Arc<Hub>>, socket: WebSocke
             _ => {}
         }
     }
+    // 動いているコマンドは止める
+    drop(running);
     // 送り残し（エラーなど）を送り終えてから切る
     drop(out_tx);
     if tokio::time::timeout(Duration::from_millis(500), &mut send_task)

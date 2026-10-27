@@ -10,6 +10,7 @@
 mod auth;
 mod files;
 mod firewall;
+mod remote;
 mod render;
 mod server;
 mod store;
@@ -68,6 +69,13 @@ struct Args {
         conflicts_with = "tunnel"
     )]
     public_url: Option<String>,
+    /// 許された参加者が、画面の「ターミナル」から作業フォルダでコマンドを打てるようにする（--otp が必要）。
+    /// git: git の決まったサブコマンドだけ。shell: 何でも（このパソコンを預けるのと同じ。信頼できる人だけに）
+    #[arg(long, value_enum, value_name = "KIND", requires = "otp")]
+    remote: Option<remote::Mode>,
+    /// リモートのコマンドを使える人。admin（管理者）・all（全員）・参加者の名前を「,」で区切って並べる
+    #[arg(long, value_name = "WHO", default_value = "admin", requires = "remote")]
+    remote_users: String,
     /// 履歴（git）が残せなければ起動しない
     #[arg(long, conflicts_with = "no_git")]
     require_git: bool,
@@ -410,14 +418,19 @@ async fn run(args: Args) -> Result<()> {
         ));
         let id = ws.id.clone();
         let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
+        let dir = ws.dir.clone();
         let (writer, writer_thread) = server::spawn_writer(ws);
         writers.push(writer_thread);
         let hub = server::Hub::new(store, rev, seen, history, writer, conflicts, conflicts_file);
-        projects.push(server::Project { id, name, hub });
+        projects.push(server::Project { id, name, dir, hub });
     }
+    let remote = args
+        .remote
+        .map(|mode| remote::Remote::new(mode, &args.remote_users));
     let server = server::Server::new(
         projects,
         access,
+        remote,
         match web_source {
             web::Source::Dir(d) => Some(d),
             web::Source::Bundled => None,
@@ -496,6 +509,15 @@ async fn run(args: Args) -> Result<()> {
             println!("  開く（管理者・この URL は1回だけ使えます）: {local}");
         }
         _ => println!("  開く: {local}"),
+    }
+    if let Some(r) = &server.remote {
+        println!(
+            "  リモートのコマンド: {}（画面の「ターミナル」から。記録: 作業フォルダの .komenagare/commands.log）",
+            r.describe()
+        );
+        if r.mode == remote::Mode::Shell {
+            println!("  ※ --remote shell では、使える人がこのパソコンで何でもできます（ファイルの削除や、ほかのプログラムの実行も）。信頼できる人だけにしてください");
+        }
     }
     if let Some(u) = &public {
         let how = args.tunnel.map_or("--public-url", |k| k.label());
