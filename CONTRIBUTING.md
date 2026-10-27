@@ -46,4 +46,4 @@
 - [`NOTICE`](NOTICE) の内容（著作権表示）を残す。使ったファイルの冒頭の著作権表示（`SPDX-FileCopyrightText`）も消さない
 - 手を加えたファイルには、変えたことがわかる記載を入れる
 
-README などに「コメナガレ（https://github.com/igarinpiano/komenagare）のコードを使っています」と書いてもらえると嬉しいです。
+README などに「コメナガレ (https://github.com/igarinpiano/komenagare) のコードを使っています」と書いてもらえると嬉しいです。
