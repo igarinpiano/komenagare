@@ -33,7 +33,7 @@ function exportFramer(MB, d){
     g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
     const s = Math.min(W / vw, H / vh), dw = vw * s, dh = vh * s;
     paint(g, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    renderer.draw(g, W, H, ts + off, d.layouts, { opacity: 1 });
+    renderer.draw(g, W, H, ts + off, d.layouts, { stage: d.stage, opacity: 1 });
     return new MB.VideoSample(cv, { timestamp: ts, duration: dur });
   };
   // 元のコマ [ts, ts + dur) に入る出力フレームを返す

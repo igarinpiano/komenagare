@@ -32,6 +32,38 @@ const NAKA_LEAD: f64 = 1.0;
 const DEFAULT_DURATION: f64 = 3.0;
 const STROKE_BASE: f64 = 2.8;
 
+/// コメントを描く範囲（ステージ）の大きさ（js/comment-render.js の stageSize と同じ）。
+/// 16:9 の基準ステージを範囲の中に収め、足りない向きに広げる
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Stage {
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Stage {
+    /// aspect は幅 / 高さ
+    pub fn of(aspect: f64) -> Stage {
+        if !(aspect > 0.0 && aspect.is_finite()) {
+            return Stage::WIDE;
+        }
+        if aspect >= 16.0 / 9.0 {
+            Stage {
+                w: STAGE_H * aspect,
+                h: STAGE_H,
+            }
+        } else {
+            Stage {
+                w: STAGE_W,
+                h: STAGE_W / aspect,
+            }
+        }
+    }
+    pub const WIDE: Stage = Stage {
+        w: STAGE_W,
+        h: STAGE_H,
+    };
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Pos {
     Naka,
@@ -215,6 +247,8 @@ struct Layout {
     end: f64,
     speed: f64,
     alpha: f64,
+    /// ステージの幅
+    sw: f64,
 }
 
 fn key(it: &Item) -> String {
@@ -237,7 +271,7 @@ fn hash_str(s: &str) -> u32 {
 }
 
 fn naka_x(l: &Layout, t: f64) -> f64 {
-    STAGE_W - (t - l.start) * l.speed
+    l.sw - (t - l.start) * l.speed
 }
 fn naka_collide(a: &Layout, b: &Layout) -> bool {
     if a.end <= b.start || b.end <= a.start {
@@ -248,7 +282,7 @@ fn naka_collide(a: &Layout, b: &Layout) -> bool {
     let d1 = naka_x(b, t1) - naka_x(a, t1);
     d0.min(d1) < a.w && d0.max(d1) > -b.w
 }
-fn find_slot(h: f64, blockers: &mut [(f64, f64)]) -> Option<f64> {
+fn find_slot(h: f64, stage_h: f64, blockers: &mut [(f64, f64)]) -> Option<f64> {
     blockers.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut y = 0.0;
     for &(by, bh) in blockers.iter() {
@@ -256,14 +290,14 @@ fn find_slot(h: f64, blockers: &mut [(f64, f64)]) -> Option<f64> {
             y = by + bh;
         }
     }
-    (y + h <= STAGE_H + 0.01).then_some(y)
+    (y + h <= stage_h + 0.01).then_some(y)
 }
 
 /// 段（naka / ue / shita）ごとに今も表示中のもの: (layout の添字, 上からの位置)
 type Lane = Vec<(usize, f64)>;
 
 /// js/app.js の relayout と同じ手順で位置を決める（invisible は除く）
-fn layout(items: &[Item]) -> Vec<Layout> {
+fn layout(items: &[Item], st: Stage) -> Vec<Layout> {
     let mut items: Vec<&Item> = items.iter().filter(|i| !i.text.trim().is_empty()).collect();
     let keys: HashMap<*const Item, String> =
         items.iter().map(|i| (*i as *const Item, key(i))).collect();
@@ -286,11 +320,7 @@ fn layout(items: &[Item]) -> Vec<Layout> {
         let mut w = lines.iter().map(|l| text_width(l)).fold(0.0, f64::max) * fs;
         let mut h = lh * lines.len() as f64;
         if o.pos != Pos::Naka {
-            let limit = if o.full {
-                STAGE_W
-            } else {
-                STAGE_W * UESHITA_RANGE
-            };
+            let limit = if o.full { st.w } else { st.w * UESHITA_RANGE };
             if w > limit {
                 let k = limit / w;
                 fs *= k;
@@ -299,12 +329,12 @@ fn layout(items: &[Item]) -> Vec<Layout> {
                 h *= k;
             }
         }
-        if h > STAGE_H {
-            let k = STAGE_H / h;
+        if h > st.h {
+            let k = st.h / h;
             fs *= k;
             lh *= k;
             w *= k;
-            h = STAGE_H;
+            h = st.h;
         }
         let dur = o.long.unwrap_or(DEFAULT_DURATION);
         let (start, end) = if o.pos == Pos::Naka {
@@ -313,7 +343,7 @@ fn layout(items: &[Item]) -> Vec<Layout> {
             (it.t, it.t + dur)
         };
         let speed = if o.pos == Pos::Naka {
-            (STAGE_W + w) / (end - start)
+            (st.w + w) / (end - start)
         } else {
             0.0
         };
@@ -330,6 +360,7 @@ fn layout(items: &[Item]) -> Vec<Layout> {
             end,
             speed,
             alpha,
+            sw: st.w,
         };
         let pool = match l.o.pos {
             Pos::Naka => &mut naka,
@@ -342,16 +373,16 @@ fn layout(items: &[Item]) -> Vec<Layout> {
             .filter(|&&(i, _)| l.o.pos != Pos::Naka || naka_collide(&out[i], &l))
             .map(|&(i, yy)| (yy, out[i].h))
             .collect();
-        let yy = match find_slot(l.h, &mut blockers) {
+        let yy = match find_slot(l.h, st.h, &mut blockers) {
             Some(yy) => {
                 pool.push((out.len(), yy));
                 yy
             }
             // 画面に収まらない → キーから決めた高さ
-            None => (hash_str(&key(it)) as f64 / 4294967296.0) * (STAGE_H - l.h).max(0.0),
+            None => (hash_str(&key(it)) as f64 / 4294967296.0) * (st.h - l.h).max(0.0),
         };
         l.y = if l.o.pos == Pos::Shita {
-            STAGE_H - yy - l.h
+            st.h - yy - l.h
         } else {
             yy
         };
@@ -404,8 +435,10 @@ fn ass_text(s: &str) -> String {
 
 pub fn to_ass(items: &[Item], opt: &AssOptions) -> String {
     let (w, h) = (opt.width as f64, opt.height as f64);
-    let s = h / STAGE_H;
-    let ox = (w - STAGE_W * s) / 2.0;
+    // 書き出す大きさは、コメントを流す範囲と同じ縦横比（16:9 に固定するときは 16:9）
+    let st = Stage::of(w / h);
+    let s = (w / st.w).min(h / st.h);
+    let (ox, oy) = ((w - st.w * s) / 2.0, (h - st.h * s) / 2.0);
     let mut out = String::new();
     let _ = write!(
         out,
@@ -415,7 +448,7 @@ pub fn to_ass(items: &[Item], opt: &AssOptions) -> String {
          [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
         opt.width, opt.height, opt.font, (27.0 * s).round()
     );
-    for l in layout(items) {
+    for l in layout(items, st) {
         let fs = l.fs * s;
         let bord = (STROKE_BASE * (l.fs / 27.0) * s).max(1.0) / 2.0;
         let black = l.o.color == "#000000";
@@ -443,11 +476,11 @@ pub fn to_ass(items: &[Item], opt: &AssOptions) -> String {
             continue;
         }
         for (i, line) in l.lines.iter().enumerate() {
-            let yc = (l.y + (i as f64 + 0.5) * l.lh) * s;
+            let yc = (l.y + (i as f64 + 0.5) * l.lh) * s + oy;
             let pos = match l.o.pos {
                 Pos::Naka => {
-                    let x1 = STAGE_W * s + ox;
-                    let x2 = (STAGE_W - (l.end + extra - l.start) * l.speed) * s + ox;
+                    let x1 = st.w * s + ox;
+                    let x2 = (st.w - (l.end + extra - l.start) * l.speed) * s + ox;
                     // 範囲の先頭より前に始まったものは、その時点の位置から
                     let from = if t0 < 0.0 {
                         x1 + (x2 - x1) * (-t0) / (t1 - t0)
@@ -474,6 +507,8 @@ pub struct RenderOptions {
     pub video: PathBuf,
     pub output: PathBuf,
     pub height: Option<u32>,
+    /// コメントを流す範囲を 16:9 に固定する（既定は動画と同じ縦横比）
+    pub wide: bool,
     pub fps: Option<f64>,
     pub start: Option<f64>,
     pub end: Option<f64>,
@@ -491,8 +526,8 @@ pub fn ffmpeg_available() -> bool {
         .unwrap_or(false)
 }
 
-/// 元動画の高さ（ffprobe があれば）
-fn probe_height(video: &Path) -> Option<u32> {
+/// 元動画の見た目の大きさ（幅, 高さ）。回転と画素の縦横比を反映する（ffprobe があれば）
+pub fn probe_size(video: &Path) -> Option<(f64, f64)> {
     let out = Command::new("ffprobe")
         .args([
             "-v",
@@ -500,28 +535,70 @@ fn probe_height(video: &Path) -> Option<u32> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=height",
+            "stream=width,height,sample_aspect_ratio:stream_side_data=rotation:stream_tags=rotate",
             "-of",
-            "csv=p=0",
+            "json",
         ])
         .arg(video)
         .output()
         .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    display_size(v.get("streams")?.get(0)?)
 }
 
-pub fn even_size(h: u32) -> (u32, u32) {
-    let h = h - h % 2;
-    let w = (h as f64 * 16.0 / 9.0).round() as u32;
-    (w + w % 2, h)
+/// ffprobe の stream から見た目の大きさを求める
+fn display_size(st: &serde_json::Value) -> Option<(f64, f64)> {
+    let w = st.get("width")?.as_f64()?;
+    let h = st.get("height")?.as_f64()?;
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let sar = st
+        .get("sample_aspect_ratio")
+        .and_then(|s| s.as_str())
+        .and_then(|s| s.split_once(':'))
+        .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+        .filter(|k| *k > 0.0 && k.is_finite())
+        .unwrap_or(1.0);
+    let rotation = st
+        .get("side_data_list")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.iter().find_map(|d| d.get("rotation")?.as_f64()))
+        .or_else(|| st.get("tags")?.get("rotate")?.as_str()?.parse().ok())
+        .unwrap_or(0.0);
+    let w = w * sar;
+    if (rotation.round() as i64).rem_euclid(180) == 90 {
+        Some((h, w))
+    } else {
+        Some((w, h))
+    }
+}
+
+/// 高さ h、縦横比 aspect（幅 / 高さ）の書き出しの大きさ（どちらも偶数）
+pub fn even_size(h: u32, aspect: f64) -> (u32, u32) {
+    let h = (h - h % 2).max(2);
+    let w = (h as f64 * aspect).round() as u32;
+    ((w + w % 2).max(2), h)
+}
+
+/// 書き出しの縦横比と、既定の高さ（短い辺が 2160 を超えないようにする）
+pub fn output_shape(src: Option<(f64, f64)>, wide: bool) -> (f64, u32) {
+    let (sw, sh) = src.unwrap_or((1920.0, 1080.0));
+    let aspect = if wide { 16.0 / 9.0 } else { sw / sh };
+    let h = if aspect >= 1.0 || wide {
+        sh.min(2160.0)
+    } else {
+        sh.min(2160.0 / aspect)
+    };
+    (aspect, h.round() as u32)
 }
 
 pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
     if !ffmpeg_available() {
         bail!("ffmpeg が見つかりません。動画に焼き込むには ffmpeg（libass 付き）をインストールしてください: https://ffmpeg.org/download.html\n（--ass で字幕ファイルだけを書き出すこともできます）");
     }
-    let src_h = probe_height(&opt.video).unwrap_or(1080).min(2160);
-    let (w, h) = even_size(opt.height.unwrap_or(src_h).max(144));
+    let (aspect, src_h) = output_shape(probe_size(&opt.video), opt.wide);
+    let (w, h) = even_size(opt.height.unwrap_or(src_h).max(144), aspect);
     let start = opt.start.unwrap_or(0.0).max(0.0);
     let ass = to_ass(
         items,
@@ -562,7 +639,8 @@ pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
         cmd.args(["-to", &format!("{end:.3}")]);
     }
     cmd.arg("-i").arg(&opt.video);
-    let mut vf = format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1");
+    // 画素が正方形でない動画は、先に見た目の大きさにしてから収める
+    let mut vf = format!("scale='trunc(iw*sar/2)*2':ih,setsar=1,scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1");
     if let Some(fps) = opt.fps {
         let _ = write!(vf, ",fps={fps}");
     }
@@ -736,7 +814,7 @@ mod tests {
             item(1.0, "ue", "上2"),
             item(1.0, "shita", "下"),
         ];
-        let l = layout(&items);
+        let l = layout(&items, Stage::WIDE);
         let ys = |pos: Pos| {
             l.iter()
                 .filter(|x| x.o.pos == pos)
@@ -789,7 +867,43 @@ mod tests {
     #[test]
     fn time_format() {
         assert_eq!(ass_time(3723.456), "1:02:03.46");
-        assert_eq!(even_size(1080), (1920, 1080));
-        assert_eq!(even_size(721), (1280, 720));
+        assert_eq!(even_size(1080, 16.0 / 9.0), (1920, 1080));
+        assert_eq!(even_size(721, 16.0 / 9.0), (1280, 720));
+        assert_eq!(even_size(1920, 9.0 / 16.0), (1080, 1920));
+    }
+
+    #[test]
+    fn stage_follows_the_video() {
+        // 縦長は幅を基準の 682.67 のまま高さを伸ばし、横に長いものは高さ 384 のまま幅を伸ばす
+        assert_eq!(Stage::of(16.0 / 9.0), Stage::WIDE);
+        let st = Stage::of(9.0 / 16.0);
+        assert!((st.w - STAGE_W).abs() < 1e-9 && (st.h - STAGE_W * 16.0 / 9.0).abs() < 1e-9);
+        let st = Stage::of(2.4);
+        assert!((st.h - STAGE_H).abs() < 1e-9 && (st.w - STAGE_H * 2.4).abs() < 1e-9);
+        // 縦長の動画では、下コメは縦長のステージの下端に付く
+        let items = vec![item(1.0, "shita", "下"), item(1.0, "", "流れる")];
+        let st = Stage::of(9.0 / 16.0);
+        let l = layout(&items, st);
+        let shita = l.iter().find(|x| x.o.pos == Pos::Shita).unwrap();
+        assert!((shita.y + shita.h - st.h).abs() < 1e-9);
+        let naka = l.iter().find(|x| x.o.pos == Pos::Naka).unwrap();
+        assert!((naka.speed - (st.w + naka.w) / 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn output_size_of_portrait_video() {
+        assert_eq!(output_shape(Some((1080.0, 1920.0)), false), (0.5625, 1920));
+        assert_eq!(output_shape(Some((1080.0, 1920.0)), true).1, 1920);
+        // 4K の縦長は短い辺を 2160 に
+        assert_eq!(output_shape(Some((2160.0, 3840.0)), false).1, 3840);
+        assert_eq!(output_shape(Some((3840.0, 2160.0)), false).1, 2160);
+        assert_eq!(output_shape(Some((4320.0, 7680.0)), false).1, 3840);
+        assert_eq!(output_shape(None, false), (16.0 / 9.0, 1080));
+        // スマホで撮った動画（横長で保存し、回転の情報で縦にする）
+        let st = serde_json::json!({"width": 1920, "height": 1080, "side_data_list": [{"rotation": -90}]});
+        assert_eq!(display_size(&st), Some((1080.0, 1920.0)));
+        let st = serde_json::json!({"width": 720, "height": 480, "sample_aspect_ratio": "32:27"});
+        let (w, h) = display_size(&st).unwrap();
+        assert!((w - 720.0 * 32.0 / 27.0).abs() < 1e-9 && h == 480.0);
     }
 }

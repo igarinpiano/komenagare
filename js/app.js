@@ -15,7 +15,7 @@ const TL_H = 270; // タイムラインの既定の高さ（PC）
 const M_VIDEO = 0.32; // 縦向きのスマホで、動画の高さが画面の高さに占める割合の既定（タイムラインの上端をドラッグして変える）
 const settings = Object.assign(
   { show:true, opacity:1, pauseOnInput:false, mineBorder:true, autosave:true, saveFormat:'json', volume:1, muted:false,
-    timeline:true, tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000' },
+    timeline:true, tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video' },
   (() => { try { return JSON.parse(localStorage.getItem('komenagare.settings') || '{}'); } catch { return {}; } })()
 );
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
@@ -31,6 +31,7 @@ const state = {
   collab: !!document.querySelector('meta[name="komenagare-host"]'), // komenagare CLI から配信されているか（共同編集）
   fileHandle: null, fileName: null, dirty: false,
   videoName: null, videoUrl: null, videoLoaded: false, needsDraw: true, needsRelayout: false, version: 0,
+  stage: STAGE, // コメントを描く範囲（基準ステージの単位。updateStage で動画に合わせる）
 };
 
 /* =====================================================================
@@ -238,11 +239,12 @@ function getMetrics(c){
   let w = 0;
   for (const ln of lines) w = Math.max(w, measureCtx.measureText(ln).width);
   let h = lh * n;
+  const st = state.stage;
   if (o.pos !== 'naka'){
-    const limit = o.full ? STAGE_W : STAGE_W * UESHITA_RANGE;
+    const limit = o.full ? st.w : st.w * UESHITA_RANGE;
     if (w > limit){ const k = limit / w; fs *= k; lh *= k; w = limit; h *= k; }
   }
-  if (h > STAGE_H){ const k = STAGE_H / h; fs *= k; lh *= k; w *= k; h = STAGE_H; }
+  if (h > st.h){ const k = st.h / h; fs *= k; lh *= k; w *= k; h = st.h; }
   m = { o, lines, fs, lh, w, h };
   metricCache.set(mk, m);
   return m;
@@ -262,10 +264,10 @@ function findSlot(h, blockers){
   for (const b of blockers){
     if (y < b.yy + b.h && b.yy < y + h) y = b.yy + b.h;
   }
-  return y + h <= STAGE_H + 0.01 ? y : null;
+  return y + h <= state.stage.h + 0.01 ? y : null;
 }
 function relayout(){
-  const out = [];
+  const out = [], st = state.stage;
   let naka = [], ue = [], shita = [];
   for (const c of state.comments){
     const m = getMetrics(c), o = m.o;
@@ -276,7 +278,7 @@ function relayout(){
     let pool;
     if (o.pos === 'naka'){
       L.start = c.t - NAKA_LEAD; L.end = c.t + dur;
-      L.speed = (STAGE_W + L.w) / (L.end - L.start);
+      L.speed = (st.w + L.w) / (L.end - L.start);
       naka = naka.filter(p => p.end > L.start);
       pool = naka;
     } else {
@@ -288,13 +290,13 @@ function relayout(){
     const yy = findSlot(L.h, blockers);
     if (yy === null){
       // 画面に収まらない → ランダムな高さ（キーから決定的に算出）
-      L.yy = (hashStr(c.key) / 4294967296) * Math.max(0, STAGE_H - L.h);
+      L.yy = (hashStr(c.key) / 4294967296) * Math.max(0, st.h - L.h);
       L.overflow = true;
     } else {
       L.yy = yy;
       pool.push(L);
     }
-    L.y = o.pos === 'shita' ? STAGE_H - L.yy - L.h : L.yy;
+    L.y = o.pos === 'shita' ? st.h - L.yy - L.h : L.yy;
     out.push(L);
   }
   state.layouts = out;
@@ -306,10 +308,24 @@ function relayout(){
    ===================================================================== */
 const displayRenderer = new CommentRenderer();
 
+// コメントを描く範囲の縦横比。既定は動画と同じ（縦長の動画なら縦長）。設定で 16:9 に固定もできる
+function stageAspect(){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  return settings.commentArea === 'wide' || !state.videoLoaded || !vw || !vh ? 16 / 9 : vw / vh;
+}
+function updateStage(){
+  const st = stageSize(stageAspect());
+  if (Math.abs(st.w - state.stage.w) < 1e-6 && Math.abs(st.h - state.stage.h) < 1e-6) return;
+  state.stage = st;
+  metricCache.clear();
+  relayout();
+  resizeCanvas();
+}
 function resizeCanvas(){
-  // プレビュー枠の中に、書き出しと同じ 16:9 の範囲を収めてコメントを描く
+  // プレビュー枠の中に、書き出しと同じ範囲（動画の範囲。16:9 固定の設定なら 16:9）を収めてコメントを描く
   const r = stage.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-  const fw = Math.min(r.width, r.height * 16 / 9), fh = fw * 9 / 16;
+  const a = state.stage.w / state.stage.h;
+  const fw = Math.min(r.width, r.height * a), fh = fw / a;
   Object.assign(canvas.style, { left: (r.width - fw) / 2 + 'px', top: (r.height - fh) / 2 + 'px', width: fw + 'px', height: fh + 'px' });
   const w = Math.max(1, Math.round(fw * dpr)), h = Math.max(1, Math.round(fh * dpr));
   if (canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; }
@@ -327,7 +343,7 @@ function loop(){
     cctx.clearRect(0, 0, canvas.width, canvas.height);
     if (settings.show){
       displayRenderer.draw(cctx, canvas.width, canvas.height, t, state.layouts,
-        { opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel });
+        { stage: state.stage, opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel });
     }
     updateTimeUI(t);
   }
@@ -382,11 +398,13 @@ function unloadVideo(){
   Object.assign(state, { videoUrl: null, videoName: null, videoFile: null, videoLoaded: false, videoRestoreAt: null, viewRestore: null, needsDraw: true });
   video.removeAttribute('src');
   video.load();
+  updateStage();
   $('#emptyState').hidden = false;
   drawDensity(); updateTimeUI(0); updatePlayIcon(); updateStatus();
 }
 video.addEventListener('loadedmetadata', () => {
   state.videoLoaded = true; drawDensity(); state.needsDraw = true; updateStatus();
+  updateStage();
   tlResetView();
   if (state.videoRestoreAt != null){ video.currentTime = Math.min(state.videoRestoreAt, video.duration || 0); state.videoRestoreAt = null; }
   if (state.viewRestore){ tlRestoreView(state.viewRestore); state.viewRestore = null; }
@@ -395,6 +413,8 @@ video.addEventListener('error', () => {
   if (!video.src) return;
   toast('この動画は再生できません（ブラウザが形式に対応していない可能性があります）', { type:'error', timeout:6000 });
 });
+// 再生中に映像の大きさが変わる動画もある
+video.addEventListener('resize', () => { if (state.videoLoaded) updateStage(); });
 for (const ev of ['play','pause','ended']) video.addEventListener(ev, () => { updatePlayIcon(); state.needsDraw = true; });
 for (const ev of ['seeked','timeupdate','loadeddata','ratechange']) video.addEventListener(ev, () => { state.needsDraw = true; });
 video.addEventListener('volumechange', () => {
@@ -1124,9 +1144,12 @@ $('#expContainer').onchange = expSyncForm;
 $('#btnExport').onclick = () => {
   if (exportState.running){ exportDlg.showModal(); return; }
   if (!state.videoLoaded){ toast('先に動画を開いてください'); return; }
-  const vh = video.videoHeight || 720;
+  // 解像度は短い辺の長さで選ぶ（縦長なら幅。1080p なら 1080×1920）
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const same = Math.min(2160, state.stage.w >= state.stage.h ? vh : vw);
   const res = $('#expRes'); res.replaceChildren();
-  const opts = [[Math.min(2160, vh - vh % 2), `元動画と同じ高さ (${Math.min(2160, vh)}p)`], [1080, '1080p'], [720, '720p'], [480, '480p']];
+  const size = (v) => { const { W, H } = exportSize(v); return `${W}×${H}`; };
+  const opts = [[same, `元動画と同じ (${size(same)})`], [1080, `1080p (${size(1080)})`], [720, `720p (${size(720)})`], [480, `480p (${size(480)})`]];
   for (const [v, l] of opts){ const o = document.createElement('option'); o.value = v; o.textContent = l; res.append(o); }
   $('#expStart').value = '0:00';
   $('#expEnd').value = fmt(video.duration);
@@ -1156,13 +1179,18 @@ $('#expStartBtn').onclick = () => {
     toast('書き出しに失敗しました: ' + e.message, { type:'error', timeout:8000 });
   });
 };
+// 書き出す大きさ（コメントを流す範囲と同じ縦横比。short は短い辺）
+function exportSize(short){
+  const even = (v) => Math.max(2, Math.round(v / 2) * 2);
+  const a = state.stage.w / state.stage.h;
+  return a >= 1 ? { W: even(short * a), H: even(short) } : { W: even(short), H: even(short / a) };
+}
 function readExportOptions(){
-  let H = +$('#expRes').value || 720; H -= H % 2;
-  let W = Math.round(H * 16 / 9); W += W % 2;
+  const { W, H } = exportSize(+$('#expRes').value || 720);
   const dur = video.duration;
   let start = parseTime($('#expStart').value); if (!isFinite(start) || start < 0) start = 0;
   let end = parseTime($('#expEnd').value); if (!isFinite(end) || end > dur) end = dur;
-  return { W, H, fps: +$('#expFps').value, vbps: +$('#expBitrate').value * 1e6, start, end,
+  return { W, H, stage: state.stage, fps: +$('#expFps').value, vbps: +$('#expBitrate').value * 1e6, start, end,
     audio: $('#expAudio').checked, container: $('#expContainer').value };
 }
 function exportFileName(ext){ return `${baseName(state.videoName) || 'video'}_comments.${ext}`; }
@@ -1397,7 +1425,7 @@ async function runRealtimeExport(){
     c2.fillStyle = '#000'; c2.fillRect(0, 0, W, H);
     const vw = video.videoWidth, vh = video.videoHeight;
     if (vw && vh){ const k = Math.min(W / vw, H / vh), dw = vw * k, dh = vh * k; c2.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh); }
-    renderer.draw(c2, W, H, video.currentTime, state.layouts, { opacity:1 });
+    renderer.draw(c2, W, H, video.currentTime, state.layouts, { stage: o.stage, opacity:1 });
   };
 
   exportState.mode = 'realtime'; exportState.cancel = false;
@@ -2981,7 +3009,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 4;
+const COLLAB_PROTOCOL = 5;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
@@ -2998,6 +3026,7 @@ const collab = {
   workspace: 'default', // 控え（IndexedDB）の名前に使う。プロジェクトの id
   owner: null, // このタブがこのプロジェクトを開いている間の id（衝突の控えをタブごとに分ける）
   serverName: null, // ホストが使っている自分の名前
+  remote: null, // ホストでコマンドを打てるときの種類（'git' / 'shell'。ホストの --remote で、許された人だけ）
   key: (() => {
     const k = new URLSearchParams(location.search).get('k');
     try { if (k) sessionStorage.setItem('komenagare.key', k); return k || sessionStorage.getItem('komenagare.key'); } catch { return k; }
@@ -3065,6 +3094,7 @@ function collabConnect(){
     if (collab.blocked){ collab.connected = false; collabUI(); return; }
     const was = collab.connected;
     collab.connected = false; collab.peers = []; collab.peerList = []; collab.presence.clear();
+    termDropped('接続が切れたため');
     if (collab.follow != null) collabUnfollow();
     presenceChanged();
     if (!was) collab.failed++;
@@ -3081,6 +3111,8 @@ function collabHandle(m){
     for (const e of collab.outbox) store.apply(e.change);
     commentsChanged();
     collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null;
+    collab.remote = m.remote || null;
+    termDropped('接続し直したため');
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
     collabShareConflicts();
     presence.sent = ''; presenceDirty();
@@ -3103,6 +3135,10 @@ function collabHandle(m){
     }
     collabUI();
     histChanged();
+  } else if (m.type === 'run_out'){
+    if (m.id === term.running) termAppend(m.data, m.err ? 'err' : '');
+  } else if (m.type === 'run_end'){
+    if (m.id === term.running) termEnd(m);
   } else if (m.type === 'history'){
     hist.entries = m.entries || [];
     histRender();
@@ -3175,6 +3211,7 @@ function collabAddConflicts(entry, conflicts, fix, local){
 function collabUI(){
   const el = $('#collabStatus');
   if (!el) return;
+  termUI();
   el.hidden = !state.collab;
   const pending = collab.outbox.length;
   if (collab.connected){
@@ -3188,6 +3225,90 @@ function collabUI(){
     el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
   }
 }
+
+/* ---------- ターミナル（ホストの --remote。許された人だけがホストの作業フォルダでコマンドを打てる） ---------- */
+const TERM_HISTORY_KEY = 'komenagare.termHistory';
+const term = { running: null, seq: 0, history: [], hpos: 0, draft: '' };
+try { term.history = JSON.parse(localStorage.getItem(TERM_HISTORY_KEY) || '[]').filter(h => typeof h === 'string').slice(-100); } catch {}
+term.hpos = term.history.length;
+function termAppend(text, cls){
+  if (!text) return;
+  const out = $('#termOut'), stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
+  const last = out.lastChild;
+  if (last && last.className === (cls || '') && last.textContent.length < 4096) last.textContent += text;
+  else { const sp = document.createElement('span'); if (cls) sp.className = cls; sp.textContent = text; out.append(sp); }
+  // 表示が重くならないよう、古いものから消す
+  while (out.childNodes.length > 2000) out.firstChild.remove();
+  if (stick) out.scrollTop = out.scrollHeight;
+}
+function termUI(){
+  const btn = $('#termBtn');
+  btn.hidden = !(state.collab && collab.remote);
+  btn.classList.toggle('busy', !!term.running);
+  btn.textContent = term.running ? '⌨ 実行中…' : '⌨ ターミナル';
+  const ready = collab.connected && !!collab.remote;
+  $('#termRun').disabled = !ready || !!term.running;
+  $('#termStop').disabled = !term.running;
+  $('#termNote').textContent = !ready ? 'ホストにつながっていません。'
+    : (collab.remote === 'shell'
+      ? 'ホストのパソコンで、作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）を今の場所としてコマンドを打てます。'
+      : '作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）で git の決まったサブコマンドを打てます（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash など）。')
+      + ' 入力を求めるコマンド（エディタ・パスワードなど）は使えません。打ったコマンドはホストに記録されます。';
+}
+function termRun(line){
+  line = line.trim();
+  if (!line || term.running || !collab.connected || !collab.remote) return;
+  const id = 'r' + Date.now().toString(36) + (term.seq++);
+  term.running = id;
+  term.history = term.history.filter(h => h !== line);
+  term.history.push(line);
+  term.hpos = term.history.length; term.draft = '';
+  try { localStorage.setItem(TERM_HISTORY_KEY, JSON.stringify(term.history.slice(-100))); } catch {}
+  termAppend('$ ' + line + '\n', 'cmd');
+  collab.ws.send(JSON.stringify({ type: 'run', id, line }));
+  termUI();
+}
+function termEnd(m){
+  term.running = null;
+  const out = $('#termOut');
+  if (out.textContent && !out.textContent.endsWith('\n')) termAppend('\n', '');
+  if (m.message) termAppend(m.message + '\n', 'err');
+  if (m.code != null) termAppend(`（終了コード ${m.code}）\n`, 'info');
+  termUI();
+}
+// 接続が切れると、ホストは動いているコマンドを止める
+function termDropped(why){
+  if (!term.running) return;
+  termEnd({ code: null, message: why + '、コマンドは止まりました' });
+}
+function termStop(){
+  if (term.running && collab.connected) collab.ws.send(JSON.stringify({ type: 'run_stop', id: term.running }));
+}
+$('#termBtn').onclick = () => { termUI(); if (!$('#termDlg').open) $('#termDlg').showModal(); $('#termInput').focus(); };
+$('#termClose').onclick = () => $('#termDlg').close();
+$('#termClear').onclick = () => { $('#termOut').replaceChildren(); $('#termInput').focus(); };
+$('#termStop').onclick = () => { termStop(); $('#termInput').focus(); };
+$('#termForm').onsubmit = (e) => {
+  e.preventDefault();
+  const inp = $('#termInput');
+  if (term.running || !inp.value.trim()) return;
+  termRun(inp.value);
+  inp.value = '';
+};
+$('#termInput').addEventListener('keydown', (e) => {
+  const inp = e.target;
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'c' && term.running && inp.selectionStart === inp.selectionEnd){ e.preventDefault(); termStop(); return; }
+  if (e.ctrlKey && e.key.toLowerCase() === 'l'){ e.preventDefault(); $('#termOut').replaceChildren(); return; }
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown'){
+    if (!term.history.length) return;
+    e.preventDefault();
+    if (term.hpos === term.history.length) term.draft = inp.value;
+    term.hpos = Math.max(0, Math.min(term.history.length, term.hpos + (e.key === 'ArrowUp' ? -1 : 1)));
+    inp.value = term.hpos === term.history.length ? term.draft : term.history[term.hpos];
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  }
+});
 
 /* ---------- ホストへの問い合わせ（合言葉・ログインを付ける） ---------- */
 async function collabApi(path, body){
@@ -4016,6 +4137,8 @@ const applyLetterbox = () => { document.documentElement.style.setProperty('--let
 applyLetterbox();
 $('#setLetterbox').oninput = (e) => { settings.letterbox = e.target.value; saveSettings(); applyLetterbox(); };
 $('#setLetterboxReset').onclick = () => { settings.letterbox = '#000000'; saveSettings(); applyLetterbox(); };
+$('#setArea').value = settings.commentArea === 'wide' ? 'wide' : 'video';
+$('#setArea').onchange = (e) => { settings.commentArea = e.target.value; saveSettings(); updateStage(); };
 $('#setPause').checked = settings.pauseOnInput;
 $('#setBorder').checked = settings.mineBorder;
 $('#setAutosave').checked = settings.autosave;

@@ -9,6 +9,7 @@
    ===================================================================== */
 const STAGE_H = 384;
 const STAGE_W = STAGE_H * 16 / 9;           // ≒ 682.67
+const STAGE = { w: STAGE_W, h: STAGE_H };
 const UESHITA_RANGE = 1530 / 1920;          // 上下コメの縮小基準幅（full なしの場合）
 const NAKA_LEAD = 1;                         // 流れるコメントは vpos の 1 秒前に出現
 const DEFAULT_DURATION = 3;                  // vpos 以降 3 秒（naka は合計 4 秒）
@@ -39,7 +40,14 @@ function makeCanvas(w, h){
   if (typeof document !== 'undefined'){ const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
   return new OffscreenCanvas(w, h);
 }
-function nakaX(L, time){ return STAGE_W - (time - L.start) * L.speed; }
+// コメントを描く範囲（ステージ）の大きさ。aspect は幅 / 高さ。
+// 16:9 の基準ステージを範囲の中に収め、足りない向きに広げる
+// （縦長の動画なら幅 682.67 のまま高さを伸ばし、横長の動画なら高さ 384 のまま幅を伸ばす）
+function stageSize(aspect){
+  if (!(aspect > 0 && isFinite(aspect))) return STAGE;
+  return aspect >= 16 / 9 ? { w: STAGE_H * aspect, h: STAGE_H } : { w: STAGE_W, h: STAGE_W / aspect };
+}
+function nakaX(L, time, sw = STAGE_W){ return sw - (time - L.start) * L.speed; }
 
 /* =====================================================================
    描画
@@ -85,19 +93,21 @@ class CommentRenderer {
     this.cache.set(key, e);
     return e;
   }
-  draw(g, W, H, time, layouts, { opacity = 1, mineBorder = false, selected = null } = {}){
-    const s = H / STAGE_H;
-    const ox = (W - STAGE_W * s) / 2;
+  // stage はレイアウトしたときのステージの大きさ。W×H の中央に収めて描く
+  draw(g, W, H, time, layouts, { stage = STAGE, opacity = 1, mineBorder = false, selected = null } = {}){
+    const s = Math.min(W / stage.w, H / stage.h);
+    const ox = (W - stage.w * s) / 2, oy = (H - stage.h * s) / 2;
     if (Math.abs(s - this.scale) > 1e-6){ this.cache.clear(); this.scale = s; }
     this.frame++;
     for (const L of layouts){
       if (L.invisible || time < L.start || time >= L.end) continue;
-      const x = L.o.pos === 'naka' ? nakaX(L, time) : (STAGE_W - L.w) / 2;
+      const x = L.o.pos === 'naka' ? nakaX(L, time, stage.w) : (stage.w - L.w) / 2;
       const border = selected && selected.has(L.c.id) ? 2 : (mineBorder && L.c.mine ? 1 : 0);
       const e = this.bitmap(L, s, border);
       g.globalAlpha = opacity * L.alpha;
-      if (e.direct) paintComment(g, L, s, ox + x * s, Math.round(L.y * s), border);
-      else g.drawImage(e.cv, ox + x * s - e.pad, Math.round(L.y * s) - e.pad);
+      const y = Math.round(oy + L.y * s);
+      if (e.direct) paintComment(g, L, s, ox + x * s, y, border);
+      else g.drawImage(e.cv, ox + x * s - e.pad, y - e.pad);
     }
     g.globalAlpha = 1;
     if (this.frame % 240 === 0){

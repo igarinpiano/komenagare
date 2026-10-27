@@ -31,6 +31,7 @@
     <span id="fileStatus"></span>
     <button id="projectBtn" class="collab proj" hidden title="プロジェクトの一覧（切り替え・新しいタブで開く）"></button>
     <button id="collabStatus" class="collab" hidden></button>
+    <button id="termBtn" class="collab term" hidden title="ホストの作業フォルダでコマンドを打つ">⌨ ターミナル</button>
     <button id="conflictBtn" class="collab warn" hidden title="ほかの人の変更と重なった変更を確認する"></button>
   </div>
 </header>
@@ -119,6 +120,8 @@
         <select id="setFormat"><option value="json">JSON</option><option value="csv">CSV</option></select>
         <label for="setLetterbox">プレビューの帯の色</label>
         <span class="lb-row"><input type="color" id="setLetterbox"><button id="setLetterboxReset" title="黒に戻す">黒に戻す</button></span>
+        <label for="setArea">コメントを流す範囲</label>
+        <select id="setArea" title="縦長などの 16:9 でない動画で、コメントを流す範囲（書き出しも同じ）"><option value="video">動画に合わせる</option><option value="wide">16:9 に固定（ニコニコ動画と同じ）</option></select>
       </div>
       <div class="note" id="fsNote"></div>
     </details>
@@ -352,6 +355,21 @@
   <div class="dlg-foot"><button id="peersRename">表示名を変更</button><span class="spacer"></span><button id="peersClose" class="primary">閉じる</button></div>
 </dialog>
 
+<dialog id="termDlg" class="term-dlg">
+  <div class="dlg-head">ターミナル（ホストの作業フォルダ）</div>
+  <div class="dlg-body">
+    <p class="muted term-note" id="termNote"></p>
+    <pre id="termOut" class="term-out" tabindex="0"></pre>
+    <form id="termForm" class="term-form">
+      <span class="term-prompt">$</span>
+      <input id="termInput" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="git status" aria-label="コマンド">
+      <button id="termRun" class="primary" type="submit">実行</button>
+      <button id="termStop" type="button" disabled title="動いているコマンドを止める (Ctrl+C)">止める</button>
+    </form>
+  </div>
+  <div class="dlg-foot"><button id="termClear">表示を消す</button><span class="spacer"></span><button id="termClose" class="primary">閉じる</button></div>
+</dialog>
+
 <dialog id="helpDlg">
   <div class="dlg-head">使い方</div>
   <div class="dlg-body help">
@@ -416,6 +434,7 @@
     <p class="muted" style="margin:6px 0 0">ホストが複数のプロジェクトを共有しているときは、右上の「📁」からプロジェクトを切り替えたり、新しいタブで開いたりできます（同じプロジェクトを複数のタブで開いてもかまいません）。ホストがワンタイムパスワードを使っているときは、最初に受け取ったワンタイムパスワードでログインします。</p>
     <p class="muted" style="margin:6px 0 0">ローカルネットワークの外から使うときは、ホストを <code>komenagare --otp --tunnel tailscale</code>（または <code>cloudflare</code> / <code>ngrok</code>）で起動するか、自分で用意した URL を <code>--public-url</code> で渡します。詳しくは README を見てください。</p>
     <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます）。</p>
+    <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「⌨ ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
 
     <h4>ファイル形式</h4>
     <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>

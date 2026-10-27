@@ -1,6 +1,6 @@
 [package]
 name = "komenagare"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "コメナガレ（komenagare）を複数人で編集するためのホスト"
 license = "Apache-2.0"
@@ -23,13 +23,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "3"
 ttf-parser = "0.25"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "process", "fs", "net", "signal", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "process", "fs", "net", "signal", "time"] }
 flate2 = "1"
 sha2 = "0.11"
 
 # 自己アップデートで配布物を展開する（Windows は zip、それ以外は tar.gz）
 [target.'cfg(not(windows))'.dependencies]
 tar = "0.4"
+
+# リモートのコマンド（--remote）を端末から切り離し、子プロセスごと止める
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }

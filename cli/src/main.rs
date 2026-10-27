@@ -10,6 +10,7 @@
 mod auth;
 mod files;
 mod firewall;
+mod remote;
 mod render;
 mod server;
 mod store;
@@ -68,6 +69,13 @@ struct Args {
         conflicts_with = "tunnel"
     )]
     public_url: Option<String>,
+    /// 許された参加者が、画面の「ターミナル」から作業フォルダでコマンドを打てるようにする（--otp が必要）。
+    /// git: git の決まったサブコマンドだけ。shell: 何でも（このパソコンを預けるのと同じ。信頼できる人だけに）
+    #[arg(long, value_enum, value_name = "KIND", requires = "otp")]
+    remote: Option<remote::Mode>,
+    /// リモートのコマンドを使える人。admin（管理者）・all（全員）・参加者の名前を「,」で区切って並べる
+    #[arg(long, value_name = "WHO", default_value = "admin", requires = "remote")]
+    remote_users: String,
     /// 履歴（git）が残せなければ起動しない
     #[arg(long, conflicts_with = "no_git")]
     require_git: bool,
@@ -148,9 +156,14 @@ enum Cmd {
         /// 動画ではなく字幕ファイル（ASS）を書き出す。mpv などで動画に重ねて再生できる
         #[arg(long, value_name = "FILE")]
         ass: Option<PathBuf>,
-        /// 高さ（ピクセル）。幅は 16:9 になる。省略すると元の動画と同じ（--ass では 1080）
+        /// 高さ（ピクセル）。幅は元の動画と同じ縦横比（--wide なら 16:9）になる。
+        /// 省略すると元の動画と同じ（--ass で動画を指定しないときは 1080）
         #[arg(long)]
         height: Option<u32>,
+        /// コメントを流す範囲を 16:9 に固定する（ニコニコ動画と同じ。縦長の動画は左右に帯が付く）。
+        /// 既定は元の動画と同じ縦横比で、縦長の動画なら縦長に書き出す
+        #[arg(long)]
+        wide: bool,
         /// フレームレート。省略すると元の動画と同じ
         #[arg(long)]
         fps: Option<f64>,
@@ -218,6 +231,7 @@ fn run_render(cmd: &Cmd) -> Result<()> {
         output,
         ass,
         height,
+        wide,
         fps,
         start,
         end,
@@ -234,7 +248,10 @@ fn run_render(cmd: &Cmd) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from(workspace::COMMENTS_FILE));
     let items = files::read(&comments)?;
     if let Some(ass_path) = ass {
-        let (w, h) = render::even_size(height.unwrap_or(1080));
+        // 動画を指定したときは、その縦横比に合わせる
+        let src = video.as_deref().and_then(render::probe_size);
+        let (aspect, src_h) = render::output_shape(src, *wide);
+        let (w, h) = render::even_size(height.unwrap_or(src_h), aspect);
         let opt = render::AssOptions {
             width: w,
             height: h,
@@ -273,6 +290,7 @@ fn run_render(cmd: &Cmd) -> Result<()> {
             video: video.clone(),
             output: output.clone(),
             height: *height,
+            wide: *wide,
             fps: *fps,
             start: *start,
             end: *end,
@@ -400,14 +418,19 @@ async fn run(args: Args) -> Result<()> {
         ));
         let id = ws.id.clone();
         let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
+        let dir = ws.dir.clone();
         let (writer, writer_thread) = server::spawn_writer(ws);
         writers.push(writer_thread);
         let hub = server::Hub::new(store, rev, seen, history, writer, conflicts, conflicts_file);
-        projects.push(server::Project { id, name, hub });
+        projects.push(server::Project { id, name, dir, hub });
     }
+    let remote = args
+        .remote
+        .map(|mode| remote::Remote::new(mode, &args.remote_users));
     let server = server::Server::new(
         projects,
         access,
+        remote,
         match web_source {
             web::Source::Dir(d) => Some(d),
             web::Source::Bundled => None,
@@ -486,6 +509,15 @@ async fn run(args: Args) -> Result<()> {
             println!("  開く（管理者・この URL は1回だけ使えます）: {local}");
         }
         _ => println!("  開く: {local}"),
+    }
+    if let Some(r) = &server.remote {
+        println!(
+            "  リモートのコマンド: {}（画面の「ターミナル」から。記録: 作業フォルダの .komenagare/commands.log）",
+            r.describe()
+        );
+        if r.mode == remote::Mode::Shell {
+            println!("  ※ --remote shell では、使える人がこのパソコンで何でもできます（ファイルの削除や、ほかのプログラムの実行も）。信頼できる人だけにしてください");
+        }
     }
     if let Some(u) = &public {
         let how = args.tunnel.map_or("--public-url", |k| k.label());
