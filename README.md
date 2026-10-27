@@ -4,7 +4,7 @@
 
 - 動画を開いて再生しながらコメントを投稿・編集（タイムライン / Vim 風エディタ）
 - コメントは JSON / CSV / ニコニコ形式 XML で読み書き
-- コメント付き動画を MP4 / MOV / WebM / MKV で書き出し
+- コメント付き動画を MP4 / MOV / WebM / MKV で書き出し（縦長の動画は縦長のまま、コメントも動画の範囲に流す）
 
 ## 使い方
 
@@ -179,6 +179,7 @@ komenagare render --ass comments.ass -c comments.json   # 字幕ファイル（A
 ```
 
 Web アプリの書き出しと同じ規則で配置し、ffmpeg（libass 付き）で描きます。ffmpeg が必要です。
+縦長の動画は縦長のまま書き出し、コメントも動画の範囲に流します（`--wide` で 16:9 に固定。Web アプリの設定「コメントを流す範囲」と同じ）。
 フォントは `--font` / `--font-serif` で変えられます（既定は Windows では MS PGothic / Yu Mincho、ほかは fontconfig の sans-serif / serif）。
 文字の幅はフォントで測らず見積もるため、流れるコメントの重なり方は Web アプリの書き出しと少し違うことがあります。
 
