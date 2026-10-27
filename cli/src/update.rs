@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! komenagare 自身の更新（komenagare update）。
 //!
 //! GitHub のリリースから、この OS・CPU 向けの配布物（install.sh / install.ps1 が入れるのと同じもの）を

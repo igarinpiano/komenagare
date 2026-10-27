@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! macOS のファイアウォール（アプリケーションファイアウォール）で、ほかの機械から komenagare に
 //! つながらないときの手当て。
 //!

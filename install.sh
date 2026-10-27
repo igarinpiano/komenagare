@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Igarin
+# SPDX-License-Identifier: Apache-2.0
 # komenagare（コメナガレのホスト）をインストールする
 #
 #   curl -fsSL https://igarinpiano.github.io/komenagare/install.sh | sh

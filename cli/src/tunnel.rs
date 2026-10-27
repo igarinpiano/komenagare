@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! ローカルネットワークの外から入れるようにするトンネル（--tunnel）。
 //!
 //! komenagare が cloudflared / tailscale / ngrok を子プロセスとして起動し、それが出力する公開 URL を読み取る。

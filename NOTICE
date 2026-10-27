@@ -1,0 +1,24 @@
+komenagare (コメナガレ)
+Copyright 2026 Igarin
+https://github.com/igarinpiano/komenagare
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+If you redistribute this product or a derivative work of it (including
+copied parts such as source files, functions or data formats), keep this
+NOTICE file (or its contents) and the LICENSE file with it, as required by
+Section 4 of the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------
+
+This product includes third-party software:
+
+Mediabunny (lib/mediabunny-*.min.js)
+  Copyright (c) 2026-present, Vanilagy and contributors
+  Licensed under the Mozilla Public License, Version 2.0
+  (see lib/mediabunny-LICENSE.txt).
+  Source code: https://github.com/Vanilagy/mediabunny
+
+The release builds of the komenagare command include Rust crates under
+their own licenses (MIT, Apache-2.0 and others). Their license texts are
+in THIRD-PARTY-LICENSES.html in each release archive.

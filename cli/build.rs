@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 // 配布物の種類（リリースのファイル名の komenagare-<ここ>.tar.gz）を埋め込む。komenagare update が同じものを取る。
 // ふつうはビルド先のターゲットで、macOS の universal 版はビルド時に KOMENAGARE_TARGET で指定する
 fn main() {

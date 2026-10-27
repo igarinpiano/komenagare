@@ -45,7 +45,7 @@ jobs:
           $name = 'komenagare-x86_64-pc-windows-msvc'
           $rel = "mirror/releases/download/$v"
           New-Item -ItemType Directory -Force pkg, $rel | Out-Null
-          Copy-Item target/debug/komenagare.exe, LICENSE, README.md pkg/
+          Copy-Item target/debug/komenagare.exe, LICENSE, NOTICE, README.md pkg/
           Compress-Archive -Path pkg/* -DestinationPath "$rel/$name.zip"
           $hash = (Get-FileHash "$rel/$name.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Encoding ascii -Path "$rel/$name.zip.sha256" -Value "$hash  $name.zip"

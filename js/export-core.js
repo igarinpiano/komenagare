@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 'use strict';
 /* コメント付き動画の高速書き出し（WebCodecs）。ワーカーとメインスレッドの両方で使う */
 

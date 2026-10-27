@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 // コメントストア（js/comment-store.js）のテスト。実行: node tests/comment-store.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');

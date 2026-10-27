@@ -192,7 +192,21 @@ cargo test --manifest-path cli/Cargo.toml      # CLI のテスト
 cargo run --manifest-path cli/Cargo.toml -- /tmp/ws --web .   # CLI を動かす（Web アプリはこのフォルダから配信）
 ```
 
+## 参加する
+
+不具合の報告やプルリクエストを歓迎します。[CONTRIBUTING.md](CONTRIBUTING.md) と [行動規範](CODE_OF_CONDUCT.md) を見てください。
+脆弱性は公開の Issue にせず、[SECURITY.md](SECURITY.md) の方法で知らせてください。
+
 ## ライセンス
 
-Apache License 2.0（`LICENSE`）。
-`lib/mediabunny-*.js` は [Mediabunny](https://github.com/Vanilagy/mediabunny)（MPL-2.0、`lib/mediabunny-LICENSE.txt`）です。
+Copyright 2026 Igarin
+
+[Apache License 2.0](LICENSE)。著作権などの表示は [NOTICE](NOTICE) にあります。
+
+コメナガレのコード（一部だけでも）を自分のプロジェクトに使うときは、`LICENSE` と `NOTICE` の内容を一緒に配り、
+各ファイル冒頭の著作権表示を残し、手を加えたファイルにはそのことを書いてください（詳しくは [CONTRIBUTING.md](CONTRIBUTING.md#コメナガレのコードを使う方へ)）。
+
+同梱しているもの:
+
+- `lib/mediabunny-*.js` は [Mediabunny](https://github.com/Vanilagy/mediabunny)（MPL-2.0、`lib/mediabunny-LICENSE.txt`）です。
+- `komenagare` コマンドの配布物には、使っている Rust のクレートのライセンス（`THIRD-PARTY-LICENSES.html`）を入れています。

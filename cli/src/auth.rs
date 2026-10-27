@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! 参加者ごとのワンタイムパスワード（--otp）。
 //!
 //! ホストの人が参加者ごとにワンタイムパスワード（数字 6 桁か、ランダムな英数字）を発行し、参加者は

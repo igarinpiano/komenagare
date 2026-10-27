@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! 配信する Web アプリの用意。
 //!
 //! 起動時に GitHub Pages（--web-url）から最新の Web アプリを取ってきて、手元の保存場所

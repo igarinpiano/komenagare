@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 // Vim エンジン（js/vim-engine.js）のテスト。実行: node tests/vim-engine.test.js
 const { createVimEngine } = require('../js/vim-engine.js');
 let pass = 0, fail = 0;

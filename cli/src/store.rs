@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! コメントの保管と変更セットの適用（js/comment-store.js と同じ規則）。
 //!
 //! 変更セットの各 op は元の値（before）を持っていて、今の値と項目ごとに比べる

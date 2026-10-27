@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Igarin
+// SPDX-License-Identifier: Apache-2.0
 //! コメントを動画に焼き込む（komenagare render）。
 //!
 //! Web アプリの書き出しと同じ規則（js/comment-render.js の定数と js/app.js の relayout）で

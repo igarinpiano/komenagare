@@ -63,6 +63,11 @@ jobs:
           pattern: bin-*
           merge-multiple: true
           path: binaries
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-about
+      - name: 依存のライセンスの一覧を作る
+        run: cargo about generate --locked --fail -o THIRD-PARTY-LICENSES.html about.hbs
       - name: まとめる
         run: bash .github/package.sh binaries dist && ls -l dist
       - name: リリースを作る
