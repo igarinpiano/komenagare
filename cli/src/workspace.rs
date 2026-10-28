@@ -174,7 +174,14 @@ impl Workspace {
     }
 
     pub fn load_comments(&self) -> Result<Vec<Comment>> {
-        let text = std::fs::read_to_string(self.dir.join(COMMENTS_FILE))?;
+        let path = self.dir.join(COMMENTS_FILE);
+        if is_symlink(&path) {
+            bail!(
+                "{} がシンボリックリンクになっています（作業フォルダの外のファイルは読みません）",
+                path.display()
+            );
+        }
+        let text = std::fs::read_to_string(path)?;
         let mut out = vec![];
         for (i, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
@@ -191,7 +198,7 @@ impl Workspace {
     /// これまでに適用した変更セットの id、最後の通し番号、最近の記録（古い順に最大 keep 件）
     pub fn load_log(&self, keep: usize) -> Result<(HashSet<String>, u64, VecDeque<LogEntry>)> {
         let (mut ids, mut rev, mut recent) = (HashSet::new(), 0, VecDeque::new());
-        if let Ok(text) = std::fs::read_to_string(self.dir.join(META_DIR).join(LOG_FILE)) {
+        if let Some(text) = read_meta(&self.dir, LOG_FILE) {
             for line in text.lines() {
                 if let Ok(e) = serde_json::from_str::<LogEntry>(line) {
                     ids.insert(e.change.id.clone());
@@ -208,8 +215,7 @@ impl Workspace {
 
     /// 保留中の衝突（読めなければ空）
     pub fn load_conflicts(&self) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(self.conflicts_path())
-            .ok()
+        read_meta(&self.dir, CONFLICTS_FILE)
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default()
     }
@@ -219,13 +225,11 @@ impl Workspace {
     }
 
     pub fn append_log(&self, e: &LogEntry) -> Result<()> {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(META_DIR).join(LOG_FILE))?;
-        writeln!(f, "{}", serde_json::to_string(e)?)?;
-        Ok(())
+        append_meta(
+            &self.dir,
+            LOG_FILE,
+            &format!("{}\n", serde_json::to_string(e)?),
+        )
     }
 
     /// comments.jsonl を書き換え（途中で止まっても壊れないよう、別名に書いてから置き換える）、git にコミットする
@@ -242,8 +246,8 @@ impl Workspace {
             body.push_str(&serde_json::to_string(c)?);
             body.push('\n');
         }
-        let tmp = self.dir.join(META_DIR).join("comments.jsonl.tmp");
-        std::fs::write(&tmp, body)?;
+        let tmp = meta_dir(&self.dir)?.join("comments.jsonl.tmp");
+        write_new(&tmp, body.as_bytes())?;
         std::fs::rename(&tmp, self.dir.join(COMMENTS_FILE))?;
         if self.git {
             self.run_git(&["add", "--", COMMENTS_FILE])?;
@@ -302,6 +306,73 @@ impl Workspace {
     }
 }
 
+// .komenagare は git に入れない（ignore した）ので、git の checkout や reset で、追跡されたファイルや
+// シンボリックリンクに置き換えられることがある（--remote git の参加者にもできる）。そのまま書くと
+// 作業フォルダの外に書いてしまうので、シンボリックリンクはたどらない
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// .komenagare（作業用の記録の置き場所）。本物のフォルダでなければ断る
+pub fn meta_dir(dir: &Path) -> Result<PathBuf> {
+    let d = dir.join(META_DIR);
+    let m =
+        std::fs::symlink_metadata(&d).with_context(|| format!("{} がありません", d.display()))?;
+    if !m.is_dir() {
+        bail!(
+            "{} がフォルダではありません（シンボリックリンクなどに置き換えられています）",
+            d.display()
+        );
+    }
+    Ok(d)
+}
+
+/// .komenagare のファイルを読む（シンボリックリンクなら読まない）
+fn read_meta(dir: &Path, file: &str) -> Option<String> {
+    let path = meta_dir(dir).ok()?.join(file);
+    if is_symlink(&path) {
+        eprintln!(
+            "警告: {} がシンボリックリンクになっているため読みません",
+            path.display()
+        );
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+/// .komenagare のファイルに書き足す（シンボリックリンクならたどらずに断る）
+pub fn append_meta(dir: &Path, file: &str, text: &str) -> Result<()> {
+    use std::io::Write;
+    let path = meta_dir(dir)?.join(file);
+    if is_symlink(&path) {
+        bail!("{} がシンボリックリンクになっています", path.display());
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut f = o
+        .open(&path)
+        .with_context(|| format!("{} に書けません", path.display()))?;
+    f.write_all(text.as_bytes())?;
+    Ok(())
+}
+
+/// 新しく作って書く（同じ名前のものがあれば先に消す。シンボリックリンクの先には書かない）
+pub fn write_new(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let _ = std::fs::remove_file(path);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    f.write_all(data)
+}
+
 fn clean(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '<' | '>' | '\n' | '\r'))
@@ -353,6 +424,31 @@ mod tests {
         if git_available() {
             assert!(Workspace::open(tmp.path(), GitMode::Require).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_symlinks_in_meta_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(&tmp.path().join("w"), GitMode::Off).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        // .komenagare の中のファイルがシンボリックリンク
+        let target = outside.join("target.txt");
+        std::fs::write(&target, "").unwrap();
+        let meta = ws.dir.join(META_DIR);
+        std::os::unix::fs::symlink(&target, meta.join(LOG_FILE)).unwrap();
+        assert!(append_meta(&ws.dir, LOG_FILE, "x\n").is_err());
+        std::os::unix::fs::symlink(&target, meta.join("comments.jsonl.tmp")).unwrap();
+        ws.save(&Store::new(vec![]), "m", "a", "b", &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
+        assert!(!is_symlink(&ws.dir.join(COMMENTS_FILE)));
+        // .komenagare そのものがシンボリックリンク
+        std::fs::rename(&meta, tmp.path().join("old")).unwrap();
+        std::os::unix::fs::symlink(&outside, &meta).unwrap();
+        assert!(append_meta(&ws.dir, "commands.log", "x\n").is_err());
+        assert!(!outside.join("commands.log").exists());
+        assert!(ws.save(&Store::new(vec![]), "m", "a", "b", &[]).is_err());
     }
 
     #[test]

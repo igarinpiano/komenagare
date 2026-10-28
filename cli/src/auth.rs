@@ -42,6 +42,13 @@ impl Kind {
             Kind::Random => Duration::from_secs(7 * 24 * 3600),
         }
     }
+    /// 有効期限の上限（数字 6 桁は 100 万通りしかないので、長く置くと当てずっぽうで当たりやすくなる）
+    pub fn max_ttl(self) -> Option<Duration> {
+        match self {
+            Kind::Numeric => Some(Duration::from_secs(3600)),
+            Kind::Random => None,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -119,7 +126,16 @@ impl Auth {
     /// ワンタイムパスワードを発行する
     pub fn issue(&self, name: &str, admin: bool, kind: Kind, ttl: Duration) -> Result<Issued> {
         let name = clean_name(name).context("名前を入れてください")?;
-        let code = new_code(kind);
+        let ttl = kind.max_ttl().map_or(ttl, |m| ttl.min(m));
+        // 未使用のものと同じにならないようにする（同じだと、打った人が別の人としてログインしてしまう）
+        let used: std::collections::HashSet<String> =
+            self.otps().into_iter().map(|o| o.hash).collect();
+        let code = loop {
+            let c = new_code(kind);
+            if !used.contains(&hash(&normalize(&c))) {
+                break c;
+            }
+        };
         let now = now_ms();
         let rec = OtpRec {
             id: random_hex(8),
@@ -262,9 +278,23 @@ pub fn normalize(code: &str) -> String {
         .collect()
 }
 
+/// 名前をそろえる。制御文字（改行やエスケープシーケンス）と、表示の向きを変える文字は除く
+/// （コミットのメッセージに行を足したり、ホストの端末や画面の表示をごまかしたりできないように）
 pub fn clean_name(name: &str) -> Option<String> {
-    let n: String = name.trim().chars().take(NAME_MAX).collect();
+    let n: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !is_bidi_control(*c))
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(NAME_MAX)
+        .collect();
     (!n.is_empty()).then_some(n)
+}
+
+/// 表示の向きを変える文字（U+202A〜202E、U+2066〜2069、U+200E・200F、U+061C）
+pub fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}' | '\u{061c}')
 }
 
 /// 「10m」「1h」「7d」「30s」などを読む
@@ -434,6 +464,29 @@ mod tests {
         assert_eq!(ids.len(), 2);
         let (_, s) = a.login(&second.code).unwrap().unwrap();
         assert!(s.admin);
+    }
+
+    #[test]
+    fn numeric_otp_ttl_is_capped() {
+        let (_d, a) = auth();
+        let i = a
+            .issue("F", false, Kind::Numeric, Duration::from_secs(30 * 86400))
+            .unwrap();
+        assert!(i.expires <= now_ms() + 3600 * 1000);
+        let i = a
+            .issue("G", false, Kind::Random, Duration::from_secs(30 * 86400))
+            .unwrap();
+        assert!(i.expires > now_ms() + 29 * 86400 * 1000);
+    }
+
+    #[test]
+    fn names_drop_control_characters() {
+        assert_eq!(
+            clean_name(" た\nろう\u{1b}[2J ").as_deref(),
+            Some("たろう[2J")
+        );
+        assert_eq!(clean_name("a\u{202e}b").as_deref(), Some("ab"));
+        assert_eq!(clean_name("\r\n\t"), None);
     }
 
     #[test]

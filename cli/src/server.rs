@@ -287,8 +287,8 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
     if path.is_empty() || path.ends_with('/') {
         path.push_str("index.html");
     }
-    if path.split('/').any(|p| p == "..") {
-        return StatusCode::BAD_REQUEST.into_response();
+    if !web_path_ok(&path) {
+        return StatusCode::NOT_FOUND.into_response();
     }
     let data: Option<Vec<u8>> = match &server.web_dir {
         Some(dir) => tokio::fs::read(dir.join(&path)).await.ok(),
@@ -328,6 +328,54 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
         .into_response()
 }
 
+/// 配信してよいファイルか（index.html と css/・js/・lib/ の直下だけ）。
+/// フォルダから配信するとき、\\ やドライブ名（C:）で作業フォルダの外を読まれないように、名前の文字も絞る
+fn web_path_ok(path: &str) -> bool {
+    if path == "index.html" {
+        return true;
+    }
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("css" | "js" | "lib"), Some(f), None) => {
+            !f.is_empty()
+                && !f.starts_with('.')
+                && f.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        }
+        _ => false,
+    }
+}
+
+/// 長さ以外の時間で中身が分からないように比べる
+fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+/// WebSocket をつないできたページが、このホストから配信したものか（ほかのサイトのページから勝手に
+/// つながれないように）。Origin が無いのはブラウザ以外なので通す
+fn same_origin(headers: &HeaderMap, public_url: Option<&str>) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let authority = |u: &str| {
+        u.split_once("://")
+            .map(|(_, r)| r.split('/').next().unwrap_or("").to_ascii_lowercase())
+    };
+    let Some(origin) = origin.to_str().ok().and_then(authority) else {
+        return false;
+    };
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_ascii_lowercase);
+    host.as_deref() == Some(origin.as_str())
+        || public_url.and_then(authority).as_deref() == Some(origin.as_str())
+}
+
 #[derive(Deserialize)]
 struct KeyQuery {
     k: Option<String>,
@@ -362,7 +410,7 @@ fn authorize(
 ) -> Result<Option<SessionRec>, Response> {
     match &server.access {
         Access::None => Ok(None),
-        Access::Token(t) if k == Some(t.as_str()) => Ok(None),
+        Access::Token(t) if k.is_some_and(|k| same_secret(k, t)) => Ok(None),
         Access::Token(_) => Err(api_error(
             StatusCode::UNAUTHORIZED,
             "合言葉（URL の k=）が違います",
@@ -439,13 +487,19 @@ async fn login_handler(State(server): State<Arc<Server>>, Json(body): Json<Login
                 "間違いが多いため、しばらくログインできません。10 分ほど待ってからやり直してください",
             );
         }
+        // 先に失敗として数えておく（同時にたくさん送られても、上限を超えて試せないように）。合っていたら外す
+        fails.push_back(Instant::now());
     }
+    let unreserve = || {
+        let mut fails = server.login_fails.lock().unwrap();
+        fails.pop_back();
+    };
     match a.login(&body.code) {
         Ok(Some((token, s))) => {
+            unreserve();
             Json(json!({ "token": token, "name": s.name, "admin": s.admin })).into_response()
         }
         Ok(None) => {
-            server.login_fails.lock().unwrap().push_back(Instant::now());
             // 続けざまに試せないよう少し待たせる
             tokio::time::sleep(Duration::from_millis(400)).await;
             api_error(
@@ -453,7 +507,14 @@ async fn login_handler(State(server): State<Arc<Server>>, Json(body): Json<Login
                 "ワンタイムパスワードが違うか、使用済み・期限切れです",
             )
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+        Err(e) => {
+            unreserve();
+            eprintln!("ログインの処理に失敗しました: {e:#}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ログインの処理に失敗しました（ホストの画面を確かめてください）",
+            )
+        }
     }
 }
 
@@ -554,12 +615,18 @@ async fn admin_revoke_handler(
 async fn ws_handler(
     State(server): State<Arc<Server>>,
     Query(q): Query<KeyQuery>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Access::Token(token) = &server.access {
-        if q.k.as_deref() != Some(token.as_str()) {
+    match &server.access {
+        Access::Token(token) if !q.k.as_deref().is_some_and(|k| same_secret(k, token)) => {
             return (StatusCode::UNAUTHORIZED, "invalid key").into_response();
         }
+        // 合言葉もログインも無いときは、ほかのサイトのページからつながれないようにする
+        Access::None if !same_origin(&headers, server.public_url.read().unwrap().as_deref()) => {
+            return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+        }
+        _ => {}
     }
     let project = server
         .project(q.p.as_deref())
@@ -593,17 +660,25 @@ async fn connection(
             .await;
         return;
     };
-    let mut rx = hub.tx.subscribe();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // 他の人の変更などは、hello で入れてから受け取る（ログインしていない接続には何も流さない）
+    let (sub_tx, sub_rx) = tokio::sync::oneshot::channel::<broadcast::Receiver<(u64, Arc<str>)>>();
+    let mut sub_tx = Some(sub_tx);
     // 送信: 自分宛てのものと、他の人の変更（自分の分は除く）
     let mut send_task = tokio::spawn(async move {
+        let mut pending = Some(sub_rx);
+        let mut rx: Option<broadcast::Receiver<(u64, Arc<str>)>> = None;
         loop {
             tokio::select! {
                 m = out_rx.recv() => match m {
                     Some(m) => { if sink.send(Message::Text(m.into())).await.is_err() { break; } }
                     None => break,
                 },
-                r = rx.recv() => match r {
+                r = async { pending.as_mut().unwrap().await }, if pending.is_some() => {
+                    pending = None;
+                    rx = r.ok();
+                }
+                r = async { rx.as_mut().unwrap().recv().await }, if rx.is_some() => match r {
                     Ok((from, m)) => { if from != conn && sink.send(Message::Text(m.to_string().into())).await.is_err() { break; } }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // 取りこぼしたら接続を切る（クライアントは再接続して全体を取り直す）
@@ -690,6 +765,10 @@ async fn connection(
                 }
                 joined = true;
                 let mut inner = hub.inner.lock().await;
+                // 全体（snapshot）を作るのと同じロックの中で受け取り始める（取りこぼさないように）
+                if let Some(tx) = sub_tx.take() {
+                    let _ = tx.send(hub.tx.subscribe());
+                }
                 let (presence, color) = match inner.peers.remove(&conn) {
                     Some(p) => (p.presence, p.color),
                     None => (None, free_color(&inner.peers)),
@@ -793,12 +872,23 @@ async fn connection(
                 let cmd = match remote::build(r.mode, &line, &dir) {
                     Ok(c) => c,
                     Err(e) => {
-                        println!("[コマンド] {name}（{project_name}）: {line}（断りました: {e}）");
+                        println!(
+                            "[コマンド] {}（{}）: {}（断りました: {}）",
+                            remote::printable(&name),
+                            remote::printable(&project_name),
+                            remote::printable(&line),
+                            remote::printable(&e)
+                        );
                         refuse(&e);
                         continue;
                     }
                 };
-                println!("[コマンド] {name}（{project_name}）: {line}");
+                println!(
+                    "[コマンド] {}（{}）: {}",
+                    remote::printable(&name),
+                    remote::printable(&project_name),
+                    remote::printable(&line)
+                );
                 let out = out_tx.clone();
                 let send: remote::Sender = Box::new(move |m| {
                     let _ = out.send(m);
@@ -955,9 +1045,17 @@ fn conflicts_msg(inner: &Inner) -> String {
 /// 保留中の衝突を書き残して、全員に配る
 fn conflicts_changed(hub: &Hub, inner: &Inner) {
     let tmp = hub.conflicts_file.with_extension("json.tmp");
-    let r = serde_json::to_vec(&inner.conflicts)
-        .map_err(std::io::Error::other)
-        .and_then(|body| std::fs::write(&tmp, body))
+    // .komenagare がシンボリックリンクに置き換えられていたら書かない（作業フォルダの外に書かないように）
+    let r = hub
+        .conflicts_file
+        .parent()
+        .and_then(|d| d.parent())
+        .map_or_else(
+            || Err(std::io::Error::other("置き場所がありません")),
+            |dir| crate::workspace::meta_dir(dir).map_err(std::io::Error::other),
+        )
+        .and_then(|_| serde_json::to_vec(&inner.conflicts).map_err(std::io::Error::other))
+        .and_then(|body| crate::workspace::write_new(&tmp, &body))
         .and_then(|_| std::fs::rename(&tmp, &hub.conflicts_file));
     if let Err(e) = r {
         eprintln!("衝突の記録に失敗しました: {e}");
@@ -975,6 +1073,72 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serves_only_web_app_files() {
+        for ok in [
+            "index.html",
+            "css/komenagare.css",
+            "js/app.js",
+            "lib/mediabunny-1.61.6.min.js",
+        ] {
+            assert!(web_path_ok(ok), "{ok}");
+        }
+        for bad in [
+            "../secret",
+            "js/../../secret",
+            "js/..\\..\\secret",
+            "..\\..\\Windows\\win.ini",
+            "C:/Windows/win.ini",
+            "js/C:x",
+            "js/.hidden",
+            "js/a/b.js",
+            "web.json",
+            ".komenagare/id",
+            "js/",
+        ] {
+            assert!(!web_path_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn compares_secrets() {
+        assert!(same_secret("abc", "abc"));
+        assert!(!same_secret("abc", "abd"));
+        assert!(!same_secret("abc", "ab"));
+        assert!(!same_secret("", "a"));
+    }
+
+    #[test]
+    fn checks_websocket_origin() {
+        let h = |origin: Option<&str>, host: &str| {
+            let mut m = HeaderMap::new();
+            m.insert(header::HOST, host.parse().unwrap());
+            if let Some(o) = origin {
+                m.insert(header::ORIGIN, o.parse().unwrap());
+            }
+            m
+        };
+        assert!(same_origin(&h(None, "127.0.0.1:8764"), None));
+        assert!(same_origin(
+            &h(Some("http://127.0.0.1:8764"), "127.0.0.1:8764"),
+            None
+        ));
+        assert!(same_origin(
+            &h(Some("http://LOCALHOST:8764"), "localhost:8764"),
+            None
+        ));
+        assert!(!same_origin(
+            &h(Some("https://evil.example"), "127.0.0.1:8764"),
+            None
+        ));
+        assert!(!same_origin(&h(Some("null"), "127.0.0.1:8764"), None));
+        // 公開 URL（Host を書き換えるトンネル）
+        assert!(same_origin(
+            &h(Some("https://a.example.com"), "127.0.0.1:8764"),
+            Some("https://a.example.com/")
+        ));
+    }
 
     #[test]
     fn accept_conflict_checks_shape() {
