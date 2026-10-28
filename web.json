@@ -8,6 +8,7 @@
     "js/comment-render.js",
     "js/export-core.js",
     "js/export-worker.js",
+    "js/term-ansi.js",
     "js/app.js",
     "lib/mediabunny-1.61.6.min.js",
     "lib/mediabunny-LICENSE.txt"

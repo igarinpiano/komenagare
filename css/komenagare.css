@@ -93,8 +93,16 @@ a.btn:hover{background:#313131}
 .collab.term{color:#cfe3ff;border-color:#35507a}
 .collab.term.busy{color:#ffd28a;border-color:#7a5420}
 dialog.term-dlg{width:min(880px,96vw)}
-.term-note{margin:0 0 8px;font-size:12px}
-.term-out{margin:0 0 8px;height:min(52vh,440px);overflow:auto;background:#0b0b0b;border:1px solid #333;border-radius:6px;padding:8px 10px;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#ddd}
+/* スマホでキーボードが出ても見出し（×）と入力欄が隠れないよう、見えている範囲（--vv-h / --vv-top。js/app.js の termFit）に収める */
+dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--vv-h, 100dvh) - 16px)}
+.term-dlg .dlg-body{flex:1 1 auto;min-height:0;max-height:none;display:flex;flex-direction:column}
+.term-head{display:flex;align-items:center;gap:8px;padding-top:8px;padding-bottom:8px}
+.term-head span{flex:1;min-width:0}
+.dlg-x{background:none;border:none;color:var(--muted);font-size:22px;line-height:1;padding:4px 10px}
+.dlg-x:hover{background:#2c2c2c;color:var(--text)}
+.term-note{margin:0 0 8px;font-size:12px;flex:none}
+.term-form{flex:none}
+.term-out{flex:0 1 auto;min-height:4.5em;margin:0 0 8px;height:min(52vh,440px);overflow:auto;background:#0b0b0b;border:1px solid #333;border-radius:6px;padding:8px 10px;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#ddd}
 .term-out .cmd{color:#7ee2a8;font-weight:600}
 .term-out .err{color:#ff9b9b}
 .term-out .info{color:var(--muted)}
@@ -355,8 +363,9 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   .status{margin-left:6px;flex:none}
   .layout{display:contents}
   .player-col{flex:none;padding:8px 8px 0;overflow:visible}
-  /* 動画の高さは画面の高さの --m-video（既定 0.32。タイムラインの上端のドラッグで変える）。小さくしても操作部の幅は狭めない */
-  .player{flex:none;align-self:center;max-width:min(100%, calc(var(--stable-h, 100vh) * max(0.32, var(--m-video, 0.32)) * 16 / 9));min-width:0;container-type:inline-size}
+  /* 動画の高さは画面の高さの --m-video（既定 0.32。タブの上のつまみのドラッグで変える）。
+     枠（シークバーやコメント入力欄も含む）の横幅はいつも画面いっぱいで変えず、動画と比率が合わない部分は帯にする */
+  .player{flex:none;min-width:0;container-type:inline-size}
   .stage{flex:none;aspect-ratio:16/9;min-height:0;height:min(calc(100cqw * 9 / 16), calc(var(--stable-h, 100vh) * var(--m-video, 0.32)))}
   .ctrl-row{gap:4px}
   .time{min-width:0;font-size:12px}
@@ -379,6 +388,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   body[data-mpane="timeline"] .side{display:none}
   body:not([data-mpane="timeline"]) .timeline{display:none}
   .time{white-space:nowrap}
+  dialog.term-dlg[open]{margin:calc(var(--vv-top, 0px) + 8px) auto auto}
 }
 /* 横向きのスマホ：左に動画、右にタイムライン等（LumaFusion 風）。
    キーボードが出ると表示領域が横長になるので、CSS の orientation ではなく端末の向きで決める（js/app.js の applyPhoneLandscape） */

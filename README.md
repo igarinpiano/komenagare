@@ -121,6 +121,7 @@ komenagare --otp --remote shell                          # 管理者だけが何
   `git config` や `git -c …`、`--upload-pack` のようにほかのプログラムを動かせるもの、`--output` や `-F` のように作業フォルダの外のファイルを読み書きできるものは断ります。
 - `--remote shell` は何でも打てます。**このパソコンを預けるのと同じ**なので、信頼できる人だけに許してください。
 - 使える人（`--remote-users`）は `admin`（管理者）・`all`（全員）・参加者の名前を `,` で区切って並べます（既定は `admin`）。名前は `komenagare otp new` で付けたものです。
+- 出力の色（ANSI のエスケープシーケンス）はそのまま色で出ます。`--remote git` では git がいつも色を付けます。`--remote shell` では端末ではないので、色を付けるには `ls --color=always`・`git -c color.ui=always status` のように指定します（`git diff > x.patch` のようにファイルへ書くときに色の記号が入らないよう、強制はしません）。
 - 打ったコマンドはホストの画面と、作業フォルダの `.komenagare/commands.log` に残ります。止めるには「止める」（Ctrl+C）。接続が切れたときと 15 分たったときも止まります。
 - ホストはコメントを覚えたまま動いているので、`git reset` や `git checkout` で `comments.jsonl` を書き換えても読み込み直しません（次に誰かがコメントを変えると、ホストの内容で上書きされます）。
 

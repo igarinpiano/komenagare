@@ -2254,8 +2254,8 @@ $('#tlZoom').oninput = (e) => {
 // 縦向きのスマホではタブの上で動画の大きさを変えて、下の画面（タイムライン・リスト・Vim・履歴）がその残りに広がる
 for (const h of [$('#tlResize'), $('#mResize')]) {
   let st = null;
-  // 縦向きのスマホで動画をどこまで大きくできるか（横幅いっぱいまで）
-  const mVideoMax = () => Math.max(0.12, Math.min(0.6, ($('.player-col').clientWidth - 16) * 9 / 16 / stableH));
+  // 縦向きのスマホで動画をどこまで大きくできるか（枠の横幅いっぱいまで）
+  const mVideoMax = () => Math.max(0.12, Math.min(0.6, $('#player').clientWidth * 9 / 16 / stableH));
   h.addEventListener('pointerdown', (e) => {
     st = mq.matches ? { y: e.clientY, f: Math.min(settings.mVideo, mVideoMax()), mobile: true } : { y: e.clientY, h: Math.min(settings.tlHeight, tlMaxHeight()) };
     h.setPointerCapture(e.pointerId); h.classList.add('on');
@@ -3136,7 +3136,7 @@ function collabHandle(m){
     collabUI();
     histChanged();
   } else if (m.type === 'run_out'){
-    if (m.id === term.running) termAppend(m.data, m.err ? 'err' : '');
+    if (m.id === term.running) for (const c of term.ansi[m.err ? 'err' : 'out'].push(m.data)) termAppend(c.text, m.err ? 'err' : '', c.style);
   } else if (m.type === 'run_end'){
     if (m.id === term.running) termEnd(m);
   } else if (m.type === 'history'){
@@ -3228,15 +3228,24 @@ function collabUI(){
 
 /* ---------- ターミナル（ホストの --remote。許された人だけがホストの作業フォルダでコマンドを打てる） ---------- */
 const TERM_HISTORY_KEY = 'komenagare.termHistory';
-const term = { running: null, seq: 0, history: [], hpos: 0, draft: '' };
+// ansi: 出力と標準エラーの色の状態（コマンドごとに戻す）
+const term = { running: null, seq: 0, history: [], hpos: 0, draft: '', ansi: { out: createAnsiParser(), err: createAnsiParser() } };
 try { term.history = JSON.parse(localStorage.getItem(TERM_HISTORY_KEY) || '[]').filter(h => typeof h === 'string').slice(-100); } catch {}
 term.hpos = term.history.length;
-function termAppend(text, cls){
+// style は色（ANSI のエスケープシーケンスを js/term-ansi.js で読んだもの）
+function termAppend(text, cls, style){
   if (!text) return;
   const out = $('#termOut'), stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
-  const last = out.lastChild;
-  if (last && last.className === (cls || '') && last.textContent.length < 4096) last.textContent += text;
-  else { const sp = document.createElement('span'); if (cls) sp.className = cls; sp.textContent = text; out.append(sp); }
+  const last = out.lastChild, key = (cls || '') + '|' + (style || '');
+  if (last && last.dataset.k === key && last.textContent.length < 4096) last.textContent += text;
+  else {
+    const sp = document.createElement('span');
+    sp.dataset.k = key;
+    if (cls) sp.className = cls;
+    if (style) sp.style.cssText = style;
+    sp.textContent = text;
+    out.append(sp);
+  }
   // 表示が重くならないよう、古いものから消す
   while (out.childNodes.length > 2000) out.firstChild.remove();
   if (stick) out.scrollTop = out.scrollHeight;
@@ -3251,7 +3260,7 @@ function termUI(){
   $('#termStop').disabled = !term.running;
   $('#termNote').textContent = !ready ? 'ホストにつながっていません。'
     : (collab.remote === 'shell'
-      ? 'ホストのパソコンで、作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）を今の場所としてコマンドを打てます。'
+      ? 'ホストのパソコンで、作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）を今の場所としてコマンドを打てます。端末ではないので、色を付けるには ls --color=always や git -c color.ui=always のように指定してください。'
       : '作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）で git の決まったサブコマンドを打てます（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash など）。')
       + ' 入力を求めるコマンド（エディタ・パスワードなど）は使えません。打ったコマンドはホストに記録されます。';
 }
@@ -3260,6 +3269,7 @@ function termRun(line){
   if (!line || term.running || !collab.connected || !collab.remote) return;
   const id = 'r' + Date.now().toString(36) + (term.seq++);
   term.running = id;
+  term.ansi.out.reset(); term.ansi.err.reset();
   term.history = term.history.filter(h => h !== line);
   term.history.push(line);
   term.hpos = term.history.length; term.draft = '';
@@ -3284,8 +3294,17 @@ function termDropped(why){
 function termStop(){
   if (term.running && collab.connected) collab.ws.send(JSON.stringify({ type: 'run_stop', id: term.running }));
 }
-$('#termBtn').onclick = () => { termUI(); if (!$('#termDlg').open) $('#termDlg').showModal(); $('#termInput').focus(); };
-$('#termClose').onclick = () => $('#termDlg').close();
+// 見えている範囲（スマホのキーボードを除いた部分）に合わせる
+function termFit(){
+  const vv = window.visualViewport, s = $('#termDlg').style;
+  if (!vv) return;
+  s.setProperty('--vv-h', vv.height + 'px');
+  s.setProperty('--vv-top', vv.offsetTop + 'px');
+}
+window.visualViewport?.addEventListener('resize', () => { if ($('#termDlg').open) termFit(); });
+window.visualViewport?.addEventListener('scroll', () => { if ($('#termDlg').open) termFit(); });
+$('#termBtn').onclick = () => { termUI(); termFit(); if (!$('#termDlg').open) $('#termDlg').showModal(); $('#termInput').focus(); };
+$('#termClose').onclick = $('#termX').onclick = () => $('#termDlg').close();
 $('#termClear').onclick = () => { $('#termOut').replaceChildren(); $('#termInput').focus(); };
 $('#termStop').onclick = () => { termStop(); $('#termInput').focus(); };
 $('#termForm').onsubmit = (e) => {
