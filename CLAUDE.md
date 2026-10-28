@@ -11,6 +11,7 @@
 - `js/comment-render.js` — コメント描画の定数と描画処理（画面・書き出し・ワーカーで共通）
 - `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通
 - `js/export-worker.js` — 高速書き出し用 Web Worker
+- `js/term-ansi.js` — ターミナル（`--remote`）の出力の色（ANSI のエスケープシーケンス）の読み取り（DOM 非依存。Node からも `require` できる）
 - `js/app.js` — アプリ本体（1つの IIFE。上のファイルのグローバルを使う）
 - `lib/` — 同梱ライブラリ（Mediabunny、MPL-2.0。classic スクリプト版でグローバル `Mediabunny`）
 - `Cargo.toml` — CLI の workspace（cross がリポジトリの直下をコンテナに入れるよう、ここに置く。`Cargo.lock` と `target/` もここ）
@@ -63,7 +64,7 @@
 
 ## テスト
 
-- `node --test 'tests/*.test.js'` — Vim エンジンとコメントストアのテスト
+- `node --test 'tests/*.test.js'` — Vim エンジン・コメントストア・ターミナルの色のテスト
 - `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）。CI は Windows でも動かし、install.ps1 と komenagare update を手元のミラーで確かめる
 - 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる（複数プロジェクト・複数タブ・`--otp` も）
 - 画面と書き出しは Chromium（Playwright）で、http 配信（`npx http-server -p 8124 -s -c-1 .`）と `file://` の両方で確かめる

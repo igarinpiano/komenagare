@@ -259,6 +259,15 @@ pub fn build(mode: Mode, line: &str, dir: &Path) -> Result<tokio::process::Comma
             check_git(&words[1..])?;
             let mut c = tokio::process::Command::new("git");
             c.args(&words[1..]);
+            // 出力はいつも画面のターミナルに出る（シェルを通さないのでファイルやパイプには行かない）ので、
+            // 端末でなくても色を付けさせる（画面は js/term-ansi.js で色にする）。ホストの環境の GIT_CONFIG_* は残す
+            let n = std::env::var("GIT_CONFIG_COUNT")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            c.env("GIT_CONFIG_COUNT", (n + 1).to_string())
+                .env(format!("GIT_CONFIG_KEY_{n}"), "color.ui")
+                .env(format!("GIT_CONFIG_VALUE_{n}"), "always");
             c
         }
         Mode::Shell => {
@@ -283,7 +292,8 @@ pub fn build(mode: Mode, line: &str, dir: &Path) -> Result<tokio::process::Comma
         .env("GIT_EDITOR", "true")
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat")
-        .env("TERM", "dumb");
+        // 色は画面で出せる（TERM=dumb だと ls --color=always なども色を付けない）。カーソルの移動などは画面で捨てる
+        .env("TERM", "xterm-256color");
     // ホストの端末から切り離す（ssh などが端末でパスワードを聞いて止まらないように）。
     // 新しいセッションはプロセスグループも別になるので、子プロセスもまとめて止められる
     #[cfg(unix)]
@@ -529,5 +539,36 @@ mod tests {
         assert!(build(Mode::Git, "ls", dir.path()).is_err());
         assert!(build(Mode::Git, "git config x y", dir.path()).is_err());
         assert!(build(Mode::Git, "git status", dir.path()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn colors_git_output() {
+        // git の種類では、端末でなくても git に色を付けさせる
+        let dir = tempfile::tempdir().unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return; // git が無い
+        }
+        std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let g = got.clone();
+        let send: Sender = Box::new(move |m| g.lock().unwrap().push(m));
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = build(Mode::Git, "git status --short", dir.path()).unwrap();
+        assert_eq!(run(cmd, "1".into(), send, rx).await, Some(0));
+        let msgs = got.lock().unwrap().join("\n");
+        assert!(msgs.contains("a.txt"), "{msgs}");
+        assert!(msgs.contains("\\u001b["), "色が付いていません: {msgs}");
+
+        // シェルではファイルやパイプに書けるので、色を強制しない
+        let cmd = build(Mode::Shell, "git status --short", dir.path()).unwrap();
+        assert!(!cmd
+            .as_std()
+            .get_envs()
+            .any(|(k, _)| k.to_string_lossy().starts_with("GIT_CONFIG")));
     }
 }
