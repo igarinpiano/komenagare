@@ -13,7 +13,7 @@
 //! .komenagare/commands.log に残す。
 
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -51,11 +51,13 @@ impl Remote {
         Remote { mode, users }
     }
 
-    /// この人が使えるか
+    /// この人が使えるか（admin・all は決まった意味なので、その名前の参加者がいても名前としては扱わない）
     pub fn allows(&self, name: &str, admin: bool) -> bool {
-        self.users
-            .iter()
-            .any(|u| u == "all" || (u == "admin" && admin) || u == name)
+        self.users.iter().any(|u| match u.as_str() {
+            "all" => true,
+            "admin" => admin,
+            n => n == name,
+        })
     }
 
     /// 起動時に出す説明
@@ -114,6 +116,9 @@ const GIT_COMMANDS: &[&str] = &[
     "remote",
 ];
 
+/// git でつないでよい先の種類（GIT_ALLOW_PROTOCOL）
+const GIT_PROTOCOLS: &str = "https:http:ssh:git";
+
 /// 断るオプション（長い名前。git は曖昧でなければ途中までの名前も受け付けるので、これの先頭部分も断る）
 const GIT_DENY_LONG: &[&str] = &[
     // ほかのプログラムを動かす
@@ -137,6 +142,8 @@ const GIT_DENY_LONG: &[&str] = &[
 /// 断る短いオプション（サブコマンドごと）
 fn git_deny_short(sub: &str) -> &'static [char] {
     match sub {
+        // -O <ファイル>（差分の並び順をファイルから読む）
+        "diff" | "log" | "show" => &['O'],
         // -F <ファイル>（メッセージをファイルから読む）、-t <ファイル>（テンプレート）
         "commit" => &['F', 't'],
         "tag" | "merge" => &['F'],
@@ -259,6 +266,9 @@ pub fn build(mode: Mode, line: &str, dir: &Path) -> Result<tokio::process::Comma
             check_git(&words[1..])?;
             let mut c = tokio::process::Command::new("git");
             c.args(&words[1..]);
+            // fetch / pull / push / remote でつなぐ先は、ネットワークの先だけにする。手元のパス（file://）は
+            // 作業フォルダの外のリポジトリを読み書きでき、ext:: などはほかのプログラムを動かせるので使わせない
+            c.env("GIT_ALLOW_PROTOCOL", GIT_PROTOCOLS);
             // 出力はいつも画面のターミナルに出る（シェルを通さないのでファイルやパイプには行かない）ので、
             // 端末でなくても色を付けさせる（画面は js/term-ansi.js で色にする）。ホストの環境の GIT_CONFIG_* は残す
             let n = std::env::var("GIT_CONFIG_COUNT")
@@ -418,15 +428,24 @@ pub async fn run(
     code
 }
 
+/// ホストの端末に出すための文字列（制御文字はエスケープして見せる。端末の表示を書き換えたり
+/// 色やカーソルを動かしたりして、実際に打たれたコマンドを隠せないように）
+pub fn printable(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() || crate::auth::is_bidi_control(c) {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// 打ったコマンドを .komenagare/commands.log に残す
 pub fn log(dir: &Path, name: &str, line: &str, code: Option<i32>, time: u64) {
-    let path: PathBuf = dir.join(".komenagare").join("commands.log");
     let rec = json!({ "time": time, "name": name, "line": line, "code": code }).to_string();
-    let r = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{rec}\n").as_bytes()));
+    let r = crate::workspace::append_meta(dir, "commands.log", &format!("{rec}\n"));
     if let Err(e) = r {
         eprintln!("コマンドの記録に失敗しました: {e}");
     }
@@ -484,6 +503,50 @@ mod tests {
         assert!(!ok("commit --file=/etc/passwd"));
         assert!(!ok("blame --contents /etc/passwd README"));
         assert!(!ok("add --pathspec-from-file=/etc/passwd"));
+        assert!(!ok("diff -O/etc/passwd"));
+        assert!(!ok("log -p -O /etc/passwd"));
+    }
+
+    #[test]
+    fn git_cannot_reach_local_repositories() {
+        // 手元のパスや file:// のリポジトリとはやりとりさせない（作業フォルダの外を読み書きできるため）
+        let cmd = build(Mode::Git, "git fetch /tmp/x", Path::new(".")).unwrap();
+        let allow = cmd
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "GIT_ALLOW_PROTOCOL")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap();
+        assert!(!allow.split(':').any(|p| p == "file" || p == "ext"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str], cwd: &Path| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        if !git(&["init", "-q"], &a) || !git(&["init", "-q"], &b) {
+            return; // git が無い
+        }
+        let out = build(Mode::Git, &format!("git fetch {}", b.display()), &a)
+            .unwrap()
+            .as_std_mut()
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "手元のリポジトリから取れてしまう");
+    }
+
+    #[test]
+    fn printable_escapes_control_characters() {
+        assert_eq!(printable("git status"), "git status");
+        assert_eq!(printable("a\u{1b}[2Kb\rc\n"), "a\\u{1b}[2Kb\\rc\\n");
+        assert_eq!(printable("x\u{202e}y"), "x\\u{202e}y");
     }
 
     #[test]
@@ -494,6 +557,9 @@ mod tests {
         assert!(!r.allows("はなこ", false));
         assert!(Remote::new(Mode::Git, "all").allows("はなこ", false));
         assert!(!Remote::new(Mode::Git, "").allows("はなこ", true));
+        // admin という名前の参加者は管理者ではない
+        assert!(!Remote::new(Mode::Git, "admin").allows("admin", false));
+        assert!(Remote::new(Mode::Git, "admin").allows("admin", true));
     }
 
     #[test]

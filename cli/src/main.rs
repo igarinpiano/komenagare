@@ -197,7 +197,7 @@ enum OtpCmd {
         /// 数字 6 桁にする（既定は英数字 10 文字。数字は打ちやすいが、期限は短めに）
         #[arg(long)]
         numeric: bool,
-        /// 有効期限（例 10m・1h・7d。既定は数字なら 10m、英数字なら 7d）
+        /// 有効期限（例 10m・1h・7d。既定は数字なら 10m、英数字なら 7d。数字は当てられやすいので長くても 1h）
         #[arg(long, value_parser = auth::parse_ttl)]
         expires: Option<std::time::Duration>,
         /// 管理者にする（画面からワンタイムパスワードの発行・取り消しができる）

@@ -97,7 +97,7 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
 ```sh
 komenagare --otp --host 0.0.0.0                 # 起動すると、管理者として入る URL（1回だけ使える）が出る
 komenagare otp new 山田                          # 英数字 10 文字（既定の期限 7 日）
-komenagare otp new 佐藤 --numeric --expires 30m  # 数字 6 桁（既定の期限 10 分）
+komenagare otp new 佐藤 --numeric --expires 30m  # 数字 6 桁（既定の期限 10 分。当てられやすいので長くても 1 時間）
 komenagare otp new 鈴木 --admin --url https://komenagare.example.com   # 管理者にする・そのまま開けるリンクも出す
 komenagare otp list                              # ログイン中の人と未使用のワンタイムパスワード
 komenagare otp revoke 山田                       # 取り消す（つながっていれば切れる）
@@ -119,6 +119,7 @@ komenagare --otp --remote shell                          # 管理者だけが何
 
 - `--remote git` は git の決まったサブコマンド（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / reset / stash / merge など）だけを、シェルを通さずに動かします。
   `git config` や `git -c …`、`--upload-pack` のようにほかのプログラムを動かせるもの、`--output` や `-F` のように作業フォルダの外のファイルを読み書きできるものは断ります。
+  fetch / pull / push でつなげる先は https・http・ssh・git だけです（このパソコンの中のほかのリポジトリ（パスや `file://`）とはやりとりできません）。
 - `--remote shell` は何でも打てます。**このパソコンを預けるのと同じ**なので、信頼できる人だけに許してください。
 - 使える人（`--remote-users`）は `admin`（管理者）・`all`（全員）・参加者の名前を `,` で区切って並べます（既定は `admin`）。名前は `komenagare otp new` で付けたものです。
 - 出力の色（ANSI のエスケープシーケンス）はそのまま色で出ます。`--remote git` では git がいつも色を付けます。`--remote shell` では端末ではないので、色を付けるには `ls --color=always`・`git -c color.ui=always status` のように指定します（`git diff > x.patch` のようにファイルへ書くときに色の記号が入らないよう、強制はしません）。
