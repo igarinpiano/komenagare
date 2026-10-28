@@ -2254,8 +2254,8 @@ $('#tlZoom').oninput = (e) => {
 // 縦向きのスマホではタブの上で動画の大きさを変えて、下の画面（タイムライン・リスト・Vim・履歴）がその残りに広がる
 for (const h of [$('#tlResize'), $('#mResize')]) {
   let st = null;
-  // 縦向きのスマホで動画をどこまで大きくできるか（横幅いっぱいまで）
-  const mVideoMax = () => Math.max(0.12, Math.min(0.6, ($('.player-col').clientWidth - 16) * 9 / 16 / stableH));
+  // 縦向きのスマホで動画をどこまで大きくできるか（枠の横幅いっぱいまで）
+  const mVideoMax = () => Math.max(0.12, Math.min(0.6, $('#player').clientWidth * 9 / 16 / stableH));
   h.addEventListener('pointerdown', (e) => {
     st = mq.matches ? { y: e.clientY, f: Math.min(settings.mVideo, mVideoMax()), mobile: true } : { y: e.clientY, h: Math.min(settings.tlHeight, tlMaxHeight()) };
     h.setPointerCapture(e.pointerId); h.classList.add('on');
@@ -3284,8 +3284,17 @@ function termDropped(why){
 function termStop(){
   if (term.running && collab.connected) collab.ws.send(JSON.stringify({ type: 'run_stop', id: term.running }));
 }
-$('#termBtn').onclick = () => { termUI(); if (!$('#termDlg').open) $('#termDlg').showModal(); $('#termInput').focus(); };
-$('#termClose').onclick = () => $('#termDlg').close();
+// 見えている範囲（スマホのキーボードを除いた部分）に合わせる
+function termFit(){
+  const vv = window.visualViewport, s = $('#termDlg').style;
+  if (!vv) return;
+  s.setProperty('--vv-h', vv.height + 'px');
+  s.setProperty('--vv-top', vv.offsetTop + 'px');
+}
+window.visualViewport?.addEventListener('resize', () => { if ($('#termDlg').open) termFit(); });
+window.visualViewport?.addEventListener('scroll', () => { if ($('#termDlg').open) termFit(); });
+$('#termBtn').onclick = () => { termUI(); termFit(); if (!$('#termDlg').open) $('#termDlg').showModal(); $('#termInput').focus(); };
+$('#termClose').onclick = $('#termX').onclick = () => $('#termDlg').close();
 $('#termClear').onclick = () => { $('#termOut').replaceChildren(); $('#termInput').focus(); };
 $('#termStop').onclick = () => { termStop(); $('#termInput').focus(); };
 $('#termForm').onsubmit = (e) => {
