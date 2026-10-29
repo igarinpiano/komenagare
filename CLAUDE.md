@@ -58,6 +58,9 @@
 - 1つのホストに複数のプロジェクトがあるときは、ページの `?p=` で選ぶ（`collabOpen` / `collabClose` でタブのまま切り替える。控えの IndexedDB はプロジェクトごと）。
   同じプロジェクトを複数のタブで開けるよう、衝突の控えはタブごと（`collab.owner`）に置き、閉じたタブの分は次に開いたタブが引き継ぐ。
 - `--otp` のときは `collab.session`（localStorage の `komenagare.session`）で入り、名前はホストが決める。
+  ログインには有効期限がある（`auth.rs`。既定 30 日、`--session-ttl`。期限はホストだけが確かめる。`komenagare otp` は期限を知らないので消さない）。
+- ホストに送る変更セットは `collabQueue`（`js/app.js`）で 2000 op・2MB ほどに分けて送る。ホストは 1 万 op・1 通 16MB・本文 40 万バイト・コマンド 4000 バイトまで（`server.rs` の `change_ok`）。どちらかを変えるときは、もう片方を超えないようにする。
+- hello（ログイン）より前の接続は、30 秒・64KB・同時に 32 まで（`server.rs`）。`--no-token` のときは、Host が手元の名前（IP・localhost・ドットの無い名前・.local など）か公開 URL のときだけ API と WebSocket を使わせる（DNS リバインディング対策）。
 - 再生位置・選択・タイムラインの表示範囲・カーソルは `presence` メッセージで配り合う（`presenceDirty` で送る。ホストは中継するだけで保存しない）。
   参加者一覧（`#peersDlg`）から「追いかける」と `followApply` で相手に合わせ、自分で操作したらやめる。
 - ホストの `--remote` で許された人には、snapshot の `remote` が付き、「⌨ ターミナル」（`#termDlg`）から `run` / `run_stop` を送れる。出力は `run_out`、終わりは `run_end`（`term`）。

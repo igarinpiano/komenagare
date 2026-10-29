@@ -55,7 +55,15 @@ function parseTime(str){
 }
 function hashStr(s){ let h = 2166136261; for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 function expandHex(h){ h = h.toUpperCase(); return h.length === 4 ? '#'+h[1]+h[1]+h[2]+h[2]+h[3]+h[3] : h; }
-function normCmd(cmd){ return String(cmd ?? '').trim().split(/\s+/).filter(Boolean).join(' '); }
+// コメントの本文・コマンドの長さの上限（ホストは本文 40 万バイト・コマンド 4000 バイトまで受け付ける）
+const TEXT_MAX = 100000, CMD_MAX = 1000;
+// 長すぎる文字列を切る（サロゲートペアの途中では切らない。半端な文字はホストが読めないため）
+function clipStr(s, max){
+  if (s.length <= max) return s;
+  const c = s.charCodeAt(max - 1);
+  return s.slice(0, c >= 0xd800 && c <= 0xdbff ? max - 1 : max);
+}
+function normCmd(cmd){ return clipStr(String(cmd ?? '').trim().split(/\s+/).filter(Boolean).join(' '), CMD_MAX); }
 function baseName(n){ return String(n || '').replace(/\.[^.]+$/, ''); }
 function download(data, name, type){
   const blob = data instanceof Blob ? data : new Blob([data], { type });
@@ -117,7 +125,7 @@ function parseCmd(cmd){
    コメントデータ
    ===================================================================== */
 const normFields = (t, cmd, text) => ({
-  t: Math.max(0, Math.round(Number(t) * 100) / 100), cmd: normCmd(cmd), text: String(text ?? '').replace(/\r\n?/g, '\n'),
+  t: Math.max(0, Math.round(Number(t) * 100) / 100), cmd: normCmd(cmd), text: clipStr(String(text ?? '').replace(/\r\n?/g, '\n'), TEXT_MAX),
 });
 // まだ store に入れていないコメント（id はファイルにあればそれを使う）
 function makeComment(t, cmd, text, mine = false, id = null){
@@ -3053,14 +3061,45 @@ function collabSaveSoon(){
 }
 
 // 自分の変更をホストへ送る（送信待ちに控えてから）
+// ホストに送る1つの変更セットの大きさ。大きな読み込みなどは分けて送る
+// （ホストは 1 万 op・1 通 16MB まで。超えると受け付けないか切られて、送信待ちから出られなくなる）
+const COLLAB_CHUNK_OPS = 2000, COLLAB_CHUNK_BYTES = 2 << 20;
+function collabSplitOps(ops){
+  const parts = []; let cur = [], size = 0;
+  for (const op of ops){
+    const n = JSON.stringify(op).length;
+    if (cur.length && (cur.length >= COLLAB_CHUNK_OPS || size + n > COLLAB_CHUNK_BYTES)){ parts.push(cur); cur = []; size = 0; }
+    cur.push(op); size += n;
+  }
+  if (cur.length) parts.push(cur);
+  return parts;
+}
+// 変更セットを送信待ちに入れて送る（大きければ分ける。最初の分は元の id のまま）
+function collabQueue(id, ops, seq){
+  collabSplitOps(ops).forEach((part, i) => {
+    const cid = i ? uuidv7() : id;
+    const e = { id: cid, seq: seq + i / 1000, change: { id: cid, ops: part } };
+    collab.outbox.push(e);
+    collabTx('outbox', 'readwrite', s => s.put(e)).catch(err => console.warn(err));
+    if (collab.connected) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
+  });
+}
 function collabSend(change){
   if (!state.collab || !change) return;
-  const ch = { id: change.id, ops: change.ops.map(({ mine, ...op }) => op) };
-  collab.outbox.push({ id: ch.id, seq: Date.now(), change: ch });
-  collabTx('outbox', 'readwrite', s => s.put(collab.outbox[collab.outbox.length - 1])).catch(e => console.warn(e));
+  collabQueue(change.id, change.ops.map(({ mine, ...op }) => op), Date.now());
   collabSaveSoon();
-  if (collab.connected) collab.ws.send(JSON.stringify({ type: 'change', change: ch }));
   collabUI();
+}
+// 前の版で送信待ちに入った大きな変更セットを分け直す（そのまま送るとホストに受け付けられない）
+async function collabResplitOutbox(){
+  const big = collab.outbox.filter(e => collabSplitOps(e.change.ops).length > 1);
+  if (!big.length) return;
+  collab.outbox = collab.outbox.filter(e => !big.includes(e));
+  for (const e of big){
+    await collabTx('outbox', 'readwrite', s => s.delete(e.id)).catch(err => console.warn(err));
+    collabQueue(e.id, e.change.ops, e.seq);
+  }
+  collab.outbox.sort((a, b) => a.seq - b.seq);
 }
 
 function collabHello(){
@@ -3473,6 +3512,7 @@ async function collabOpen(p){
     collab.db = await collabIdb();
     const [snap, outbox] = await Promise.all([collabTx('meta', 'readonly', s => s.get('snapshot')), collabTx('outbox', 'readonly', s => s.getAll())]);
     collab.outbox = (outbox || []).sort((a, b) => a.seq - b.seq);
+    await collabResplitOutbox();
     collab.conflicts = await loadConflicts();
     conflictsChanged();
     // 前回の控えをすぐに表示する（ホストにつながる前やオフラインでも作業できるように）
@@ -3606,7 +3646,7 @@ async function authRender(){
   frag.append(mkEl('h4', null, `ログイン中（${r.sessions.length}）`));
   for (const x of r.sessions){
     const row = mkEl('div', 'auth-row');
-    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? '（管理者）' : '') + (x.you ? '（あなた）' : '')), mkEl('span', 'muted', fmtDate(x.created) + ' から'));
+    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? '（管理者）' : '') + (x.you ? '（あなた）' : '')), mkEl('span', 'muted', fmtDate(x.created) + ' から' + (x.expires ? '・' + fmtDate(x.expires) + ' まで' : '')));
     if (!x.you) row.append(revoke(x.id, `${x.name} のログイン`));
     frag.append(row);
   }
@@ -3803,7 +3843,9 @@ function conflictDrop(recs){
 function collabShareConflicts(){
   const recs = collab.conflicts.filter(r => r.share);
   if (!recs.length || !collab.connected) return;
-  collab.ws.send(JSON.stringify({ type: 'conflict_add', conflicts: recs.map(({ share, ...r }) => r) }));
+  // 1通が大きくなりすぎないよう、100 件ずつ送る
+  const list = recs.map(({ share, ...r }) => r);
+  for (let i = 0; i < list.length; i += 100) collab.ws.send(JSON.stringify({ type: 'conflict_add', conflicts: list.slice(i, i + 100) }));
 }
 function conflictLater(){
   if (!state.collab || !collab.conflicts.some(r => !r.share)) return;

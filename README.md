@@ -82,7 +82,7 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
   反映されなかった側には「衝突」の知らせが出て、自分の変更にする・相手のままにする・両方残すを選べます。
 - 「変更履歴」タブで、誰がいつ何を変えたかを見られます。どの変更も「取り消す」で打ち消せます（git revert と同じ）。
 - ホストとの接続が切れても編集を続けられます。変更はブラウザに保存され、つながり直したときに送られます。
-- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）、`--remote`（画面からホストでコマンドを打つ）。一覧は `komenagare --help`。
+- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし。IP アドレス・`localhost`・このパソコンの名前（`mypc`・`mypc.local` など）で開いてください。悪意のあるサイトから名前を切り替えて入られないよう、ほかのドメインの名前では入れません。使うときは `--public-url` で指定）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）、`--remote`（画面からホストでコマンドを打つ）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
   取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
   取ってきた Web アプリは署名（`web.sums`）を確かめてから使います。署名の合わないもの、手元の控えより古いものは使いません（GitHub Pages や途中の経路が差し替えられても、ホストが配信する画面は変わりません）。
@@ -108,6 +108,8 @@ komenagare otp revoke 山田                       # 取り消す（つながっ
 ```
 
 管理者は画面の「📁」→「招待・ログインの管理」からも発行・取り消しができます。
+
+ログインには有効期限があります（既定はログインしてから 30 日）。過ぎたらワンタイムパスワードでログインし直します。`--session-ttl 7d` のように変えられ、`--session-ttl none` で無期限になります。
 記録は `~/.config/komenagare/auth`（macOS は `~/Library/Application Support/komenagare/auth`、Windows は `%APPDATA%\komenagare\auth`）に置きます（`--auth-dir` で変更可。`komenagare otp` にも同じものを指定）。
 
 ### リモートでコマンドを打つ（--remote）
