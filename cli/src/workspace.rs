@@ -288,6 +288,10 @@ impl Workspace {
     fn run_git(&self, args: &[&str]) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.dir);
+        // フックは動かさない（--no-verify では post-commit などは止まらない。フックの置き場所が作業ツリーの
+        // 中（husky など）だと、--remote git の参加者が checkout で置いたフックが自動のコミットで動いてしまう）
+        cmd.arg("-c")
+            .arg(format!("core.hooksPath={}", no_hooks_path().display()));
         if self.git_identity {
             cmd.args([
                 "-c",
@@ -384,6 +388,17 @@ fn clean(s: &str) -> String {
 }
 
 /// git の user.email が未設定か（未設定ならコミットのときに補う）
+/// git のフックを動かさないための core.hooksPath（フックが1つも無い場所）。
+/// Unix は /dev/null（下にファイルを作れないので、ほかのユーザーが先回りしてフックを置くこともできない）。
+/// Windows はユーザーごとの一時フォルダの中の、作らない名前（作業ツリーの外なので、git からは書けない）
+pub fn no_hooks_path() -> PathBuf {
+    if cfg!(unix) {
+        PathBuf::from("/dev/null")
+    } else {
+        std::env::temp_dir().join("komenagare-no-hooks")
+    }
+}
+
 fn needs_identity(dir: &Path) -> bool {
     git_out(dir, &["config", "user.email"])
         .map(|s| s.trim().is_empty())
@@ -407,7 +422,7 @@ fn git_out(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::{Fields, Op};
 
@@ -509,6 +524,52 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    /// フックの置き場所を作業ツリーの中にし（husky など）、動いたら印のファイルを作るフックを置く
+    #[cfg(unix)]
+    pub(crate) fn plant_marker_hooks(repo: &Path, marker_dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let hooks = repo.join(".hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        for h in [
+            "pre-commit",
+            "prepare-commit-msg",
+            "commit-msg",
+            "post-commit",
+        ] {
+            let p = hooks.join(h);
+            let mark = marker_dir.join(format!("MARK-{h}"));
+            std::fs::write(&p, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ok = Command::new("git")
+            .args(["config", "core.hooksPath", ".hooks"])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_commit_does_not_run_hooks() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(&tmp.path().join("w"), GitMode::Require).unwrap();
+        plant_marker_hooks(&ws.dir, tmp.path());
+        ws.save(&Store::new(vec![]), "m", "a", "b@komenagare", &[])
+            .unwrap();
+        let marks: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("MARK-"))
+            .map(|e| e.file_name())
+            .collect();
+        assert!(marks.is_empty(), "フックが動きました: {marks:?}");
     }
 
     #[test]

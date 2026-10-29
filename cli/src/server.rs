@@ -21,7 +21,8 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":5,"name":"表示名","client":"ブラウザごとの id","session":"…"(--otp のとき)}
+//!   {"type":"hello","protocol":6,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき)}
+//!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
@@ -30,8 +31,8 @@
 //!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
 //!   {"type":"run_stop","id":"…"}                             動いているコマンドを止める
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","comments":[...],"remote":"git"|"shell"|null}
-//!                                                            接続直後の全体（name はホストが使う名前。remote はコマンドを打てるときの種類）
+//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
+//!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
 //!   {"type":"conflicts","list":[{"key",..,"author","client"}]} 保留中の衝突（変わるたびに全体）
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
@@ -64,7 +65,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -203,6 +204,24 @@ const MAX_OPS_PER_CHANGE: usize = 10_000;
 /// 控え（seen）・コミットのトレーラーに使うので、長さと文字を絞る
 fn change_id_ok(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// ブラウザごとの id（ほかの人に配る）。ブラウザが持つ秘密（client_key。16進 64 文字）のハッシュで、
+/// 秘密を知らなければ同じ id にはできない。秘密が無い・形が違うときは、この接続だけの id にする
+fn client_id(key: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    match key.filter(|k| k.len() == 64 && k.bytes().all(|b| b.is_ascii_hexdigit())) {
+        Some(k) => {
+            let d = Sha256::digest(format!("komenagare-client:{}", k.to_ascii_lowercase()));
+            hex(&d[..16])
+        }
+        None => {
+            use rand::Rng;
+            let mut r = rand::rng();
+            hex(&(0..16).map(|_| r.random::<u8>()).collect::<Vec<u8>>())
+        }
+    }
 }
 
 /// 書き込み担当（ファイルと git は受け取った順に1件ずつ処理する）への依頼
@@ -780,13 +799,10 @@ async fn connection(
                 } else if let Some(n) = v["name"].as_str().and_then(auth::clean_name) {
                     name = n;
                 }
-                if let Some(c) = v["client"]
-                    .as_str()
-                    .filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))
-                {
-                    client = c.chars().take(40).collect();
-                    email = format!("{client}@komenagare");
-                }
+                // ブラウザごとの id は、ブラウザだけが知る秘密（client_key）からホストが作る。
+                // ほかの人に配るのは作った id だけなので、他人の id を名乗ることはできない
+                client = client_id(v["client_key"].as_str());
+                email = format!("{client}@komenagare");
                 joined = true;
                 let mut inner = hub.inner.lock().await;
                 // 全体（snapshot）を作るのと同じロックの中で受け取り始める（取りこぼさないように）
@@ -813,7 +829,7 @@ async fn connection(
                     .filter(|_| can_run)
                     .map(|r| r.mode.label());
                 let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "comments": comments, "remote": remote })
+                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
                         .to_string(),
                 );
                 let _ = out_tx.send(conflicts_msg(&inner));
@@ -1171,6 +1187,29 @@ mod tests {
             &h(Some("https://a.example.com"), "127.0.0.1:8764"),
             Some("https://a.example.com/")
         ));
+    }
+
+    #[test]
+    fn client_id_comes_from_the_secret() {
+        let k = "a".repeat(64);
+        // 同じ秘密なら同じ id（同じブラウザのほかのタブ）、大文字小文字は区別しない
+        assert_eq!(client_id(Some(&k)), client_id(Some(&k.to_uppercase())));
+        assert_eq!(client_id(Some(&k)).len(), 32);
+        // 秘密そのものは id にならない
+        assert_ne!(client_id(Some(&k)), k[..32]);
+        assert_ne!(client_id(Some(&k)), client_id(Some(&"b".repeat(64))));
+        // 秘密が無い・形が違う（他人の id をそのまま送る）ときは、毎回ちがう id
+        let other = client_id(Some(&k));
+        for bad in [
+            None,
+            Some(""),
+            Some(other.as_str()),
+            Some(&"g".repeat(64)[..]),
+        ] {
+            let a = client_id(bad);
+            assert_ne!(a, other);
+            assert_ne!(a, client_id(bad));
+        }
     }
 
     #[test]

@@ -59,6 +59,9 @@ komenagare update --version v0.1.0   # 指定した版にする（前の版に�
 
 ホストを起動したときにも新しい版があるかを確かめ、あれば知らせます（`--no-update` で確かめない）。
 
+`komenagare update` は、リリースの署名（`SHA256SUMS.minisig`）を komenagare に埋め込んだ公開鍵で確かめ、署名した一覧と同じ中身のときだけ入れ替えます。
+署名を付け始める前の版（v0.4.x まで）には `komenagare update` では戻せません。戻すときは `KOMENAGARE_VERSION=v0.4.3` を付けて install.sh / install.ps1 で入れてください。
+
 ### 使い方
 
 ```sh
@@ -82,6 +85,7 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
 - 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）、`--remote`（画面からホストでコマンドを打つ）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
   取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
+  取ってきた Web アプリは署名（`web.sums`）を確かめてから使います。署名の合わないもの、手元の控えより古いものは使いません（GitHub Pages や途中の経路が差し替えられても、ホストが配信する画面は変わりません）。
 
 ### 複数のプロジェクト
 
@@ -120,6 +124,7 @@ komenagare --otp --remote shell                          # 管理者だけが何
 - `--remote git` は git の決まったサブコマンド（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / reset / stash / merge など）だけを、シェルを通さずに動かします。
   `git config` や `git -c …`、`--upload-pack` のようにほかのプログラムを動かせるもの、`--output` や `-F` のように作業フォルダの外のファイルを読み書きできるものは断ります。
   fetch / pull / push でつなげる先は https・http・ssh・git だけです（このパソコンの中のほかのリポジトリ（パスや `file://`）とはやりとりできません）。
+  `git diff` に作業フォルダの外のパス（`/etc/passwd` や `../x`）は渡せません。git のフック（`core.hooksPath` が作業ツリーの中にある husky なども）は動かしません（コメントの変更を記録する自動のコミットも同じ）。
 - `--remote shell` は何でも打てます。**このパソコンを預けるのと同じ**なので、信頼できる人だけに許してください。
 - 使える人（`--remote-users`）は `admin`（管理者）・`all`（全員）・参加者の名前を `,` で区切って並べます（既定は `admin`）。名前は `komenagare otp new` で付けたものです。
 - 出力の色（ANSI のエスケープシーケンス）はそのまま色で出ます。`--remote git` では git がいつも色を付けます。`--remote shell` では端末ではないので、色を付けるには `ls --color=always`・`git -c color.ui=always status` のように指定します（`git diff > x.patch` のようにファイルへ書くときに色の記号が入らないよう、強制はしません）。
@@ -208,7 +213,7 @@ Web アプリの書き出しと同じ規則で配置し、ffmpeg（libass 付き
 ビルド手順はありません。構成は `CLAUDE.md` を参照してください。
 
 ```sh
-node --test 'tests/*.test.js'                 # Vim エンジンとコメントストアのテスト
+node --test 'tests/*.test.js'                 # Vim エンジン・コメントストア・CSV などのテスト
 cargo test --manifest-path cli/Cargo.toml      # CLI のテスト
 cargo run --manifest-path cli/Cargo.toml -- /tmp/ws --web .   # CLI を動かす（Web アプリはこのフォルダから配信）
 ```

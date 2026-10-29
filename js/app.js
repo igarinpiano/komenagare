@@ -783,32 +783,12 @@ function deleteComment(c){
 /* =====================================================================
    ファイル入出力
    ===================================================================== */
-function csvEsc(s){ return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
 function serialize(fmt){
   const items = state.comments.map(c => ({ t: c.t, cmd: c.cmd, text: c.text, id: c.id }));
-  if (fmt === 'csv'){
-    return '\ufeff' + 'time,command,text,id\r\n' + items.map(c => [c.t.toFixed(2), csvEsc(c.cmd), csvEsc(c.text), csvEsc(c.id)].join(',')).join('\r\n') + (items.length ? '\r\n' : '');
-  }
+  // CSV は表計算ソフトで数式にならないようにして書く（js/comment-csv.js）
+  if (fmt === 'csv') return commentsToCSV(items);
   const body = items.length ? '[\n' + items.map(c => '    ' + JSON.stringify(c)).join(',\n') + '\n  ]' : '[]';
   return `{\n  "format": "komenagare",\n  "version": 2,\n  "comments": ${body}\n}\n`;
-}
-function parseCSV(text){
-  const rows = []; let row = [], f = '', q = false;
-  for (let i = 0; i < text.length; i++){
-    const ch = text[i];
-    if (q){
-      if (ch === '"'){ if (text[i + 1] === '"'){ f += '"'; i++; } else q = false; }
-      else f += ch;
-      continue;
-    }
-    if (ch === '"') q = true;
-    else if (ch === ',') { row.push(f); f = ''; }
-    else if (ch === '\r') {}
-    else if (ch === '\n') { row.push(f); rows.push(row); row = []; f = ''; }
-    else f += ch;
-  }
-  if (f !== '' || row.length){ row.push(f); rows.push(row); }
-  return rows.filter(r => r.some(x => x !== ''));
 }
 function parseCommentText(text, name = ''){
   text = text.replace(/^\ufeff/, '');
@@ -841,6 +821,8 @@ function parseCommentText(text, name = ''){
   // CSV
   const rows = parseCSV(text);
   if (!rows.length) return [];
+  // コメナガレが書き出した CSV なら、数式にならないよう足した「'」を外す（js/comment-csv.js）
+  const un = isKomenagareCsvHeader(rows[0]) ? csvUnguard : (x => x);
   let ti = 0, ci = 1, xi = 2, ii = -1, start = 0;
   if (!isFinite(parseTime(rows[0][0]))){
     const h = rows[0].map(x => x.trim().toLowerCase());
@@ -855,7 +837,7 @@ function parseCommentText(text, name = ''){
   for (let i = start; i < rows.length; i++){
     const r = rows[i], t = parseTime(r[ti]);
     if (!isFinite(t)) continue;
-    out.push(makeComment(t, r[ci] ?? '', r[xi] ?? '', false, ii >= 0 ? r[ii] : null));
+    out.push(makeComment(t, un(r[ci] ?? ''), un(r[xi] ?? ''), false, ii >= 0 && r[ii] != null ? un(r[ii]) : null));
   }
   return out;
 }
@@ -3009,7 +2991,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 5;
+const COLLAB_PROTOCOL = 6;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
@@ -3034,10 +3016,15 @@ const collab = {
 };
 const collabLS = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch {} return null; };
 function collabName(){ return collab.session?.name || collabLS('komenagare.name') || ''; }
-function collabClientId(){
-  let id = collabLS('komenagare.clientId');
-  if (!isUuid(id)){ id = uuidv7(); collabLS('komenagare.clientId', id); }
-  return id;
+// ブラウザごとの秘密（16進 64 文字）。ホストはこれのハッシュをブラウザの id にしてほかの人に配る。
+// 秘密そのものはホストにしか送らないので、ほかの人はこのブラウザの id を名乗れない
+function collabClientKey(){
+  let k = collabLS('komenagare.clientKey');
+  if (!/^[0-9a-f]{64}$/.test(k || '')){
+    k = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('');
+    collabLS('komenagare.clientKey', k);
+  }
+  return k;
 }
 
 // IndexedDB（送信待ちと、最後に見たコメント一覧の控え）
@@ -3077,7 +3064,7 @@ function collabSend(change){
 }
 
 function collabHello(){
-  return { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client: collabClientId(), session: collab.session?.token };
+  return { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client_key: collabClientKey(), session: collab.session?.token };
 }
 function collabConnect(){
   clearTimeout(collab.timer);
@@ -3110,7 +3097,7 @@ function collabHandle(m){
     store.reset(m.comments.map(c => ({ ...c, mine: mine.has(c.id) })));
     for (const e of collab.outbox) store.apply(e.change);
     commentsChanged();
-    collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null;
+    collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null; collab.myClient = typeof m.client === 'string' ? m.client : null;
     collab.remote = m.remote || null;
     termDropped('接続し直したため');
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
@@ -3151,11 +3138,11 @@ function collabHandle(m){
     collabUI(); presenceChanged();
   } else if (m.type === 'presence'){
     if (m.id === collab.me) return;
-    collab.presence.set(m.id, { state: m.state || {}, at: performance.now() });
+    collab.presence.set(m.id, { state: cleanPresence(m.state), at: performance.now() });
     presenceChanged();
     if (m.id === collab.follow) followApply(true);
   } else if (m.type === 'conflicts'){
-    collab.shared = Array.isArray(m.list) ? m.list : [];
+    collab.shared = (Array.isArray(m.list) ? m.list : []).map(cleanConflict).filter(Boolean);
     // ホストに預けられたものは手元の控えから外す
     const keys = new Set(collab.shared.map(r => r.key));
     collab.conflicts = collab.conflicts.filter(r => !keys.has(r.key));
@@ -3748,6 +3735,43 @@ function histRender(){
   list.replaceChildren(frag);
 }
 
+/* ---------- ほかの参加者から届いたものの確かめ ---------- */
+// presence と共有された衝突は、ホストが形を確かめずに中継する（ほかの参加者が書いたまま）。
+// 形の違う値で描画や再生が止まらないよう、使う項目だけを型を確かめて取り出す
+const finiteOr = (v, d = null) => typeof v === 'number' && isFinite(v) ? v : d;
+// タイムラインの段（{ g: 段の組, l: 組の中の位置 }）
+const cleanLane = (y) => y && typeof y === 'object' && Number.isInteger(y.g) && y.g >= 0 && y.g < TL_GROUPS.length
+  ? { g: y.g, l: clamp(finiteOr(y.l, 0), 0, 10000) } : null;
+function cleanPresence(s){
+  if (!s || typeof s !== 'object') return {};
+  const v = s.view, c = s.cur;
+  const t = finiteOr(s.t);
+  return {
+    t: t == null ? undefined : Math.max(0, t),
+    playing: s.playing === true,
+    // video.playbackRate に入れられる範囲（外れると例外になる）
+    rate: clamp(finiteOr(s.rate, 1), 0.0625, 16),
+    sel: Array.isArray(s.sel) ? s.sel.filter(x => typeof x === 'string' && x.length <= 64).slice(0, 200) : [],
+    view: v && typeof v === 'object' && finiteOr(v.t0) != null && finiteOr(v.span, 0) > 0
+      ? { t0: v.t0, span: v.span, y: cleanLane(v.y) } : null,
+    cur: !c || typeof c !== 'object' ? null
+      : c.a === 'st' ? (finiteOr(c.x) != null && finiteOr(c.y) != null ? { a: 'st', x: clamp(c.x, 0, 1), y: clamp(c.y, 0, 1) } : null)
+      : c.a === 'tl' && finiteOr(c.t) != null ? { a: 'tl', t: c.t, y: cleanLane(c.y) } : null,
+  };
+}
+// 衝突の記録の時刻・コマンド・本文（形が違えば null）
+const cleanConflictFields = (v) => v && typeof v === 'object' && finiteOr(v.t) != null ? normFields(v.t, v.cmd, v.text) : null;
+function cleanConflict(r){
+  if (!r || typeof r !== 'object' || typeof r.key !== 'string' || typeof r.id !== 'string' || !['add', 'update', 'delete'].includes(r.opType)) return null;
+  const mine = cleanConflictFields(r.mine);
+  if (r.opType !== 'delete' && !mine) return null;
+  return {
+    key: r.key, id: r.id, reason: String(r.reason ?? ''), opType: r.opType,
+    base: cleanConflictFields(r.base), mine, theirs: cleanConflictFields(r.theirs),
+    author: String(r.author ?? ''), client: String(r.client ?? ''), at: finiteOr(r.at, 0),
+  };
+}
+
 /* ---------- 衝突の解決（共同編集） ---------- */
 const CONFLICT_WHY = {
   'modified:update': 'ほかの人が先に同じ項目を変更していました',
@@ -3757,7 +3781,7 @@ const CONFLICT_WHY = {
 };
 const allConflicts = () => [...collab.conflicts, ...collab.shared];
 // 自分の変更か（ホストに預けたものも、同じブラウザから出したものなら自分の分）
-const conflictOwn = (rec) => !rec.author || rec.client === collabClientId();
+const conflictOwn = (rec) => !rec.author || (!!collab.myClient && rec.client === collab.myClient);
 // 今の内容（ホストに預けた衝突はあとから変わっていることがあるので、いつも今の値を見る）
 const conflictNow = (rec) => { const c = store.get(rec.id); return c ? pickFields(c) : null; };
 function conflictActions(rec){
@@ -3796,7 +3820,7 @@ function conflictResolve(rec, action){
       const r = updateOps([{ c: cur, t: rec.mine.t, cmd: rec.mine.cmd, text: rec.mine.text }]);
       if (r.failed){ toast('同じ時刻・内容のコメントが既にあるため変更できません', { type:'error' }); return; }
       ops = r.ops;
-    } else ops = [{ type:'add', id: rec.id, after: { t: rec.mine.t, cmd: rec.mine.cmd, text: rec.mine.text }, mine: true }];
+    } else ops = [{ type:'add', id: rec.id, after: normFields(rec.mine.t, rec.mine.cmd, rec.mine.text), mine: true }];
   } else if (action === 'both'){
     const c = makeComment(rec.mine.t, rec.mine.cmd, rec.mine.text, true);
     if (store.hasKey(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
@@ -4072,7 +4096,7 @@ function peersRender(){
     const row = mkEl('div', 'peer-row' + (on ? ' on' : ''));
     row.style.setProperty('--peer', peerColor(p));
     const info = mkEl('div', 'peer-info'), st = mkEl('div', 'peer-state');
-    info.append(mkEl('div', 'peer-name', p.name + (me ? '（あなた）' : p.client === collabClientId() ? '（あなた・別のタブ）' : '')), st);
+    info.append(mkEl('div', 'peer-name', p.name + (me ? '（あなた）' : collab.myClient && p.client === collab.myClient ? '（あなた・別のタブ）' : '')), st);
     row.append(mkEl('span', 'peer-dot'), info);
     if (!me){
       const b = mkEl('button', on ? 'primary' : null, on ? '追いかけるのをやめる' : '追いかける');

@@ -308,9 +308,16 @@ pub fn build(mode: Mode, line: &str, dir: &Path) -> Result<tokio::process::Comma
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(0);
-            c.env("GIT_CONFIG_COUNT", (n + 1).to_string())
+            // フックは動かさない。フックの置き場所が作業ツリーの中（husky の .husky/_ など）だと、
+            // fetch した中身を checkout してフックを置き、commit で動かせてしまう（git だけの制限を抜けられる）
+            c.env("GIT_CONFIG_COUNT", (n + 2).to_string())
                 .env(format!("GIT_CONFIG_KEY_{n}"), "color.ui")
-                .env(format!("GIT_CONFIG_VALUE_{n}"), "always");
+                .env(format!("GIT_CONFIG_VALUE_{n}"), "always")
+                .env(format!("GIT_CONFIG_KEY_{}", n + 1), "core.hooksPath")
+                .env(
+                    format!("GIT_CONFIG_VALUE_{}", n + 1),
+                    crate::workspace::no_hooks_path(),
+                );
             c
         }
         Mode::Shell => {
@@ -587,6 +594,52 @@ mod tests {
             .output()
             .unwrap();
         assert!(!out.status.success(), "手元のリポジトリから取れてしまう");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_does_not_run_hooks() {
+        // フックの置き場所が作業ツリーの中でも、参加者の git commit でフックは動かない
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("r");
+        std::fs::create_dir_all(&repo).unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return; // git が無い
+        }
+        crate::workspace::tests::plant_marker_hooks(&repo, dir.path());
+        let out = build(
+            Mode::Git,
+            "git -c user.name=x commit --allow-empty -m x",
+            &repo,
+        );
+        // -c はサブコマンドの前なので断られる。名前とメールは環境変数で渡す
+        assert!(out.is_err());
+        let mut cmd = build(Mode::Git, "git commit --allow-empty -m x", &repo).unwrap();
+        let out = cmd
+            .env("GIT_AUTHOR_NAME", "x")
+            .env("GIT_AUTHOR_EMAIL", "x@x")
+            .env("GIT_COMMITTER_NAME", "x")
+            .env("GIT_COMMITTER_EMAIL", "x@x")
+            .as_std_mut()
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let marks: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("MARK-"))
+            .map(|e| e.file_name())
+            .collect();
+        assert!(marks.is_empty(), "フックが動きました: {marks:?}");
     }
 
     #[test]

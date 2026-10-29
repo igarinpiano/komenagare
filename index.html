@@ -437,7 +437,7 @@
     <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「⌨ ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
 
     <h4>ファイル形式</h4>
-    <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
+    <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。表計算ソフトで数式として動かないよう、<code>= + - @</code> などで始まるセルは先頭に <code>'</code> を付けて書き出します（コメナガレで読み込むと元に戻ります）。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
 
     <h4>ライセンス</h4>
     <p class="muted" style="margin:0">コメナガレ © 2026 Igarin。<a href="https://github.com/igarinpiano/komenagare" target="_blank" rel="noopener">Apache License 2.0</a> で公開しています（コードを使うときは LICENSE と NOTICE を一緒に配ってください）。動画の変換に <a href="https://github.com/Vanilagy/mediabunny" target="_blank" rel="noopener">Mediabunny</a>（MPL-2.0）を使っています。</p>
@@ -447,6 +447,7 @@
 
 <script src="js/vim-engine.js"></script>
 <script src="js/comment-store.js"></script>
+<script src="js/comment-csv.js"></script>
 <script src="js/comment-render.js"></script>
 <script src="js/export-core.js"></script>
 <script src="js/term-ansi.js"></script>

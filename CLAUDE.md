@@ -8,6 +8,7 @@
 - `css/komenagare.css` — スタイル
 - `js/vim-engine.js` — Vim エンジン（DOM 非依存。グローバル `createVimEngine`、Node からも `require` できる）
 - `js/comment-store.js` — コメントの保管と変更（DOM 非依存）。UUID v7、変更セット、3-way マージによる衝突の検出、打ち消し（元に戻す）
+- `js/comment-csv.js` — コメントの CSV の書き出しと読み取り（DOM 非依存）。表計算ソフトで数式にならないよう、先頭が `'*[=+\-@\t\r]` のセルに `'` を足し、コメナガレの CSV（見出しが `time,command,text,id`）を読むときに外す。`cli/src/files.rs` も同じ規則で読む（両方を同じに保つ）
 - `js/comment-render.js` — コメント描画の定数と描画処理（画面・書き出し・ワーカーで共通）
 - `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通
 - `js/export-worker.js` — 高速書き出し用 Web Worker
@@ -26,12 +27,16 @@
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `tunnel.rs` — `--tunnel`（cloudflared / tailscale / ngrok を子プロセスで起動し、出力から公開 URL を読む）と `--public-url`。公開 URL は共有・招待のリンクに使い、ページには `<meta>` の `data-public-url` で渡す
   - `firewall.rs` — macOS のファイアウォールの検出と許可（LAN で待ち受けたら自分の LAN のアドレスにつないでみて、切られたら許可するコマンドを y/N で実行する。socketfilterfw の出力の文言には頼らない）
-  - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）
-  - `update.rs` — `komenagare update`（GitHub のリリースから配布物を取って、チェックサムを確かめて実行ファイルを置き換える）と、起動時の新しい版のお知らせ。配布物の名前は `.github/package.sh` と合わせる
+  - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）。署名（`web.sums` と `web.sums.minisig`）が合い、手元の控えより新しいものだけを使う
+  - `sign.rs` — 署名（minisign）を確かめる。公開鍵は `cli/minisign.pub`（CLI に埋め込む）。リリースは `SHA256SUMS` に `komenagare-release tag:vX.Y.Z`、Web アプリは `web.sums` に `komenagare-web protocol:N time:T` の署名
+  - `update.rs` — `komenagare update`（GitHub のリリースから配布物を取って、署名した `SHA256SUMS` と照らし合わせて実行ファイルを置き換える）と、起動時の新しい版のお知らせ。配布物の名前は `.github/package.sh` と合わせる
 - `web.json` — CLI が取ってくる Web アプリのファイル一覧と、ホストとのやりとりの取り決めの版数（protocol）
 - `install.sh` — `curl … | sh` 用のインストーラー（Linux / macOS / Android / BSD など。OS と CPU から配布物を選ぶ。ターゲットを足したらここも合わせる）
 - `install.ps1` — `irm … | iex` 用のインストーラー（Windows。raw.githubusercontent.com から配る。UTF-8・BOM なしのまま保つ）
-- `.github/workflows/` — CI（Node と Rust のテスト）、リリース（`release.yml`）、全ターゲットのビルド（`build-matrix.yml`。ターゲットの一覧はここだけ）と、その確認（`build-check.yml`。依存やビルドの設定を変えた PR で走る）
+- `.github/workflows/` — CI（Node と Rust のテスト）、リリース（`release.yml`）、全ターゲットのビルド（`build-matrix.yml`。ターゲットの一覧はここだけ）と、その確認（`build-check.yml`。依存やビルドの設定を変えた PR で走る）、GitHub Pages への公開（`pages.yml`。Web アプリに署名してから公開する）。アクションは SHA で固定する
+- `.github/minisign.py` — 署名の鍵を作る・署名する・確かめる（minisign と同じ形式。cryptography が必要）。秘密鍵は environment「signing」の secret `MINISIGN_SECRET_KEY` にだけ置き、その environment は承認（Required reviewers）が要る設定にする
+- `Cross.toml` — cross のイメージを digest で固定する（調べ方は `.github/cross-digests.sh`）
+- `tests/fixtures/` — テストで使うファイル（中身のバイトをそのまま使うので `.gitattributes` で改行を変えさせない）。`tests/fixtures/sign/` はテスト専用の鍵で署名したもの（`make.sh` で作り直す。取り決めの版数を上げたら作り直す）
 - `.github/package.sh` — ビルドした実行ファイルを配布物（`komenagare-<target>.tar.gz` / `.zip` と `.sha256`）にまとめる。LICENSE・NOTICE・THIRD-PARTY-LICENSES.html・README.md も入れる
 - `LICENSE`（Apache-2.0。付録のひな形は原文のまま）・`NOTICE`（著作権と同梱物の表示）
 - `about.toml` / `about.hbs` — 配布物に入れる依存クレートのライセンス一覧（`cargo about generate` で THIRD-PARTY-LICENSES.html を作る。release と build-check で生成し、許可していないライセンスの依存が入ると止まる）
@@ -44,6 +49,9 @@
 - localStorage のキー（`komenagare.settings` など）は変えない（保存済みデータを引き継ぐため）。
 - コメントの追加・変更・削除は必ず `commitOps`（`js/app.js`）で変更セットとして行い、`state.comments` や各コメントを直接書き換えない（複数人編集で変更を送り合うため）。タイムラインのドラッグ中の一時的な見た目の変更だけは例外で、確定時に戻してから `commitOps` する。
 - コメントの id は UUID v7。ファイル（JSON / CSV）に保存し、読み込み時に引き継ぐ。
+- ほかの参加者から届くもの（presence・共有された衝突）は、使う前に `cleanPresence` / `cleanConflict`（`js/app.js`）で型を確かめて取り出す。項目を足したらそこにも足す。
+- ブラウザの id（client）はホストが `client_key`（ブラウザだけが知る秘密。localStorage の `komenagare.clientKey`）のハッシュから作る。自分のものかは snapshot の `client` と比べて見分ける（client_key は配らない）。
+- CLI から git を動かすときは、フックを動かさない（`core.hooksPath` を `workspace::no_hooks_path()` にする）。
 - 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
   ホストで衝突した自分の変更は `collab.conflicts` に控え、衝突の解決画面（`#conflictDlg`）で選ばせる。
   「あとで」にした衝突はホストに預け（`conflict_add`。ホストは `.komenagare/conflicts.json` に残す）、全員の `collab.shared` に出して誰でも解決できるようにする。
@@ -58,13 +66,14 @@
 - `css/`・`js/`・`lib/` にファイルを足したら `web.json` の files にも足す（`cargo test` が確かめる）。
 - WebSocket のやりとり（メッセージの形や意味）を変えるときは、取り決めの版数を上げる: `web.json` の protocol、`js/app.js` の `COLLAB_PROTOCOL`、`cli/src/server.rs` の `PROTOCOL` をそろえて上げ、CLI もリリースする。
   版数を変えない変更（画面の改善など）は Web 版（GitHub Pages）を更新するだけで、ホストしている CLI にも次の起動から届く。
+  Pages への公開は `pages.yml` が署名してから行う（署名のジョブは承認が要る）。署名の無い Web アプリは CLI が使わない。
 - UI の文言・コメントは日本語。
 - ソースファイル（`js/`・`css/`・`cli/` の .rs・`tests/`・`index.html`・インストーラー）の冒頭には `SPDX-FileCopyrightText: 2026 Igarin` と `SPDX-License-Identifier: Apache-2.0` の2行を置く。新しいファイルにも入れる。
 - ほかのプロジェクトのコードやライブラリを取り込んだら、`NOTICE` と README の「ライセンス」に追記する。
 
 ## テスト
 
-- `node --test 'tests/*.test.js'` — Vim エンジン・コメントストア・ターミナルの色のテスト
+- `node --test 'tests/*.test.js'` — Vim エンジン・コメントストア・CSV・ターミナルの色のテスト
 - `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）。CI は Windows でも動かし、install.ps1 と komenagare update を手元のミラーで確かめる
 - 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる（複数プロジェクト・複数タブ・`--otp` も）
 - 画面と書き出しは Chromium（Playwright）で、http 配信（`npx http-server -p 8124 -s -c-1 .`）と `file://` の両方で確かめる
@@ -75,5 +84,7 @@
 （Actions の画面、または GitHub API の workflow_dispatch）。ワークフローが同じ番号のタグ（`v0.1.2` など）を作り、
 `build-matrix.yml` の全ターゲット（macOS・Windows・Linux の各 CPU、Android、FreeBSD / NetBSD / illumos）向けにビルドしてリリースに載せる。
 1つでもビルドできなければ公開しない。ターゲットを足すときは build-check で先に確かめる。
+`SHA256SUMS` への署名（sign ジョブ）は environment「signing」の承認が要る。下書きで作ってファイルを全部載せてから公開し、公開済みのリリースは変えない（Immutable releases）。
+署名の鍵を作り直すときは `python3 .github/minisign.py keygen <秘密鍵> <公開鍵>` で作り、秘密鍵を secret に、公開鍵を `cli/minisign.pub` に置いて CLI をリリースする（古い CLI は新しい鍵の署名を信じないので、`komenagare update` では上がれなくなる。install.sh / install.ps1 で入れ直してもらう）。
 タグを自分で push しても同じように動く。途中で失敗したら、同じ main のまま手動実行し直せば続きから作る。
 利用者は `komenagare update` で更新する。

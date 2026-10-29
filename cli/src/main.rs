@@ -13,6 +13,7 @@ mod firewall;
 mod remote;
 mod render;
 mod server;
+mod sign;
 mod store;
 mod tunnel;
 mod update;
@@ -814,17 +815,6 @@ async fn prepare_web(args: &Args) -> (web::Source, String) {
     );
     if args.bundled_web {
         return bundled;
-    }
-    // --remote のときは、取ってきた Web アプリにホストでコマンドを打つ力を渡さない。
-    // GitHub Pages 側が差し替えられても、リリースを通った内蔵の Web アプリだけを使う
-    if args.remote.is_some() {
-        return (
-            web::Source::Bundled,
-            format!(
-                "内蔵（--remote のため。komenagare {}）",
-                env!("CARGO_PKG_VERSION")
-            ),
-        );
     }
     let Some(dir) = web::cache_dir() else {
         return bundled;
