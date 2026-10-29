@@ -43,6 +43,9 @@ fn agent(timeout: u64, base: &str) -> ureq::Agent {
         .timeout_global(Some(Duration::from_secs(timeout)))
         // https で始めたら、転送で http に落ちても取らない（http のミラー・テストはそのまま使える）
         .https_only(base.starts_with("https://"))
+        // 接続を使い回さない（取るのは 3 つだけ）。HTTP/1.0 で答えて接続を閉じるサーバー（ミラーや
+        // プロキシ）だと、閉じられた接続を使い回して「Peer disconnected」で失敗することがあるため
+        .max_idle_connections(0)
         .build()
         .into()
 }
@@ -378,5 +381,27 @@ mod tests {
             minisign_verify::PublicKey::decode(include_str!("../../tests/fixtures/sign/other.pub"))
                 .unwrap();
         assert!(check_sums(&other, &sums, &sig, "v9.9.9", a).is_err());
+    }
+
+    #[test]
+    fn agent_does_not_reuse_connections() {
+        // 1つの接続で1回だけ答え、接続は閉じずに置いておくサーバー（使い回すと答えが来ない）
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut keep = vec![];
+            for mut s in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                keep.push(s);
+            }
+        });
+        let base = format!("http://{addr}");
+        let a = agent(3, &base);
+        for _ in 0..3 {
+            assert_eq!(get(&a, &format!("{base}/x")).unwrap(), b"ok");
+        }
     }
 }

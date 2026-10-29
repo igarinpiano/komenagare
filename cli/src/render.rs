@@ -705,6 +705,7 @@ impl PrivateTempDir {
                 .map(|_| format!("{:02x}", r.random::<u8>()))
                 .collect();
             let path = base.join(format!("komenagare-{name}"));
+            #[allow(unused_mut)] // mut は Unix で 0700 を付けるときだけ使う
             let mut b = std::fs::DirBuilder::new();
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
