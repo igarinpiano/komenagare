@@ -196,6 +196,15 @@ const PRESENCE_MAX: usize = 16 * 1024;
 /// 変更履歴として覚えておく件数
 pub const HISTORY_KEEP: usize = 1000;
 
+/// 1つの変更セットに入れてよい op の数の上限
+const MAX_OPS_PER_CHANGE: usize = 10_000;
+
+/// 変更セットの id として受け取ってよいか（UUID v7 のほか、短い英数字も許す）。
+/// 控え（seen）・コミットのトレーラーに使うので、長さと文字を絞る
+fn change_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 /// 書き込み担当（ファイルと git は受け取った順に1件ずつ処理する）への依頼
 pub struct Job {
     pub comments: Store,
@@ -322,6 +331,20 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
         [
             (header::CONTENT_TYPE, mime.as_ref().to_string()),
             (header::CACHE_CONTROL, "no-cache".to_string()),
+            // 万一ページに差し込みができても、外のスクリプトを読み込んだり（--remote で
+            // ホストにコマンドを打たれる）、鍵を外に送られたりしないよう、読み込み先を絞る。
+            // スクリプトは同じ出どころのファイルだけ・インラインは style 属性だけ・外への通信は同じ出どころだけ。
+            // file:// で直接開くときはこのヘッダーが付かないので、ふだんの動きは変わらない
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'self'; script-src 'self'; worker-src 'self'; \
+                 style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+                 media-src 'self' blob:; connect-src 'self'; object-src 'none'; \
+                 base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+                    .to_string(),
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (header::REFERRER_POLICY, "no-referrer".to_string()),
         ],
         data,
     )
@@ -329,8 +352,9 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
 }
 
 /// 配信してよいファイルか（index.html と css/・js/・lib/ の直下だけ）。
-/// フォルダから配信するとき、\\ やドライブ名（C:）で作業フォルダの外を読まれないように、名前の文字も絞る
-fn web_path_ok(path: &str) -> bool {
+/// フォルダから配信するとき、\\ やドライブ名（C:）で作業フォルダの外を読まれないように、名前の文字も絞る。
+/// web.rs が取ってきた web.json のファイル名を控えに書くときにも、同じ規則で確かめる（外に書かせない）
+pub(crate) fn web_path_ok(path: &str) -> bool {
     if path == "index.html" {
         return true;
     }
@@ -925,6 +949,15 @@ async fn connection(
                     );
                     continue;
                 };
+                // 変更セットの id は控え（seen）やコミットのトレーラーに使うので、形と大きさを絞る。
+                // op の数も上限を付ける（1件の巨大な変更セットでホストを埋めないように）
+                if !change_id_ok(&change.id) || change.ops.len() > MAX_OPS_PER_CHANGE {
+                    let _ = out_tx.send(
+                        json!({ "type": "error", "message": "変更セットが正しくないか、大きすぎます" })
+                            .to_string(),
+                    );
+                    continue;
+                }
                 let reply = apply_change(&hub, conn, &name, &email, change).await;
                 let _ = out_tx.send(reply);
             }
@@ -1138,6 +1171,17 @@ mod tests {
             &h(Some("https://a.example.com"), "127.0.0.1:8764"),
             Some("https://a.example.com/")
         ));
+    }
+
+    #[test]
+    fn change_id_shape() {
+        assert!(change_id_ok("01932b3c-4d5e-7f00-8a1b-2c3d4e5f6071"));
+        assert!(change_id_ok("ch1"));
+        assert!(!change_id_ok(""));
+        assert!(!change_id_ok(&"a".repeat(65)));
+        assert!(!change_id_ok("a\nb"));
+        assert!(!change_id_ok("a b"));
+        assert!(!change_id_ok("../x"));
     }
 
     #[test]

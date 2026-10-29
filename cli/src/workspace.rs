@@ -267,7 +267,9 @@ impl Workspace {
         if !trailers.is_empty() {
             msg.push_str("\n\n");
             for (k, v) in trailers {
-                msg.push_str(&format!("{k}: {v}\n"));
+                // 値は参加者が決める（Change-Id は変更セットの id）ので、改行で勝手に
+                // 別の行（偽の Co-authored-by など）を足せないよう、clean で改行を落とす
+                msg.push_str(&format!("{}: {}\n", clean(k), clean(v)));
             }
         }
         let author = format!("{} <{}>", clean(author), clean(email));
@@ -507,5 +509,39 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn trailer_value_cannot_inject_extra_lines() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(tmp.path(), GitMode::Require).unwrap();
+        // 変更セットの id に改行と偽のトレーラーを仕込んでも、別の行にはならない
+        ws.save(
+            &Store::new(vec![]),
+            "だれか: 追加 1",
+            "だれか",
+            "c1@komenagare",
+            &[("Change-Id", "ch1\nCo-authored-by: 偽物 <evil@example.com>")],
+        )
+        .unwrap();
+        // 改行が落ちるので、偽の行が独立した行にならない（Change-Id の値の一部になるだけ）
+        let body = git_out(tmp.path(), &["log", "-1", "--format=%B"]).unwrap();
+        assert!(
+            !body.lines().any(|l| l.starts_with("Co-authored-by")),
+            "{body}"
+        );
+        let co = git_out(
+            tmp.path(),
+            &[
+                "log",
+                "-1",
+                "--format=%(trailers:key=Co-authored-by,valueonly)",
+            ],
+        )
+        .unwrap();
+        assert!(co.trim().is_empty(), "{co}");
     }
 }

@@ -70,7 +70,9 @@ pub fn cached_usable(dir: &Path) -> bool {
     let Ok(m) = serde_json::from_str::<Manifest>(&text) else {
         return false;
     };
-    m.protocol == PROTOCOL && m.files.iter().all(|f| dir.join(f).is_file())
+    m.protocol == PROTOCOL
+        && m.files.iter().all(|f| crate::server::web_path_ok(f))
+        && m.files.iter().all(|f| dir.join(f).is_file())
 }
 
 /// 最新の Web アプリを取ってきて控えを新しくする（変わっていないファイルは ETag で取り直さない）
@@ -82,6 +84,8 @@ pub fn update(base_url: &str, dir: &Path) -> Result<Outcome> {
     };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
+        // https で始めたら、転送で http に落ちても取らない（http のミラーを指定したときはそのまま使える）
+        .https_only(base.starts_with("https://"))
         .build()
         .into();
     let manifest_bytes =
@@ -92,7 +96,8 @@ pub fn update(base_url: &str, dir: &Path) -> Result<Outcome> {
         return Ok(Outcome::Incompatible(manifest.protocol));
     }
     for f in &manifest.files {
-        if f.starts_with('/') || f.split('/').any(|p| p == ".." || p.is_empty()) {
+        // 控えに書いてよい名前だけ（server.rs と同じ規則。\ やドライブ名で控えの外に書かせない）
+        if !crate::server::web_path_ok(f) {
             bail!("web.json のファイル名が正しくありません: {f}");
         }
     }
@@ -180,6 +185,32 @@ fn get_with_etag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_usable_rejects_unsafe_names() {
+        // 控えの web.json に控えの外を指す名前（\ やドライブ名）があれば使わない（server.rs と同じ規則）
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let write = |files: &str| {
+            std::fs::write(
+                dir.join("web.json"),
+                format!("{{\"protocol\":{PROTOCOL},\"files\":[{files}]}}"),
+            )
+            .unwrap();
+        };
+        write("\"..\\\\..\\\\evil\"");
+        assert!(!cached_usable(dir));
+        write("\"C:\\\\evil\"");
+        assert!(!cached_usable(dir));
+        write("\"js/../../evil\"");
+        assert!(!cached_usable(dir));
+        // 正しい名前（ファイルがそろっていれば使える）
+        std::fs::create_dir_all(dir.join("js")).unwrap();
+        std::fs::write(dir.join("index.html"), "x").unwrap();
+        std::fs::write(dir.join("js/app.js"), "x").unwrap();
+        write("\"index.html\",\"js/app.js\"");
+        assert!(cached_usable(dir));
+    }
 
     #[test]
     fn web_json_matches_protocol_and_bundle() {
