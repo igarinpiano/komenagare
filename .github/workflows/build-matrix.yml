@@ -5,7 +5,8 @@
 # - Linux・Android・BSD などは cross（cross-rs）でビルドする。イメージに各ターゲットの C のツール
 #   （ring が使う）と古い glibc が入っている。`cross: true` はリリース版の cross（古い glibc で
 #   リンクする）、`cross: git` は main の cross（リリース版でビルドできないターゲットだけに使う。
-#   イメージの glibc が新しいので、ほかには使わない）。
+#   イメージの glibc が新しいので、ほかには使わない）。どちらも版（コミット）を固定し、イメージは
+#   リポジトリ直下の Cross.toml で digest に固定する。
 # - x86_64 / aarch64 の Linux（gnu）は glibc 2.28（RHEL 8 / Debian 10）でも動くことを確かめる。
 # - どれか1つでも失敗したら止まり、何も公開しない。最後の complete で全部そろったかを確かめる。
 #   出さないターゲットは、表から消す。
@@ -83,17 +84,24 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update --target "$RUST_TARGETS"
           rustup default stable
+      # リリースのビルドはキャッシュを使わない（ほかの実行が書いたキャッシュを配布物に混ぜない）。
+      # 呼び出し元が release.yml なら github.workflow は Release。手動の build-check で別のコミット（ref）を
+      # ビルドしたときは、キャッシュを書かない（main のキャッシュに混ぜない）
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: github.workflow != 'Release'
         with:
           key: ${{ matrix.target }}
+          cache-bin: false
+          save-if: ${{ inputs.ref == '' }}
       - name: cross を入れる（リリース版）
         if: matrix.cross == true
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
-          tool: cross
+          tool: cross@0.2.5
+      # main の cross は決まったコミットに固定する（イメージは Cross.toml で digest に固定）
       - name: cross を入れる（git）
         if: matrix.cross == 'git'
-        run: cargo install cross --git https://github.com/cross-rs/cross --locked --force
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev 5f05d13dc37c0db79f4448642c68e108b977a9e1 --locked --force
       - name: ビルド（そのまま）
         if: ${{ !matrix.cross && !matrix.universal }}
         run: |

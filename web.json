@@ -1,10 +1,11 @@
 {
-  "protocol": 5,
+  "protocol": 6,
   "files": [
     "index.html",
     "css/komenagare.css",
     "js/vim-engine.js",
     "js/comment-store.js",
+    "js/comment-csv.js",
     "js/comment-render.js",
     "js/export-core.js",
     "js/export-worker.js",

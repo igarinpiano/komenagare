@@ -1,0 +1,3 @@
+# テストのファイルは中身のバイトをそのまま使う（署名やハッシュ・CSV の改行を確かめるため）。
+# Windows の checkout（core.autocrlf）で改行を変えさせない
+tests/fixtures/** -text

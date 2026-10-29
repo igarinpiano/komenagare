@@ -53,6 +53,9 @@ fn read_csv(text: &str) -> Result<Vec<Item>> {
     let mut out = vec![];
     let (mut ti, mut ci, mut xi, mut ii) = (0, 1, 2, None);
     let mut start = 0;
+    // コメナガレが書き出した CSV なら、数式にならないよう足した「'」を外す（js/comment-csv.js と同じ）
+    let ours = rows.first().is_some_and(|h| is_komenagare_header(h));
+    let un = |s: String| if ours { csv_unguard(s) } else { s };
     if let Some(head) = rows.first() {
         if parse_time(&head[0]).is_none() {
             let find = |names: &[&str]| {
@@ -72,12 +75,38 @@ fn read_csv(text: &str) -> Result<Vec<Item>> {
         };
         out.push(Item {
             t,
-            cmd: r.get(ci).cloned().unwrap_or_default(),
-            text: r.get(xi).cloned().unwrap_or_default(),
-            id: ii.and_then(|i| r.get(i).cloned()),
+            cmd: un(r.get(ci).cloned().unwrap_or_default()),
+            text: un(r.get(xi).cloned().unwrap_or_default()),
+            id: ii.and_then(|i| r.get(i).cloned()).map(un),
         });
     }
     Ok(out)
+}
+
+/// コメナガレが書き出す CSV の見出し
+const CSV_HEADER: &str = "time,command,text,id";
+
+fn is_komenagare_header(row: &[String]) -> bool {
+    row.iter()
+        .map(|h| h.trim().to_lowercase())
+        .collect::<Vec<_>>()
+        .join(",")
+        == CSV_HEADER
+}
+
+/// 表計算ソフトが数式の始まりとみなす文字（= + - @ タブ CR）
+fn is_formula_start(c: char) -> bool {
+    matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r')
+}
+
+/// 書き出すときに足した「'」を1つ外す（先頭が「'」の並び＋数式の始まりの文字のときだけ）
+pub fn csv_unguard(s: String) -> String {
+    let rest = s.trim_start_matches('\'');
+    if rest.len() < s.len() && rest.chars().next().is_some_and(is_formula_start) {
+        s[1..].to_string()
+    } else {
+        s
+    }
 }
 
 fn parse_csv(text: &str) -> Vec<Vec<String>> {
@@ -172,5 +201,47 @@ mod tests {
             ),
             (62.5, "shita", "え,\"お\"\nか", Some("y"))
         );
+    }
+
+    #[test]
+    fn reads_guarded_csv_like_the_web_app() {
+        // Web アプリ（js/comment-csv.js）が書き出した CSV を読むと、元の値に戻る（tests/fixtures を共有）
+        let fix = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(fix.join("csv-cases.json")).unwrap())
+                .unwrap();
+        let got = read(&fix.join("csv-guarded.csv")).unwrap();
+        assert_eq!(got.len(), cases.len());
+        for (g, c) in got.iter().zip(&cases) {
+            assert_eq!(g.cmd, c["cmd"].as_str().unwrap(), "{c}");
+            assert_eq!(g.text, c["text"].as_str().unwrap(), "{c}");
+            assert_eq!(g.id.as_deref(), c["id"].as_str(), "{c}");
+            assert!((g.t - c["t"].as_f64().unwrap()).abs() < 0.006, "{c}");
+        }
+    }
+
+    #[test]
+    fn unguard_only_removes_the_added_quote() {
+        let u = |s: &str| csv_unguard(s.to_string());
+        assert_eq!(u("'@5"), "@5");
+        assert_eq!(u("'=1"), "=1");
+        assert_eq!(u("''=1"), "'=1");
+        assert_eq!(u("'\t=1"), "\t=1");
+        for s in ["", "'", "''", "'abc", "abc", "@5", "'1", "'あ"] {
+            assert_eq!(u(s), s);
+        }
+    }
+
+    #[test]
+    fn other_csv_is_read_as_written() {
+        // 見出しがコメナガレのものでなければ「'」を外さない（ほかのツールの CSV）
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("b.csv");
+        std::fs::write(&csv, "time,cmd,comment\n1.0,'@5,'=1\n").unwrap();
+        let c = read(&csv).unwrap();
+        assert_eq!((c[0].cmd.as_str(), c[0].text.as_str()), ("'@5", "'=1"));
+        // 見出しの無い CSV も同じ
+        std::fs::write(&csv, "1.0,'@5,'=1\n").unwrap();
+        assert_eq!(read(&csv).unwrap()[0].cmd, "'@5");
     }
 }

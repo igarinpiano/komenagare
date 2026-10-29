@@ -614,15 +614,14 @@ pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
                 .unwrap_or_else(|| font_scale(&opt.font_serif)),
         },
     );
-    let dir = std::env::temp_dir().join(format!("komenagare-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let ass_path = dir.join("comments.ass");
-    std::fs::write(&ass_path, ass)?;
-    let ass_arg = ass_path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .replace(':', "\\:")
-        .replace('\'', "\\'");
+    // 字幕は自分だけが使える一時フォルダに書く（名前はランダム。終わったら消す）
+    let tmp = PrivateTempDir::new()?;
+    write_new_file(&tmp.path.join("comments.ass"), ass.as_bytes())?;
+    // ffmpeg は一時フォルダの中で動かし、字幕は ass=comments.ass で渡す（パスの特殊な文字を
+    // フィルターの書き方に合わせて逃がさなくてよいように）。入出力のパスは先に絶対パスにする
+    let cwd = std::env::current_dir()?;
+    let video = cwd.join(&opt.video);
+    let output = cwd.join(&opt.output);
 
     let ext = opt
         .output
@@ -638,13 +637,14 @@ pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
     if let Some(end) = opt.end {
         cmd.args(["-to", &format!("{end:.3}")]);
     }
-    cmd.arg("-i").arg(&opt.video);
+    cmd.current_dir(&tmp.path);
+    cmd.arg("-i").arg(&video);
     // 画素が正方形でない動画は、先に見た目の大きさにしてから収める
     let mut vf = format!("scale='trunc(iw*sar/2)*2':ih,setsar=1,scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1");
     if let Some(fps) = opt.fps {
         let _ = write!(vf, ",fps={fps}");
     }
-    let _ = write!(vf, ",ass='{ass_arg}'");
+    vf.push_str(",ass=comments.ass");
     cmd.args(["-vf", &vf, "-map", "0:v:0", "-map", "0:a:0?"]);
     if ext == "webm" {
         cmd.args([
@@ -680,13 +680,61 @@ pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
             cmd.args(["-movflags", "+faststart"]);
         }
     }
-    cmd.arg(&opt.output);
+    cmd.arg(&output);
     let status = cmd.status().context("ffmpeg を実行できません")?;
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(tmp);
     if !status.success() {
         bail!("ffmpeg が失敗しました（終了コード {:?}）", status.code());
     }
     Ok(())
+}
+
+/// 自分だけが使える一時フォルダ。名前はランダムで、既にあるもの（ほかのユーザーが先に作ったもの・
+/// シンボリックリンク）は使わない。Unix では 0700 で作る。消すのは Drop（途中で失敗しても消える）
+struct PrivateTempDir {
+    path: PathBuf,
+}
+
+impl PrivateTempDir {
+    fn new() -> Result<PrivateTempDir> {
+        use rand::Rng;
+        let base = std::env::temp_dir();
+        for _ in 0..16 {
+            let mut r = rand::rng();
+            let name: String = (0..16)
+                .map(|_| format!("{:02x}", r.random::<u8>()))
+                .collect();
+            let path = base.join(format!("komenagare-{name}"));
+            #[allow(unused_mut)] // mut は Unix で 0700 を付けるときだけ使う
+            let mut b = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            match b.create(&path) {
+                Ok(()) => return Ok(PrivateTempDir { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("{} を作れません", path.display()))
+                }
+            }
+        }
+        bail!("一時フォルダを作れません（{}）", base.display())
+    }
+}
+
+impl Drop for PrivateTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// 新しいファイルとして書く（既にあるもの・シンボリックリンクには書かない）
+fn write_new_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    f.write_all(data)
 }
 
 /// libass は \fs を「フォントの em」ではなく「usWinAscent + usWinDescent の高さ」として描く
@@ -862,6 +910,34 @@ mod tests {
         assert!(
             events[1].contains("0:00:04.00,0:00:06.00") && events[1].contains("\\an5\\pos(960.0,")
         );
+    }
+
+    #[test]
+    fn private_temp_dir_is_random_and_removed() {
+        let a = PrivateTempDir::new().unwrap();
+        let b = PrivateTempDir::new().unwrap();
+        // 名前はランダム（プロセス番号などから予測できない）
+        assert_ne!(a.path, b.path);
+        let name = a.path.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("komenagare-") && name.len() == "komenagare-".len() + 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a.path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o700,
+                "自分だけが使えるフォルダになっていません"
+            );
+        }
+        // 既にあるファイル（先に置かれたシンボリックリンクなど）には書かない
+        let f = a.path.join("comments.ass");
+        write_new_file(&f, b"x").unwrap();
+        assert!(write_new_file(&f, b"y").is_err());
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        let path = a.path.clone();
+        drop(a);
+        assert!(!path.exists(), "終わっても消えていません");
     }
 
     #[test]

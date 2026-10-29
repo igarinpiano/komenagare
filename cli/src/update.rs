@@ -43,6 +43,9 @@ fn agent(timeout: u64, base: &str) -> ureq::Agent {
         .timeout_global(Some(Duration::from_secs(timeout)))
         // https で始めたら、転送で http に落ちても取らない（http のミラー・テストはそのまま使える）
         .https_only(base.starts_with("https://"))
+        // 接続を使い回さない（取るのは 3 つだけ）。HTTP/1.0 で答えて接続を閉じるサーバー（ミラーや
+        // プロキシ）だと、閉じられた接続を使い回して「Peer disconnected」で失敗することがあるため
+        .max_idle_connections(0)
         .build()
         .into()
 }
@@ -129,32 +132,61 @@ pub fn run(version: Option<&str>, check_only: bool) -> Result<()> {
     Ok(())
 }
 
-/// 配布物を取ってきて、.sha256 と照らし合わせる
+/// 配布物を取ってきて、署名した SHA256SUMS と照らし合わせる
 fn download(base: &str, tag: &str, asset: &str) -> Result<Vec<u8>> {
+    let key = crate::sign::trusted_key()?;
     let agent = agent(300, base);
-    let url = format!("{base}/download/{tag}/{asset}");
-    let body = get(&agent, &url).map_err(|e| {
+    let dir = format!("{base}/download/{tag}");
+    let not_found = |e: anyhow::Error, what: &str| {
         if matches!(
             e.downcast_ref::<ureq::Error>(),
             Some(ureq::Error::StatusCode(404))
         ) {
-            e.context(format!(
-                "{tag} にはこの種類（{TARGET}）の配布物がありません。install.sh / install.ps1 で入れ直してください"
-            ))
+            e.context(what.to_string())
         } else {
             e
         }
+    };
+    // 先に署名を確かめる（リリースのファイルが差し替えられても、署名の無いものは入れない）
+    let unsigned = format!(
+        "{tag} には署名（SHA256SUMS.minisig）がありません。署名の無い版は komenagare update では入れられません（install.sh / install.ps1 で入れてください）"
+    );
+    let sums = get(&agent, &format!("{dir}/SHA256SUMS")).map_err(|e| not_found(e, &unsigned))?;
+    let sig =
+        get(&agent, &format!("{dir}/SHA256SUMS.minisig")).map_err(|e| not_found(e, &unsigned))?;
+    let expected = check_sums(&key, &sums, &sig, tag, asset)?;
+    let url = format!("{dir}/{asset}");
+    let body = get(&agent, &url).map_err(|e| {
+        not_found(
+            e,
+            &format!("{tag} にはこの種類（{TARGET}）の配布物がありません。install.sh / install.ps1 で入れ直してください"),
+        )
     })?;
-    let sums = get(&agent, &format!("{url}.sha256"))?;
-    let expected = String::from_utf8_lossy(&sums)
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
     if expected != sha256_hex(&body) {
-        bail!("ダウンロードしたファイルが壊れています（チェックサムが一致しません）: {url}");
+        bail!(
+            "ダウンロードしたファイルが署名した内容と違います（チェックサムが一致しません）: {url}"
+        );
     }
     Ok(body)
+}
+
+/// SHA256SUMS の署名（その版のものか）を確かめ、asset の SHA-256 を返す
+fn check_sums(
+    key: &minisign_verify::PublicKey,
+    sums: &[u8],
+    sig: &[u8],
+    tag: &str,
+    asset: &str,
+) -> Result<String> {
+    let comment = crate::sign::verify(key, sums, &String::from_utf8_lossy(sig))
+        .with_context(|| format!("{tag} の署名を確かめられません"))?;
+    // 別の版の署名（古い版の SHA256SUMS など）を混ぜられないよう、版も確かめる
+    if comment != format!("komenagare-release tag:{tag}") {
+        bail!("署名が {tag} のものではありません（{comment}）");
+    }
+    crate::sign::parse_sums(&String::from_utf8_lossy(sums))
+        .remove(asset)
+        .with_context(|| format!("{tag} の SHA256SUMS に {asset} がありません"))
 }
 
 fn get(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
@@ -323,5 +355,53 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn checks_signed_sums() {
+        let key = crate::sign::tests::test_key();
+        let sums = crate::sign::tests::fixture("SHA256SUMS");
+        let sig = crate::sign::tests::fixture("SHA256SUMS.minisig");
+        let a = "komenagare-x86_64-unknown-linux-gnu.tar.gz";
+        // 署名が合えば、その配布物の SHA-256（中身は "a"）
+        assert_eq!(
+            check_sums(&key, &sums, &sig, "v9.9.9", a).unwrap(),
+            sha256_hex(b"a")
+        );
+        // 別の版として渡された（古い版の SHA256SUMS を混ぜる）ら使わない
+        assert!(check_sums(&key, &sums, &sig, "v9.9.8", a).is_err());
+        // 一覧に無い配布物
+        assert!(check_sums(&key, &sums, &sig, "v9.9.9", "komenagare-x.zip").is_err());
+        // 一覧を書き換えたら署名が合わない
+        let mut bad = sums.clone();
+        bad[0] = if bad[0] == b'0' { b'1' } else { b'0' };
+        assert!(check_sums(&key, &bad, &sig, "v9.9.9", a).is_err());
+        // 別の鍵の署名
+        let other =
+            minisign_verify::PublicKey::decode(include_str!("../../tests/fixtures/sign/other.pub"))
+                .unwrap();
+        assert!(check_sums(&other, &sums, &sig, "v9.9.9", a).is_err());
+    }
+
+    #[test]
+    fn agent_does_not_reuse_connections() {
+        // 1つの接続で1回だけ答え、接続は閉じずに置いておくサーバー（使い回すと答えが来ない）
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut keep = vec![];
+            for mut s in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                keep.push(s);
+            }
+        });
+        let base = format!("http://{addr}");
+        let a = agent(3, &base);
+        for _ in 0..3 {
+            assert_eq!(get(&a, &format!("{base}/x")).unwrap(), b"ok");
+        }
     }
 }

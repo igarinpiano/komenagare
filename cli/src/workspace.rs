@@ -49,7 +49,8 @@ pub struct LogEntry {
 impl Workspace {
     /// 作業フォルダか（komenagare init で作ったか）
     pub fn is_workspace(dir: &Path) -> bool {
-        dir.join(META_DIR).join("id").is_file()
+        // シンボリックリンクもたどらずに「ある」とみなす（open で読むときに断る）
+        std::fs::symlink_metadata(dir.join(META_DIR).join("id")).is_ok()
     }
 
     /// 作業フォルダを作る（komenagare init）。git が使えれば git の管理下にして、最初のコミットをする
@@ -66,11 +67,13 @@ impl Workspace {
             );
         }
         std::fs::create_dir_all(dir.join(META_DIR))?;
+        // .komenagare がシンボリックリンクなら作業フォルダの外に書いてしまうので断る（meta_dir）
+        let meta = meta_dir(&dir)?;
         let comments = dir.join(COMMENTS_FILE);
         if !comments.exists() {
             std::fs::write(&comments, "")?;
         }
-        std::fs::write(dir.join(META_DIR).join("id"), crate::store::uuid_v7())?;
+        write_new(&meta.join("id"), crate::store::uuid_v7().as_bytes())?;
 
         // （まだ git の管理下にないこともあるので、--require-git でも止めずに開く）
         let mut ws = Self::open(
@@ -134,9 +137,7 @@ impl Workspace {
             );
         }
         let dir = dir.canonicalize()?;
-        let id = std::fs::read_to_string(dir.join(META_DIR).join("id"))?
-            .trim()
-            .to_string();
+        let id = read_id(&dir)?;
         let comments = dir.join(COMMENTS_FILE);
         if !comments.exists() {
             std::fs::write(&comments, "")?;
@@ -288,6 +289,10 @@ impl Workspace {
     fn run_git(&self, args: &[&str]) -> Result<()> {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.dir);
+        // フックは動かさない（--no-verify では post-commit などは止まらない。フックの置き場所が作業ツリーの
+        // 中（husky など）だと、--remote git の参加者が checkout で置いたフックが自動のコミットで動いてしまう）
+        cmd.arg("-c")
+            .arg(format!("core.hooksPath={}", no_hooks_path().display()));
         if self.git_identity {
             cmd.args([
                 "-c",
@@ -343,6 +348,41 @@ fn read_meta(dir: &Path, file: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// .komenagare/id（プロジェクトの id。参加者に配る）を読む。シンボリックリンクはたどらない
+/// （--remote git の checkout などで作業フォルダの外のファイルへのリンクにされても、その中身を配らない）。
+/// UUID の形でなければ使わない
+fn read_id(dir: &Path) -> Result<String> {
+    use std::io::Read;
+    let path = meta_dir(dir)?.join("id");
+    if is_symlink(&path) {
+        bail!(
+            "{} がシンボリックリンクになっています（作業フォルダの外のファイルは読みません）",
+            path.display()
+        );
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut text = String::new();
+    o.open(&path)
+        .with_context(|| format!("{} を読めません", path.display()))?
+        .take(128)
+        .read_to_string(&mut text)
+        .with_context(|| format!("{} を読めません", path.display()))?;
+    let id = text.trim();
+    if !crate::is_uuid(id) {
+        bail!(
+            "{} の中身が正しくありません（UUID ではありません）",
+            path.display()
+        );
+    }
+    Ok(id.to_string())
+}
+
 /// .komenagare のファイルに書き足す（シンボリックリンクならたどらずに断る）
 pub fn append_meta(dir: &Path, file: &str, text: &str) -> Result<()> {
     use std::io::Write;
@@ -384,6 +424,17 @@ fn clean(s: &str) -> String {
 }
 
 /// git の user.email が未設定か（未設定ならコミットのときに補う）
+/// git のフックを動かさないための core.hooksPath（フックが1つも無い場所）。
+/// Unix は /dev/null（下にファイルを作れないので、ほかのユーザーが先回りしてフックを置くこともできない）。
+/// Windows はユーザーごとの一時フォルダの中の、作らない名前（作業ツリーの外なので、git からは書けない）
+pub fn no_hooks_path() -> PathBuf {
+    if cfg!(unix) {
+        PathBuf::from("/dev/null")
+    } else {
+        std::env::temp_dir().join("komenagare-no-hooks")
+    }
+}
+
 fn needs_identity(dir: &Path) -> bool {
     git_out(dir, &["config", "user.email"])
         .map(|s| s.trim().is_empty())
@@ -407,7 +458,7 @@ fn git_out(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::{Fields, Op};
 
@@ -451,6 +502,28 @@ mod tests {
         assert!(append_meta(&ws.dir, "commands.log", "x\n").is_err());
         assert!(!outside.join("commands.log").exists());
         assert!(ws.save(&Store::new(vec![]), "m", "a", "b", &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_read_id_through_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(&tmp.path().join("w"), GitMode::Off).unwrap();
+        assert!(crate::is_uuid(&ws.id));
+        // id が作業フォルダの外のファイルへのリンクにされた
+        let secret = tmp.path().join("secret");
+        std::fs::write(&secret, "ひみつ").unwrap();
+        let id = ws.dir.join(META_DIR).join("id");
+        std::fs::remove_file(&id).unwrap();
+        std::os::unix::fs::symlink(&secret, &id).unwrap();
+        let e = Workspace::open(&ws.dir, GitMode::Off).err().unwrap();
+        assert!(e.to_string().contains("シンボリックリンク"), "{e}");
+        // UUID でない中身も使わない
+        std::fs::remove_file(&id).unwrap();
+        std::fs::write(&id, "ひみつ\n").unwrap();
+        assert!(Workspace::open(&ws.dir, GitMode::Off).is_err());
+        std::fs::write(&id, format!("{}\n", ws.id)).unwrap();
+        assert_eq!(Workspace::open(&ws.dir, GitMode::Off).unwrap().id, ws.id);
     }
 
     #[test]
@@ -509,6 +582,52 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    /// フックの置き場所を作業ツリーの中にし（husky など）、動いたら印のファイルを作るフックを置く
+    #[cfg(unix)]
+    pub(crate) fn plant_marker_hooks(repo: &Path, marker_dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let hooks = repo.join(".hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        for h in [
+            "pre-commit",
+            "prepare-commit-msg",
+            "commit-msg",
+            "post-commit",
+        ] {
+            let p = hooks.join(h);
+            let mark = marker_dir.join(format!("MARK-{h}"));
+            std::fs::write(&p, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ok = Command::new("git")
+            .args(["config", "core.hooksPath", ".hooks"])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_commit_does_not_run_hooks() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(&tmp.path().join("w"), GitMode::Require).unwrap();
+        plant_marker_hooks(&ws.dir, tmp.path());
+        ws.save(&Store::new(vec![]), "m", "a", "b@komenagare", &[])
+            .unwrap();
+        let marks: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("MARK-"))
+            .map(|e| e.file_name())
+            .collect();
+        assert!(marks.is_empty(), "フックが動きました: {marks:?}");
     }
 
     #[test]

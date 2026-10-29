@@ -21,7 +21,8 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":5,"name":"表示名","client":"ブラウザごとの id","session":"…"(--otp のとき)}
+//!   {"type":"hello","protocol":6,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき)}
+//!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
@@ -30,8 +31,8 @@
 //!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
 //!   {"type":"run_stop","id":"…"}                             動いているコマンドを止める
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","comments":[...],"remote":"git"|"shell"|null}
-//!                                                            接続直後の全体（name はホストが使う名前。remote はコマンドを打てるときの種類）
+//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
+//!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
 //!   {"type":"conflicts","list":[{"key",..,"author","client"}]} 保留中の衝突（変わるたびに全体）
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
@@ -58,13 +59,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -108,6 +109,8 @@ pub struct Server {
     /// 外から入るときの URL（--tunnel / --public-url。招待のリンクに使う）
     public_url: std::sync::RwLock<Option<String>>,
     next_conn: AtomicU64,
+    /// まだ hello（ログイン）を済ませていない接続の数
+    pending: AtomicUsize,
     /// 終了するときに接続を閉じる合図
     pub shutdown: tokio::sync::watch::Sender<bool>,
     /// 取り消したセッション（つながっている接続を切る）
@@ -136,6 +139,7 @@ impl Server {
             web_dir,
             public_url: std::sync::RwLock::new(None),
             next_conn: AtomicU64::new(1),
+            pending: AtomicUsize::new(0),
             shutdown: tokio::sync::watch::channel(false).0,
             revoked: broadcast::channel(64).0,
             login_fails: std::sync::Mutex::new(VecDeque::new()),
@@ -196,13 +200,78 @@ const PRESENCE_MAX: usize = 16 * 1024;
 /// 変更履歴として覚えておく件数
 pub const HISTORY_KEEP: usize = 1000;
 
-/// 1つの変更セットに入れてよい op の数の上限
+/// 1つの変更セットに入れてよい op の数の上限（ブラウザは大きな変更を 2000 op ずつに分けて送る）
 const MAX_OPS_PER_CHANGE: usize = 10_000;
+/// コメントの本文・コマンドの大きさの上限（バイト。ブラウザは本文を 10 万文字・コマンドを 1000 文字までにする）
+const TEXT_MAX: usize = 400_000;
+const CMD_MAX: usize = 4_000;
+/// WebSocket の1通の大きさの上限（ブラウザは変更セットを 2MB ほどに分けて送る）
+const MESSAGE_MAX: usize = 16 << 20;
+/// hello（ログイン）より前に受け取る1通の大きさの上限。超えたら切る
+const HELLO_MAX: usize = 64 * 1024;
+/// つないでから hello が届くまで待つ時間（ブラウザはつながった直後に送る。ホストを始めてからの時間ではない）
+const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
+/// hello を済ませていない接続をいくつまで受け付けるか（ログインせずに接続を開き続けてホストを埋めないように）
+const PENDING_MAX: usize = 32;
+
+/// 変更セットとして受け取ってよいか（id の形、op の数、コメントの id・本文・コマンドの大きさ）
+fn change_ok(change: &Change) -> bool {
+    let fields_ok = |f: &crate::store::Fields| {
+        f.text.as_ref().is_none_or(|t| t.len() <= TEXT_MAX)
+            && f.cmd.as_ref().is_none_or(|c| c.len() <= CMD_MAX)
+    };
+    change_id_ok(&change.id)
+        && change.ops.len() <= MAX_OPS_PER_CHANGE
+        && change.ops.iter().all(|op| {
+            op.id().len() <= 64
+                && match op {
+                    crate::store::Op::Add { after, .. } => fields_ok(after),
+                    crate::store::Op::Update { before, after, .. } => {
+                        fields_ok(before) && fields_ok(after)
+                    }
+                    crate::store::Op::Delete { before, .. } => fields_ok(before),
+                }
+        })
+}
+
+/// hello を済ませていない接続を数える（hello が済むか、接続が終わると減る）
+struct Pending(Arc<Server>);
+
+impl Pending {
+    fn new(server: &Arc<Server>) -> Pending {
+        server.pending.fetch_add(1, Ordering::Relaxed);
+        Pending(server.clone())
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// 変更セットの id として受け取ってよいか（UUID v7 のほか、短い英数字も許す）。
 /// 控え（seen）・コミットのトレーラーに使うので、長さと文字を絞る
 fn change_id_ok(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// ブラウザごとの id（ほかの人に配る）。ブラウザが持つ秘密（client_key。16進 64 文字）のハッシュで、
+/// 秘密を知らなければ同じ id にはできない。秘密が無い・形が違うときは、この接続だけの id にする
+fn client_id(key: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    match key.filter(|k| k.len() == 64 && k.bytes().all(|b| b.is_ascii_hexdigit())) {
+        Some(k) => {
+            let d = Sha256::digest(format!("komenagare-client:{}", k.to_ascii_lowercase()));
+            hex(&d[..16])
+        }
+        None => {
+            use rand::Rng;
+            let mut r = rand::rng();
+            hex(&(0..16).map(|_| r.random::<u8>()).collect::<Vec<u8>>())
+        }
+    }
 }
 
 /// 書き込み担当（ファイルと git は受け取った順に1件ずつ処理する）への依頼
@@ -400,6 +469,48 @@ fn same_origin(headers: &HeaderMap, public_url: Option<&str>) -> bool {
         || public_url.and_then(authority).as_deref() == Some(origin.as_str())
 }
 
+const HOST_NOT_ALLOWED: &str = "合言葉なし（--no-token）のときは、IP アドレスか localhost・このパソコンの名前で開いてください（ほかの名前で使うときは --public-url を付けてください）";
+
+/// 合言葉なし（--no-token）のときに、つないできた先の名前（Host）がこのパソコンを指す名前か。
+/// DNS リバインディング（悪意のあるサイトが自分のドメインの行き先をこのパソコンや LAN のアドレスに
+/// 切り替える）では、ページの Origin と Host がどちらもそのドメインになり、same_origin を通ってしまう。
+/// そのドメインはインターネットの名前（example.com など）なので、手元でしか使わない名前だけを通す:
+/// IP アドレス・localhost・ドットの無い名前（mypc）・.local / .lan / .home.arpa / .internal、公開 URL の名前
+fn local_host(headers: &HeaderMap, public_url: Option<&str>) -> bool {
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let name = host_name(host);
+    if name.is_empty() {
+        return false;
+    }
+    if public_url
+        .and_then(|u| u.split_once("://"))
+        .is_some_and(|(_, r)| host_name(r.split('/').next().unwrap_or("")) == name)
+    {
+        return true;
+    }
+    name.parse::<std::net::IpAddr>().is_ok()
+        || !name.contains('.')
+        || [".localhost", ".local", ".lan", ".home.arpa", ".internal"]
+            .iter()
+            .any(|s| name.ends_with(s))
+}
+
+/// Host の名前の部分（ポートを除き、小文字。IPv6 の [..] は外す。末尾の「.」も除く）
+fn host_name(host: &str) -> String {
+    let host = host.trim().to_ascii_lowercase();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("").to_string()
+    } else {
+        host.rsplit_once(':')
+            .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
+            .map_or(host.as_str(), |(n, _)| n)
+            .to_string()
+    };
+    name.trim_end_matches('.').to_string()
+}
+
 #[derive(Deserialize)]
 struct KeyQuery {
     k: Option<String>,
@@ -433,6 +544,9 @@ fn authorize(
     k: Option<&str>,
 ) -> Result<Option<SessionRec>, Response> {
     match &server.access {
+        Access::None if !local_host(headers, server.public_url.read().unwrap().as_deref()) => {
+            Err(api_error(StatusCode::FORBIDDEN, HOST_NOT_ALLOWED))
+        }
         Access::None => Ok(None),
         Access::Token(t) if k.is_some_and(|k| same_secret(k, t)) => Ok(None),
         Access::Token(_) => Err(api_error(
@@ -573,7 +687,8 @@ async fn admin_list_handler(State(server): State<Arc<Server>>, headers: HeaderMa
     let sessions: Vec<Value> = a
         .sessions()
         .into_iter()
-        .map(|s| json!({ "id": s.id, "name": s.name, "admin": s.admin, "created": s.created, "you": s.id == me.id }))
+        .filter(|s| a.alive(&s.id))
+        .map(|s| json!({ "id": s.id, "name": s.name, "admin": s.admin, "created": s.created, "expires": a.session_expires(&s), "you": s.id == me.id }))
         .collect();
     let otps: Vec<Value> = a
         .otps()
@@ -650,13 +765,24 @@ async fn ws_handler(
         Access::None if !same_origin(&headers, server.public_url.read().unwrap().as_deref()) => {
             return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
         }
+        Access::None if !local_host(&headers, server.public_url.read().unwrap().as_deref()) => {
+            return (StatusCode::FORBIDDEN, HOST_NOT_ALLOWED).into_response();
+        }
         _ => {}
     }
+    if server.pending.load(Ordering::Relaxed) >= PENDING_MAX {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many connections waiting for login",
+        )
+            .into_response();
+    }
+    let pending = Pending::new(&server);
     let project = server
         .project(q.p.as_deref())
         .map(|p| (p.hub.clone(), p.dir.clone(), p.name.clone()));
-    ws.max_message_size(64 << 20)
-        .on_upgrade(move |socket| connection(server, project, socket))
+    ws.max_message_size(MESSAGE_MAX)
+        .on_upgrade(move |socket| connection(server, project, socket, pending))
 }
 
 /// 動いているリモートのコマンド
@@ -671,7 +797,10 @@ async fn connection(
     server: Arc<Server>,
     project: Option<(Arc<Hub>, PathBuf, String)>,
     socket: WebSocket,
+    pending: Pending,
 ) {
+    // hello が済むまで「ログイン待ち」として数える（済んだら外す）
+    let mut waiting_login = Some(pending);
     let conn = server.next_conn.fetch_add(1, Ordering::Relaxed);
     let (mut sink, mut stream) = socket.split();
     let Some((hub, dir, project_name)) = project else {
@@ -725,6 +854,9 @@ async fn connection(
     let mut shutdown = server.shutdown.subscribe();
     let mut revoked = server.revoked.subscribe();
     let mut check = tokio::time::interval(SESSION_CHECK);
+    // つないでから hello が届くまで待つ（届かなければ切る）
+    let hello_deadline = tokio::time::sleep(HELLO_TIMEOUT);
+    tokio::pin!(hello_deadline);
     let kick = |out_tx: &tokio::sync::mpsc::UnboundedSender<String>| {
         let _ = out_tx.send(
             json!({ "type": "error", "code": "auth", "message": "ログインし直してください" })
@@ -735,6 +867,7 @@ async fn connection(
         let msg = tokio::select! {
             m = stream.next() => match m { Some(Ok(m)) => m, _ => break },
             _ = shutdown.changed() => break,
+            _ = &mut hello_deadline, if !joined => break,
             r = revoked.recv() => {
                 if matches!((&r, &session), (Ok(id), Some(s)) if id == s) { kick(&out_tx); break; }
                 continue;
@@ -746,7 +879,16 @@ async fn connection(
                 continue;
             }
         };
-        let Message::Text(text) = msg else { continue };
+        let text = match msg {
+            Message::Text(t) => t,
+            // hello より前は、hello 以外（バイナリ）を送ってきたら切る
+            Message::Binary(_) if !joined => break,
+            _ => continue,
+        };
+        // hello より前の大きなメッセージは読まずに切る（ログインせずにホストのメモリを使わせない）
+        if !joined && text.len() > HELLO_MAX {
+            break;
+        }
         let Ok(v) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
@@ -780,14 +922,12 @@ async fn connection(
                 } else if let Some(n) = v["name"].as_str().and_then(auth::clean_name) {
                     name = n;
                 }
-                if let Some(c) = v["client"]
-                    .as_str()
-                    .filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-'))
-                {
-                    client = c.chars().take(40).collect();
-                    email = format!("{client}@komenagare");
-                }
+                // ブラウザごとの id は、ブラウザだけが知る秘密（client_key）からホストが作る。
+                // ほかの人に配るのは作った id だけなので、他人の id を名乗ることはできない
+                client = client_id(v["client_key"].as_str());
+                email = format!("{client}@komenagare");
                 joined = true;
+                drop(waiting_login.take());
                 let mut inner = hub.inner.lock().await;
                 // 全体（snapshot）を作るのと同じロックの中で受け取り始める（取りこぼさないように）
                 if let Some(tx) = sub_tx.take() {
@@ -813,7 +953,7 @@ async fn connection(
                     .filter(|_| can_run)
                     .map(|r| r.mode.label());
                 let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "comments": comments, "remote": remote })
+                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
                         .to_string(),
                 );
                 let _ = out_tx.send(conflicts_msg(&inner));
@@ -951,7 +1091,7 @@ async fn connection(
                 };
                 // 変更セットの id は控え（seen）やコミットのトレーラーに使うので、形と大きさを絞る。
                 // op の数も上限を付ける（1件の巨大な変更セットでホストを埋めないように）
-                if !change_id_ok(&change.id) || change.ops.len() > MAX_OPS_PER_CHANGE {
+                if !change_ok(&change) {
                     let _ = out_tx.send(
                         json!({ "type": "error", "message": "変更セットが正しくないか、大きすぎます" })
                             .to_string(),
@@ -1171,6 +1311,69 @@ mod tests {
             &h(Some("https://a.example.com"), "127.0.0.1:8764"),
             Some("https://a.example.com/")
         ));
+    }
+
+    #[test]
+    fn client_id_comes_from_the_secret() {
+        let k = "a".repeat(64);
+        // 同じ秘密なら同じ id（同じブラウザのほかのタブ）、大文字小文字は区別しない
+        assert_eq!(client_id(Some(&k)), client_id(Some(&k.to_uppercase())));
+        assert_eq!(client_id(Some(&k)).len(), 32);
+        // 秘密そのものは id にならない
+        assert_ne!(client_id(Some(&k)), k[..32]);
+        assert_ne!(client_id(Some(&k)), client_id(Some(&"b".repeat(64))));
+        // 秘密が無い・形が違う（他人の id をそのまま送る）ときは、毎回ちがう id
+        let other = client_id(Some(&k));
+        for bad in [
+            None,
+            Some(""),
+            Some(other.as_str()),
+            Some(&"g".repeat(64)[..]),
+        ] {
+            let a = client_id(bad);
+            assert_ne!(a, other);
+            assert_ne!(a, client_id(bad));
+        }
+    }
+
+    #[test]
+    fn rejects_dns_rebinding_hosts() {
+        let h = |host: &str| {
+            let mut m = HeaderMap::new();
+            m.insert(header::HOST, host.parse().unwrap());
+            m
+        };
+        for ok in [
+            "127.0.0.1:8764",
+            "localhost:8764",
+            "LOCALHOST",
+            "192.168.1.10:8764",
+            "[::1]:8764",
+            "[fe80::1]",
+            "mypc:8764",
+            "mypc.local:8764",
+            "nas.lan",
+            "box.home.arpa",
+            "app.localhost",
+            "host.internal.",
+        ] {
+            assert!(local_host(&h(ok), None), "{ok}");
+        }
+        for bad in [
+            "evil.example:8764",
+            "rebind.attacker.com",
+            "127.0.0.1.nip.io",
+            "local.evil.com",
+            "localhost.evil.com:8764",
+        ] {
+            assert!(!local_host(&h(bad), None), "{bad}");
+        }
+        // 公開 URL（--public-url）の名前は通す
+        assert!(local_host(
+            &h("komenagare.example.com"),
+            Some("https://komenagare.example.com/")
+        ));
+        assert!(!local_host(&HeaderMap::new(), None));
     }
 
     #[test]

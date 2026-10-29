@@ -9,6 +9,10 @@
 //! 取ってくるファイルは web.json の files に書いてある。web.json の protocol（ホストとの
 //! やりとりの取り決めの版数）がこの CLI の対応外なら使わない（CLI の更新が必要）。
 //! 取れないときは前回の控え、それも無ければ CLI に組み込んだ Web アプリを使う。
+//!
+//! 取ってきた Web アプリは、署名（web.sums と web.sums.minisig。sign.rs）を確かめてから使う。
+//! 署名の秘密鍵は承認の要る environment にだけあるので、main に push したり GitHub Pages を
+//! 書き換えたりできるだけでは、ホストが配信する Web アプリ（--remote ではコマンドを打てる）を差し替えられない。
 
 use crate::server::PROTOCOL;
 use anyhow::{bail, Context, Result};
@@ -62,21 +66,90 @@ pub fn cache_dir() -> Option<PathBuf> {
     base.map(|b| b.join("komenagare").join("web"))
 }
 
-/// 手元の控えがこの CLI でそのまま使えるか
-pub fn cached_usable(dir: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(dir.join("web.json")) else {
-        return false;
-    };
-    let Ok(m) = serde_json::from_str::<Manifest>(&text) else {
-        return false;
-    };
-    m.protocol == PROTOCOL
-        && m.files.iter().all(|f| crate::server::web_path_ok(f))
-        && m.files.iter().all(|f| dir.join(f).is_file())
+/// 署名（web.sums と web.sums.minisig）
+const SUMS: &str = "web.sums";
+const SIG: &str = "web.sums.minisig";
+
+/// 署名を確かめた Web アプリの中身の一覧（ファイル名 → SHA-256）と、署名した時刻
+struct Signed {
+    sums: HashMap<String, String>,
+    time: u64,
 }
 
-/// 最新の Web アプリを取ってきて控えを新しくする（変わっていないファイルは ETag で取り直さない）
+impl Signed {
+    /// web.sums と署名を確かめる（protocol は web.json のもの。署名にも同じ版数が入っている）
+    fn check_signature(
+        key: &minisign_verify::PublicKey,
+        sums: &[u8],
+        sig: &[u8],
+        protocol: u32,
+    ) -> Result<Signed> {
+        let comment = crate::sign::verify(key, sums, &String::from_utf8_lossy(sig))?;
+        if !comment.starts_with("komenagare-web ")
+            || crate::sign::field(&comment, "protocol") != Some(protocol.to_string().as_str())
+        {
+            bail!("Web アプリの署名が、このファイルのものではありません（{comment}）");
+        }
+        let time = crate::sign::field(&comment, "time")
+            .and_then(|t| t.parse().ok())
+            .context("Web アプリの署名に時刻がありません")?;
+        Ok(Signed {
+            sums: crate::sign::parse_sums(&String::from_utf8_lossy(sums)),
+            time,
+        })
+    }
+
+    /// ファイルの中身が署名した一覧と同じか
+    fn check(&self, name: &str, data: &[u8]) -> Result<()> {
+        match self.sums.get(name) {
+            Some(h) if *h == crate::sign::sha256_hex(data) => Ok(()),
+            Some(_) => bail!("{name} が署名した内容と違います"),
+            None => bail!("{name} が署名した一覧にありません"),
+        }
+    }
+}
+
+/// 控えのフォルダを確かめる（署名・web.json・書かれたファイル全部）。使えるなら署名した時刻
+fn verify_dir(dir: &Path, key: &minisign_verify::PublicKey, protocol: u32) -> Result<u64> {
+    let manifest_bytes = std::fs::read(dir.join("web.json"))?;
+    let m: Manifest = serde_json::from_slice(&manifest_bytes)?;
+    if m.protocol != protocol {
+        bail!("取り決めの版数が違います（{}）", m.protocol);
+    }
+    let signed = Signed::check_signature(
+        key,
+        &std::fs::read(dir.join(SUMS))?,
+        &std::fs::read(dir.join(SIG))?,
+        m.protocol,
+    )?;
+    signed.check("web.json", &manifest_bytes)?;
+    for f in &m.files {
+        // 控えの外を指す名前は使わない（server.rs と同じ規則）
+        if !crate::server::web_path_ok(f) {
+            bail!("web.json のファイル名が正しくありません: {f}");
+        }
+        signed.check(f, &std::fs::read(dir.join(f))?)?;
+    }
+    Ok(signed.time)
+}
+
+/// 手元の控えがこの CLI でそのまま使えるか（署名が合い、どのファイルも署名したときのままか）。
+/// 署名の無い控え（前の版の komenagare が取ってきたもの）や、書き換えられた控えは使わない
+pub fn cached_usable(dir: &Path) -> bool {
+    crate::sign::trusted_key().is_ok_and(|k| verify_dir(dir, &k, PROTOCOL).is_ok())
+}
+
+/// 最新の Web アプリを取ってきて控えを新しくする（変わっていないファイルは ETag で取り直さない）。
+/// 署名を確かめ、どのファイルも署名した中身と同じときだけ控えにする
 pub fn update(base_url: &str, dir: &Path) -> Result<Outcome> {
+    update_with_key(base_url, dir, &crate::sign::trusted_key()?)
+}
+
+fn update_with_key(
+    base_url: &str,
+    dir: &Path,
+    key: &minisign_verify::PublicKey,
+) -> Result<Outcome> {
     let base = if base_url.ends_with('/') {
         base_url.to_string()
     } else {
@@ -101,6 +174,23 @@ pub fn update(base_url: &str, dir: &Path) -> Result<Outcome> {
             bail!("web.json のファイル名が正しくありません: {f}");
         }
     }
+    // 署名を確かめる（GitHub Pages や途中が差し替えられても、署名の無いものは使わない）
+    let unsigned = "Web アプリの署名（web.sums・web.sums.minisig）を取れません";
+    let sums_bytes = get(&agent, &format!("{base}{SUMS}"), None)
+        .context(unsigned)?
+        .context(unsigned)?;
+    let sig_bytes = get(&agent, &format!("{base}{SIG}"), None)
+        .context(unsigned)?
+        .context(unsigned)?;
+    let signed = Signed::check_signature(key, &sums_bytes, &sig_bytes, manifest.protocol)
+        .context("Web アプリの署名を確かめられません")?;
+    signed.check("web.json", &manifest_bytes)?;
+    // 手元の控えより前に署名したものには戻さない（直す前の古い版に差し替えられないように）
+    if let Ok(t) = verify_dir(dir, key, PROTOCOL) {
+        if signed.time < t {
+            bail!("取ってきた Web アプリが手元の控えより古いため使いません");
+        }
+    }
 
     let old_etags: HashMap<String, String> = std::fs::read_to_string(dir.join(ETAGS))
         .ok()
@@ -117,25 +207,34 @@ pub fn update(base_url: &str, dir: &Path) -> Result<Outcome> {
         let (body, etag) = get_with_etag(&agent, &format!("{base}{f}"), known.map(String::as_str))?;
         let dest = staging.join(f);
         std::fs::create_dir_all(dest.parent().unwrap())?;
-        match body {
+        // 取ってきたものも、変わっていない（304）ので手元から写すものも、署名した中身と同じか確かめる
+        let data = match body {
             Some(b) => {
-                std::fs::write(&dest, b)?;
                 changed += 1;
+                b
             }
-            None => {
-                std::fs::copy(&old, &dest)?;
-            }
-        }
+            None => std::fs::read(&old)?,
+        };
+        signed.check(f, &data)?;
+        std::fs::write(&dest, data)?;
         if let Some(e) = etag.or_else(|| known.cloned()) {
             etags.insert(f.clone(), e);
         }
     }
     std::fs::write(staging.join("web.json"), &manifest_bytes)?;
+    std::fs::write(staging.join(SUMS), &sums_bytes)?;
+    std::fs::write(staging.join(SIG), &sig_bytes)?;
     std::fs::write(staging.join(ETAGS), serde_json::to_string(&etags)?)?;
-    let same_manifest = std::fs::read(dir.join("web.json"))
-        .map(|b| b == manifest_bytes)
-        .unwrap_or(false);
-    if changed == 0 && same_manifest {
+    let same = |name: &str, new: &[u8]| {
+        std::fs::read(dir.join(name))
+            .map(|b| b == new)
+            .unwrap_or(false)
+    };
+    if changed == 0
+        && same("web.json", &manifest_bytes)
+        && same(SUMS, &sums_bytes)
+        && same(SIG, &sig_bytes)
+    {
         let _ = std::fs::remove_dir_all(&staging);
         return Ok(Outcome::UpToDate);
     }
@@ -186,30 +285,159 @@ fn get_with_etag(
 mod tests {
     use super::*;
 
+    use crate::sign::tests::test_key;
+
+    fn fixture_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/sign/web")
+    }
+
+    /// フォルダの中身を写す（テスト用）
+    fn copy_dir(from: &Path, to: &Path) {
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let (src, dst) = (e.path(), to.join(e.file_name()));
+            if src.is_dir() {
+                std::fs::create_dir_all(&dst).unwrap();
+                copy_dir(&src, &dst);
+            } else {
+                std::fs::copy(&src, &dst).unwrap();
+            }
+        }
+    }
+
     #[test]
-    fn cached_usable_rejects_unsafe_names() {
-        // 控えの web.json に控えの外を指す名前（\ やドライブ名）があれば使わない（server.rs と同じ規則）
+    fn verifies_signed_cache() {
+        let key = test_key();
+        assert_eq!(verify_dir(&fixture_dir(), &key, 6).unwrap(), 1_700_000_000);
+        // 別の鍵・違う版数では使わない
+        let other =
+            minisign_verify::PublicKey::decode(include_str!("../../tests/fixtures/sign/other.pub"))
+                .unwrap();
+        assert!(verify_dir(&fixture_dir(), &other, 6).is_err());
+        assert!(verify_dir(&fixture_dir(), &key, 5).is_err());
+
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let write = |files: &str| {
-            std::fs::write(
-                dir.join("web.json"),
-                format!("{{\"protocol\":{PROTOCOL},\"files\":[{files}]}}"),
-            )
-            .unwrap();
+        let d = tmp.path();
+        copy_dir(&fixture_dir(), d);
+        // ファイルを書き換えた控え
+        std::fs::write(d.join("js/app.js"), "alert(1);\n").unwrap();
+        assert!(verify_dir(d, &key, 6).is_err());
+        copy_dir(&fixture_dir(), d);
+        assert!(verify_dir(d, &key, 6).is_ok());
+        // ファイルが欠けた控え・署名の無い控え（前の版の komenagare が取ってきたもの）
+        std::fs::remove_file(d.join("index.html")).unwrap();
+        assert!(verify_dir(d, &key, 6).is_err());
+        copy_dir(&fixture_dir(), d);
+        std::fs::remove_file(d.join(SIG)).unwrap();
+        assert!(verify_dir(d, &key, 6).is_err());
+        // 公開鍵がまだ置かれていなければ、控えは使わない（内蔵の Web アプリを使う）
+        if crate::sign::trusted_key().is_err() {
+            assert!(!cached_usable(&fixture_dir()));
+        }
+    }
+
+    /// 決まったファイルを返すだけの HTTP サーバー（テスト用。ETag と 304 は GitHub Pages のように返す）
+    fn serve(files: HashMap<String, Vec<u8>>) -> String {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req.split(' ').nth(1).unwrap_or("/").trim_start_matches('/');
+                let inm = req
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("if-none-match: ")
+                            .or_else(|| l.strip_prefix("If-None-Match: "))
+                    })
+                    .map(str::to_string);
+                let (status, body, etag) = match files.get(path) {
+                    Some(b) => {
+                        let etag = format!("\"{}\"", crate::sign::sha256_hex(b));
+                        if inm.as_deref() == Some(etag.as_str()) {
+                            ("304 Not Modified", vec![], etag)
+                        } else {
+                            ("200 OK", b.clone(), etag)
+                        }
+                    }
+                    None => ("404 Not Found", vec![], String::new()),
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(&body);
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    fn fixture_files() -> HashMap<String, Vec<u8>> {
+        ["web.json", "index.html", "js/app.js", SUMS, SIG]
+            .iter()
+            .map(|f| (f.to_string(), std::fs::read(fixture_dir().join(f)).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn update_uses_only_signed_web_app() {
+        let key = test_key();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("web");
+
+        // 署名の無いものは使わない
+        let mut unsigned = fixture_files();
+        unsigned.remove(SIG);
+        assert!(update_with_key(&serve(unsigned), &cache, &key).is_err());
+        assert!(!cache.exists());
+
+        // 中身を差し替えたもの（署名した一覧と違う）は使わない
+        let mut tampered = fixture_files();
+        tampered.insert("js/app.js".into(), b"alert(1);\n".to_vec());
+        assert!(update_with_key(&serve(tampered), &cache, &key).is_err());
+        assert!(!cache.exists());
+
+        // 署名の合うものは控えにする
+        let url = serve(fixture_files());
+        assert!(matches!(
+            update_with_key(&url, &cache, &key).unwrap(),
+            Outcome::Updated(2)
+        ));
+        assert_eq!(verify_dir(&cache, &key, PROTOCOL).unwrap(), 1_700_000_000);
+        assert!(matches!(
+            update_with_key(&url, &cache, &key).unwrap(),
+            Outcome::UpToDate
+        ));
+        // 変わっていない（304）ので手元から写すファイルも確かめる（控えが書き換えられていたら使わない）
+        std::fs::write(cache.join("js/app.js"), "alert(1);\n").unwrap();
+        assert!(update_with_key(&url, &cache, &key).is_err());
+        std::fs::remove_dir_all(&cache).unwrap();
+        assert!(matches!(
+            update_with_key(&url, &cache, &key).unwrap(),
+            Outcome::Updated(2)
+        ));
+
+        // 手元の控えより古い署名のもの（直す前の版）には戻さない
+        let mut older = fixture_files();
+        older.insert(
+            SIG.into(),
+            std::fs::read(fixture_dir().join("../web.sums.minisig.older")).unwrap(),
+        );
+        let Err(e) = update_with_key(&serve(older), &cache, &key) else {
+            panic!("古い署名のものを使ってしまう");
         };
-        write("\"..\\\\..\\\\evil\"");
-        assert!(!cached_usable(dir));
-        write("\"C:\\\\evil\"");
-        assert!(!cached_usable(dir));
-        write("\"js/../../evil\"");
-        assert!(!cached_usable(dir));
-        // 正しい名前（ファイルがそろっていれば使える）
-        std::fs::create_dir_all(dir.join("js")).unwrap();
-        std::fs::write(dir.join("index.html"), "x").unwrap();
-        std::fs::write(dir.join("js/app.js"), "x").unwrap();
-        write("\"index.html\",\"js/app.js\"");
-        assert!(cached_usable(dir));
+        assert!(format!("{e:#}").contains("古い"), "{e:#}");
+        assert_eq!(verify_dir(&cache, &key, PROTOCOL).unwrap(), 1_700_000_000);
+
+        // 別の鍵の署名は使わない
+        let other =
+            minisign_verify::PublicKey::decode(include_str!("../../tests/fixtures/sign/other.pub"))
+                .unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+        assert!(update_with_key(&url, &tmp2.path().join("web"), &other).is_err());
     }
 
     #[test]

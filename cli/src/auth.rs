@@ -82,7 +82,12 @@ pub struct Issued {
 
 pub struct Auth {
     dir: PathBuf,
+    /// ログインの有効期限（ログインしてから。None は無期限）。ホストが --session-ttl で決める
+    session_ttl: Option<Duration>,
 }
+
+/// ログインの有効期限の既定（30 日）
+pub const SESSION_TTL_DEFAULT: Duration = Duration::from_secs(30 * 24 * 3600);
 
 const RANDOM_CHARS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
 pub const NAME_MAX: usize = 40;
@@ -116,11 +121,27 @@ impl Auth {
         private(dir, true);
         Ok(Auth {
             dir: dir.to_path_buf(),
+            session_ttl: Some(SESSION_TTL_DEFAULT),
         })
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// ログインの有効期限を決める（None は無期限）
+    pub fn set_session_ttl(&mut self, ttl: Option<Duration>) {
+        self.session_ttl = ttl;
+    }
+
+    /// このセッションの期限（ミリ秒。無期限なら None）
+    pub fn session_expires(&self, s: &SessionRec) -> Option<u64> {
+        self.session_ttl
+            .map(|t| s.created.saturating_add(t.as_millis() as u64))
+    }
+
+    fn expired(&self, s: &SessionRec) -> bool {
+        self.session_expires(s).is_some_and(|e| now_ms() >= e)
     }
 
     /// ワンタイムパスワードを発行する
@@ -203,12 +224,20 @@ impl Auth {
             return None;
         }
         let rec = self.session(id)?;
-        (rec.hash == hash(secret)).then_some(rec)
+        if rec.hash != hash(secret) {
+            return None;
+        }
+        // 期限が過ぎたら使えない（もう使わないので消す。ワンタイムパスワードでログインし直す）
+        if self.expired(&rec) {
+            let _ = std::fs::remove_file(self.session_path(id));
+            return None;
+        }
+        Some(rec)
     }
 
-    /// セッションがまだあるか（取り消されていないか）
+    /// セッションがまだ使えるか（取り消されていないか、期限が過ぎていないか）
     pub fn alive(&self, id: &str) -> bool {
-        is_hex(id) && self.session_path(id).is_file()
+        is_hex(id) && self.session(id).is_some_and(|s| !self.expired(&s))
     }
 
     pub fn sessions(&self) -> Vec<SessionRec> {
@@ -487,6 +516,40 @@ mod tests {
         );
         assert_eq!(clean_name("a\u{202e}b").as_deref(), Some("ab"));
         assert_eq!(clean_name("\r\n\t"), None);
+    }
+
+    #[test]
+    fn sessions_expire() {
+        let (_d, mut a) = auth();
+        let i = a
+            .issue("H", false, Kind::Random, Duration::from_secs(60))
+            .unwrap();
+        let (token, s) = a.login(&i.code).unwrap().unwrap();
+        // 既定は 30 日
+        assert_eq!(
+            a.session_expires(&s),
+            Some(s.created + SESSION_TTL_DEFAULT.as_millis() as u64)
+        );
+        assert!(a.verify(&token).is_some() && a.alive(&s.id));
+        // ログインしてから 31 日たったことにする
+        let p = a.session_path(&s.id);
+        let mut rec: SessionRec =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        rec.created = now_ms() - 31 * 86400 * 1000;
+        a.write(&p, &rec).unwrap();
+        assert!(!a.alive(&s.id));
+        // 無期限なら使える
+        a.set_session_ttl(None);
+        assert!(a.alive(&s.id) && a.verify(&token).is_some());
+        // 期限を長くしても使える・短くすれば使えない
+        a.set_session_ttl(Some(Duration::from_secs(60 * 86400)));
+        assert!(a.verify(&token).is_some());
+        a.set_session_ttl(Some(SESSION_TTL_DEFAULT));
+        assert!(a.verify(&token).is_none());
+        // 期限切れで確かめたら消える
+        assert!(!p.exists());
+        a.set_session_ttl(None);
+        assert!(a.verify(&token).is_none());
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod firewall;
 mod remote;
 mod render;
 mod server;
+mod sign;
 mod store;
 mod tunnel;
 mod update;
@@ -55,6 +56,10 @@ struct Args {
     /// 合言葉の代わりに、参加者ごとのワンタイムパスワードで入る（komenagare otp new や画面の「招待」で発行する）
     #[arg(long, conflicts_with_all = ["no_token", "token"])]
     otp: bool,
+    /// ログインの有効期限（ログインしてからの時間。例 30d・12h。既定 30d）。none で無期限（--otp のとき）。
+    /// 過ぎたらワンタイムパスワードでログインし直す
+    #[arg(long, value_name = "TTL", requires = "otp")]
+    session_ttl: Option<String>,
     /// ワンタイムパスワードとログインの記録を置く場所（既定は ~/.config/komenagare/auth など）
     #[arg(long, value_name = "DIR", env = "KOMENAGARE_AUTH_DIR")]
     auth_dir: Option<PathBuf>,
@@ -387,7 +392,16 @@ async fn run(args: Args) -> Result<()> {
             Some(d) => d.clone(),
             None => auth::Auth::default_dir().context("ログインの記録の置き場所（ホームフォルダ）が分かりません。--auth-dir で指定してください")?,
         };
-        server::Access::Otp(auth::Auth::open(&dir)?)
+        let mut a = auth::Auth::open(&dir)?;
+        a.set_session_ttl(match args.session_ttl.as_deref().map(str::trim) {
+            None => Some(auth::SESSION_TTL_DEFAULT),
+            Some("none") => None,
+            Some(t) => Some(
+                auth::parse_ttl(t)
+                    .context("--session-ttl の指定が正しくありません（例 30d・12h・none）")?,
+            ),
+        });
+        server::Access::Otp(a)
     } else if args.no_token {
         server::Access::None
     } else {
@@ -507,6 +521,14 @@ async fn run(args: Args) -> Result<()> {
                 a.dir().display()
             );
             println!("  開く（管理者・この URL は1回だけ使えます）: {local}");
+            println!(
+                "  ログインの有効期限: {}",
+                match &args.session_ttl {
+                    Some(t) if t.trim() == "none" => "なし（--session-ttl none）".to_string(),
+                    Some(t) => format!("ログインしてから {}（--session-ttl）", t.trim()),
+                    None => "ログインしてから 30 日（--session-ttl で変えられます）".to_string(),
+                }
+            );
         }
         _ => println!("  開く: {local}"),
     }
@@ -814,17 +836,6 @@ async fn prepare_web(args: &Args) -> (web::Source, String) {
     );
     if args.bundled_web {
         return bundled;
-    }
-    // --remote のときは、取ってきた Web アプリにホストでコマンドを打つ力を渡さない。
-    // GitHub Pages 側が差し替えられても、リリースを通った内蔵の Web アプリだけを使う
-    if args.remote.is_some() {
-        return (
-            web::Source::Bundled,
-            format!(
-                "内蔵（--remote のため。komenagare {}）",
-                env!("CARGO_PKG_VERSION")
-            ),
-        );
     }
     let Some(dir) = web::cache_dir() else {
         return bundled;

@@ -15,6 +15,7 @@ on:
       - .github/workflows/build-matrix.yml
       - .github/workflows/build-check.yml
       - .github/workflows/release.yml
+      - Cross.toml
   workflow_dispatch:
     inputs:
       ref:

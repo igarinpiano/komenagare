@@ -12,8 +12,10 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - run: node --test 'tests/*.test.js'
@@ -21,11 +23,14 @@ jobs:
   cli:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - name: Rust（stable）を入れる
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+          rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check --all
       - run: cargo test --locked --manifest-path cli/Cargo.toml
       - run: sh -n install.sh
@@ -33,13 +38,21 @@ jobs:
   cli-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust（stable）を入れる
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --locked --manifest-path cli/Cargo.toml
       - name: install.ps1 と komenagare update を手元のミラーで確かめる
         shell: pwsh
         run: |
+          # テストの鍵を信じる komenagare を作る（デバッグビルドだけ使える。リリースのビルドでは使わない）
+          $env:KOMENAGARE_TEST_SIGN_PUBKEY = (Get-Content tests/fixtures/sign/test.pub)[1]
           cargo build --locked --manifest-path cli/Cargo.toml
           $v = 'v' + (Select-String -Path cli/Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
           $name = 'komenagare-x86_64-pc-windows-msvc'
@@ -49,6 +62,13 @@ jobs:
           Compress-Archive -Path pkg/* -DestinationPath "$rel/$name.zip"
           $hash = (Get-FileHash "$rel/$name.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Encoding ascii -Path "$rel/$name.zip.sha256" -Value "$hash  $name.zip"
+          # komenagare update は署名した SHA256SUMS を確かめる（テストの鍵で署名する）
+          Set-Content -Encoding ascii -Path "$rel/SHA256SUMS" -Value "$hash  $name.zip"
+          python -m venv "$env:RUNNER_TEMP\venv"
+          & "$env:RUNNER_TEMP\venv\Scripts\pip.exe" install -q cryptography==50.0.2
+          $env:MINISIGN_SECRET_KEY = Get-Content -Raw tests/fixtures/sign/test.key
+          & "$env:RUNNER_TEMP\venv\Scripts\python.exe" .github/minisign.py sign "$rel/SHA256SUMS" "komenagare-release tag:$v"
+          if ($LASTEXITCODE) { throw '署名できません' }
           $server = Start-Process python -ArgumentList '-m', 'http.server', '8799', '--directory', 'mirror' -PassThru -NoNewWindow
           Start-Sleep 3
           try {
