@@ -153,6 +153,24 @@ fn git_deny_short(sub: &str) -> &'static [char] {
     }
 }
 
+/// 作業フォルダの外を指すパスか（絶対パス、または .. で親へ上がるパス）。
+/// git diff は、作業フォルダの外のパスを渡すと暗黙に --no-index になり、作業フォルダの外の
+/// ファイル（/etc/passwd や ~/.ssh など）の中身を読めてしまう（--no-index を自分で書かなくても）。
+/// パスとして渡される語がこれに当たれば断る。リビジョンの範囲（a..b・a...b）は「..」を
+/// パスの部分としては含まないので通る。
+fn points_outside(arg: &str) -> bool {
+    // 絶対パス（Unix の /、Windows の \ や UNC の \\、ドライブ名 C: など）
+    if arg.starts_with('/') || arg.starts_with('\\') {
+        return true;
+    }
+    let b = arg.as_bytes();
+    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        return true;
+    }
+    // 「..」をパスの部分として含む（/ と \ のどちらの区切りも見る）
+    arg.split(['/', '\\']).any(|part| part == "..")
+}
+
 /// git のコマンドとして打ってよいか（args は git の後ろ）
 pub fn check_git(args: &[String]) -> Result<(), String> {
     let Some(sub) = args.first() else {
@@ -170,19 +188,34 @@ pub fn check_git(args: &[String]) -> Result<(), String> {
         ));
     }
     let deny_short = git_deny_short(sub);
+    // diff は暗黙の --no-index があるので、パスとして渡される語が作業フォルダの外を指さないか見る。
+    // ほかのサブコマンドは、外のパスを渡すと git 自身が「outside repository」で断るので見なくてよい。
+    // （-S/-G/-I の検索語を別の語として渡すと見てしまうが、その語を「-S…」とくっつけて書けば通る）
+    let check_paths = sub == "diff";
+    let mut after_ddash = false;
     for a in &args[1..] {
-        if a == "--" {
-            break;
+        if !after_ddash && a == "--" {
+            after_ddash = true;
+            continue;
         }
-        if let Some(long) = a.strip_prefix("--") {
-            let name = format!("--{}", long.split('=').next().unwrap_or(""));
-            if name.len() > 3 && GIT_DENY_LONG.iter().any(|d| d.starts_with(&name)) {
-                return Err(format!("{name} は使えません"));
+        if !after_ddash {
+            if let Some(long) = a.strip_prefix("--") {
+                let name = format!("--{}", long.split('=').next().unwrap_or(""));
+                if name.len() > 3 && GIT_DENY_LONG.iter().any(|d| d.starts_with(&name)) {
+                    return Err(format!("{name} は使えません"));
+                }
+                continue;
+            } else if let Some(short) = a.strip_prefix('-') {
+                if let Some(c) = short.chars().find(|c| deny_short.contains(c)) {
+                    return Err(format!("git {sub} の -{c} は使えません"));
+                }
+                continue;
             }
-        } else if let Some(short) = a.strip_prefix('-') {
-            if let Some(c) = short.chars().find(|c| deny_short.contains(c)) {
-                return Err(format!("git {sub} の -{c} は使えません"));
-            }
+        }
+        if check_paths && points_outside(a) {
+            return Err(format!(
+                "git diff で作業フォルダの外のパスは使えません（{a}）"
+            ));
         }
     }
     Ok(())
@@ -505,6 +538,20 @@ mod tests {
         assert!(!ok("add --pathspec-from-file=/etc/passwd"));
         assert!(!ok("diff -O/etc/passwd"));
         assert!(!ok("log -p -O /etc/passwd"));
+        // diff の暗黙の --no-index で作業フォルダの外を読ませない（絶対パス・.. で親へ）
+        assert!(!ok("diff /etc/passwd a.txt"));
+        assert!(!ok("diff a.txt /etc/passwd"));
+        assert!(!ok("diff ../secret a.txt"));
+        assert!(!ok("diff a.txt ../../etc/passwd"));
+        assert!(!ok("diff -- ../secret a.txt"));
+        assert!(!ok("diff HEAD -- sub/../../outside"));
+        assert!(!ok(r"diff \\host\share\x a.txt"));
+        assert!(!ok("diff C:/Windows/win.ini a.txt"));
+        // リビジョンの範囲や作業フォルダの中のパスは通す
+        assert!(ok("diff HEAD~1..HEAD"));
+        assert!(ok("diff main...topic"));
+        assert!(ok("diff --stat -- ./css/komenagare.css"));
+        assert!(ok("diff -- a/b/c.txt"));
     }
 
     #[test]

@@ -38,9 +38,11 @@ pub fn asset_name() -> String {
     format!("komenagare-{TARGET}.{ext}")
 }
 
-fn agent(timeout: u64) -> ureq::Agent {
+fn agent(timeout: u64, base: &str) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(timeout)))
+        // https で始めたら、転送で http に落ちても取らない（http のミラー・テストはそのまま使える）
+        .https_only(base.starts_with("https://"))
         .build()
         .into()
 }
@@ -49,6 +51,7 @@ fn agent(timeout: u64) -> ureq::Agent {
 pub fn latest_tag(base: &str, timeout: u64) -> Result<String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(timeout)))
+        .https_only(base.starts_with("https://"))
         .max_redirects(0)
         .build()
         .into();
@@ -128,7 +131,7 @@ pub fn run(version: Option<&str>, check_only: bool) -> Result<()> {
 
 /// 配布物を取ってきて、.sha256 と照らし合わせる
 fn download(base: &str, tag: &str, asset: &str) -> Result<Vec<u8>> {
-    let agent = agent(300);
+    let agent = agent(300, base);
     let url = format!("{base}/download/{tag}/{asset}");
     let body = get(&agent, &url).map_err(|e| {
         if matches!(

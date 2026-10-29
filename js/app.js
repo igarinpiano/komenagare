@@ -787,7 +787,7 @@ function csvEsc(s){ return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"
 function serialize(fmt){
   const items = state.comments.map(c => ({ t: c.t, cmd: c.cmd, text: c.text, id: c.id }));
   if (fmt === 'csv'){
-    return '\ufeff' + 'time,command,text,id\r\n' + items.map(c => [c.t.toFixed(2), csvEsc(c.cmd), csvEsc(c.text), c.id].join(',')).join('\r\n') + (items.length ? '\r\n' : '');
+    return '\ufeff' + 'time,command,text,id\r\n' + items.map(c => [c.t.toFixed(2), csvEsc(c.cmd), csvEsc(c.text), csvEsc(c.id)].join(',')).join('\r\n') + (items.length ? '\r\n' : '');
   }
   const body = items.length ? '[\n' + items.map(c => '    ' + JSON.stringify(c)).join(',\n') + '\n  ]' : '[]';
   return `{\n  "format": "komenagare",\n  "version": 2,\n  "comments": ${body}\n}\n`;

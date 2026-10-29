@@ -141,7 +141,16 @@ impl Store {
             };
             let planned = plan.len();
             match (op, cur) {
-                (Op::Add { .. }, None) => plan.push(op.clone()),
+                // 足りない項目は既定の値で埋めてから配る・記録する（comment-store.js の _insert と同じ。
+                // 項目が欠けた add を参加者にそのまま配ると、相手の描画（parseCmd）が止まるため）
+                (Op::Add { id, after }, None) => plan.push(Op::Add {
+                    id: id.clone(),
+                    after: Fields {
+                        t: Some(after.t.unwrap_or(0.0)),
+                        cmd: Some(after.cmd.clone().unwrap_or_default()),
+                        text: Some(after.text.clone().unwrap_or_default()),
+                    },
+                }),
                 (Op::Add { id, after }, Some(c)) => {
                     let diff = differs(c, after);
                     if !diff.is_empty() {
@@ -484,5 +493,28 @@ mod tests {
         assert!(!serde_json::to_string(&r.applied.unwrap())
             .unwrap()
             .contains("mine"));
+    }
+
+    #[test]
+    fn partial_add_is_filled_before_broadcast() {
+        // 項目の欠けた add を受け取っても、配る変更セットには t・cmd・text が全部ある
+        // （参加者の描画が undefined で止まらないように）
+        let j = r#"{"id":"c1","ops":[{"type":"add","id":"a","after":{"t":1.0}}]}"#;
+        let change: Change = serde_json::from_str(j).unwrap();
+        let mut s = Store::default();
+        let r = s.apply(&change, false);
+        let applied = r.applied.unwrap();
+        match &applied.ops[0] {
+            Op::Add { after, .. } => {
+                assert_eq!(after.t, Some(1.0));
+                assert_eq!(after.cmd.as_deref(), Some(""));
+                assert_eq!(after.text.as_deref(), Some(""));
+            }
+            _ => panic!("add のはず"),
+        }
+        assert_eq!(
+            s.get("a").map(|c| (c.cmd.as_str(), c.text.as_str())),
+            Some(("", ""))
+        );
     }
 }

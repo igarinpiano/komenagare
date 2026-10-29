@@ -136,7 +136,11 @@ class CommentStore {
   }
 
   _insert(id, f, mine = false){
-    const c = { id, t: f.t, cmd: f.cmd, text: f.text, key: commentKey(f.t, f.cmd, f.text), mine: !!mine };
+    // 足りない項目・形の違う項目は既定の値にする（cli/src/store.rs と同じ。ホストから届いた
+    // 項目の欠けた op でも、cmd/text が undefined にならず描画が止まらないように）
+    const t = typeof f.t === 'number' && isFinite(f.t) ? f.t : 0;
+    const cmd = typeof f.cmd === 'string' ? f.cmd : '', text = typeof f.text === 'string' ? f.text : '';
+    const c = { id, t, cmd, text, key: commentKey(t, cmd, text), mine: !!mine };
     this.byId.set(id, c);
     this.list.push(c);
     this.keyCount.set(c.key, (this.keyCount.get(c.key) || 0) + 1);

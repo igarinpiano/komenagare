@@ -124,3 +124,14 @@ test('同じ変更セットの中で同じコメントを続けて操作でき�
   s.apply(invertChange(r2.applied), { atomic: true });
   assert.deepEqual(fields(s, 'a'), { t: 2, cmd: '', text: 'x' });
 });
+
+test('項目の欠けた add でも cmd/text が undefined にならない（ホストから届く壊れた op 対策）', () => {
+  const s = new CommentStore();
+  // t だけの add（cmd・text 無し）、および数でない t
+  s.apply(change({ type: 'add', id: 'a', after: { t: 1 } }));
+  assert.deepEqual(fields(s, 'a'), { t: 1, cmd: '', text: '' });
+  s.apply(change({ type: 'add', id: 'b', after: { cmd: 'ue', text: 'x' } }));
+  assert.deepEqual(fields(s, 'b'), { t: 0, cmd: 'ue', text: 'x' });
+  // 描画側が参照する文字列操作が落ちないこと
+  for (const c of s.comments){ assert.equal(typeof c.cmd, 'string'); assert.equal(typeof c.text, 'string'); }
+});
