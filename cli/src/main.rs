@@ -162,7 +162,7 @@ enum Cmd {
         #[arg(long, value_name = "FILE")]
         ass: Option<PathBuf>,
         /// 高さ（ピクセル）。幅は元の動画と同じ縦横比（--wide なら 16:9）になる。
-        /// 省略すると元の動画と同じ（--ass で動画を指定しないときは 1080）
+        /// 省略すると元の動画と同じ大きさ（8K なら 8K。--ass で動画を指定しないときは 1080）
         #[arg(long)]
         height: Option<u32>,
         /// コメントを流す範囲を 16:9 に固定する（ニコニコ動画と同じ。縦長の動画は左右に帯が付く）。
@@ -181,6 +181,9 @@ enum Cmd {
         /// 画質（x264 の CRF。小さいほど高画質）
         #[arg(long, default_value_t = 20)]
         crf: u32,
+        /// 映像のビットレート（Mbps の数値か same＝元の動画と同じ）。指定すると CRF の代わりに使う
+        #[arg(long, value_name = "MBPS|same", value_parser = render::parse_bitrate, conflicts_with = "crf")]
+        bitrate: Option<render::Bitrate>,
         /// ゴシック体（defont / gothic）に使うフォント
         #[arg(long, default_value = render::DEFAULT_FONT)]
         font: String,
@@ -241,6 +244,7 @@ fn run_render(cmd: &Cmd) -> Result<()> {
         start,
         end,
         crf,
+        bitrate,
         font,
         font_serif,
         font_scale,
@@ -254,8 +258,11 @@ fn run_render(cmd: &Cmd) -> Result<()> {
     let items = files::read(&comments)?;
     if let Some(ass_path) = ass {
         // 動画を指定したときは、その縦横比に合わせる
-        let src = video.as_deref().and_then(render::probe_size);
-        let (aspect, src_h) = render::output_shape(src, *wide);
+        let src = match video {
+            Some(v) => Some(render::probe(v)?),
+            None => None,
+        };
+        let (aspect, src_h) = render::output_shape(src.map(|s| (s.w, s.h)), *wide);
         let (w, h) = render::even_size(height.unwrap_or(src_h), aspect);
         let opt = render::AssOptions {
             width: w,
@@ -300,6 +307,7 @@ fn run_render(cmd: &Cmd) -> Result<()> {
             start: *start,
             end: *end,
             crf: *crf,
+            bitrate: *bitrate,
             font: font.clone(),
             font_serif: font_serif.clone(),
             font_scale: *font_scale,

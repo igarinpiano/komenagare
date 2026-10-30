@@ -513,6 +513,8 @@ pub struct RenderOptions {
     pub start: Option<f64>,
     pub end: Option<f64>,
     pub crf: u32,
+    /// 映像のビットレート（指定すると CRF の代わりに使う）
+    pub bitrate: Option<Bitrate>,
     pub font: String,
     pub font_serif: String,
     pub font_scale: Option<f64>,
@@ -526,24 +528,172 @@ pub fn ffmpeg_available() -> bool {
         .unwrap_or(false)
 }
 
-/// 元動画の見た目の大きさ（幅, 高さ）。回転と画素の縦横比を反映する（ffprobe があれば）
-pub fn probe_size(video: &Path) -> Option<(f64, f64)> {
-    let out = Command::new("ffprobe")
+/// --bitrate の値
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Bitrate {
+    /// ビット毎秒
+    Bps(f64),
+    /// 元の動画の映像と同じ
+    Same,
+}
+
+/// --bitrate を読む（Mbps の数値か same）
+pub fn parse_bitrate(s: &str) -> Result<Bitrate, String> {
+    let t = s.trim().to_ascii_lowercase();
+    if t == "same" {
+        return Ok(Bitrate::Same);
+    }
+    let n = t.strip_suffix("mbps").or(t.strip_suffix('m')).unwrap_or(&t);
+    match n.trim().parse::<f64>() {
+        Ok(v) if v > 0.0 && v.is_finite() && v <= 10_000.0 => Ok(Bitrate::Bps(v * 1e6)),
+        _ => Err(format!(
+            "ビットレート「{s}」を読めません（Mbps の数値か same。例 --bitrate 8）"
+        )),
+    }
+}
+
+/// 元の動画の情報
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SourceInfo {
+    /// 見た目の幅と高さ（回転と画素の縦横比を反映したもの）
+    pub w: f64,
+    pub h: f64,
+    /// 映像のビットレート（ビット毎秒。分からなければ None）
+    pub video_bps: Option<f64>,
+}
+
+/// 元の動画の大きさとビットレートを調べる。ffprobe を使い、無ければ ffmpeg の出力から読む
+pub fn probe(video: &Path) -> Result<SourceInfo> {
+    let ffprobe = Command::new("ffprobe")
         .args([
             "-v",
             "error",
-            "-select_streams",
-            "v:0",
             "-show_entries",
-            "stream=width,height,sample_aspect_ratio:stream_side_data=rotation:stream_tags=rotate",
+            "stream=codec_type,width,height,sample_aspect_ratio,bit_rate:stream_side_data=rotation:stream_tags=rotate:format=bit_rate,duration,size",
             "-of",
             "json",
         ])
         .arg(video)
-        .output()
-        .ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    display_size(v.get("streams")?.get(0)?)
+        .output();
+    let info = match &ffprobe {
+        Ok(out) => serde_json::from_slice(&out.stdout)
+            .ok()
+            .and_then(|v| info_from_ffprobe(&v)),
+        Err(_) => None,
+    };
+    let info = info.or_else(|| {
+        // ffprobe が無い（または読めなかった）ときは ffmpeg -i の出力から読む
+        let out = Command::new("ffmpeg")
+            .args(["-hide_banner", "-i"])
+            .arg(video)
+            .output()
+            .ok()?;
+        info_from_ffmpeg(&String::from_utf8_lossy(&out.stderr))
+    });
+    info.ok_or_else(|| {
+        if ffprobe.is_err() {
+            anyhow::anyhow!("元の動画（{}）の大きさを調べられませんでした。ffprobe（ffmpeg と一緒に入っています）が使えるか、動画を読めるかを確かめてください", video.display())
+        } else {
+            anyhow::anyhow!("元の動画（{}）の大きさを調べられませんでした。映像が入っていないか、読めない形式です", video.display())
+        }
+    })
+}
+
+/// ffprobe（-of json）の出力から読む
+fn info_from_ffprobe(v: &serde_json::Value) -> Option<SourceInfo> {
+    let streams = v.get("streams")?.as_array()?;
+    let is =
+        |s: &&serde_json::Value, t: &str| s.get("codec_type").and_then(|c| c.as_str()) == Some(t);
+    let num = |x: Option<&serde_json::Value>| -> Option<f64> {
+        let x = x?;
+        x.as_f64()
+            .or_else(|| x.as_str()?.parse().ok())
+            .filter(|n: &f64| *n > 0.0 && n.is_finite())
+    };
+    let vs = streams.iter().find(|s| is(s, "video"))?;
+    let (w, h) = display_size(vs)?;
+    let audio: f64 = streams
+        .iter()
+        .filter(|s| is(s, "audio"))
+        .filter_map(|s| num(s.get("bit_rate")))
+        .sum();
+    let format = v.get("format");
+    let total = format.and_then(|f| num(f.get("bit_rate"))).or_else(|| {
+        let f = format?;
+        Some(num(f.get("size"))? * 8.0 / num(f.get("duration"))?)
+    });
+    let video_bps =
+        num(vs.get("bit_rate")).or_else(|| total.map(|t| t - audio).filter(|b| *b > 0.0));
+    Some(SourceInfo { w, h, video_bps })
+}
+
+/// ffmpeg -i の出力（標準エラー）から読む
+fn info_from_ffmpeg(text: &str) -> Option<SourceInfo> {
+    // 「123 kb/s」の数値（ビット毎秒）
+    let kbps = |line: &str| -> Option<f64> {
+        let words: Vec<&str> = line.split([' ', ',']).filter(|w| !w.is_empty()).collect();
+        let i = words.iter().position(|w| *w == "kb/s")?;
+        let n: f64 = words.get(i.checked_sub(1)?)?.parse().ok()?;
+        (n > 0.0).then_some(n * 1000.0)
+    };
+    let mut total = None;
+    let mut audio = 0.0;
+    let mut video: Option<(f64, f64, f64, Option<f64>)> = None; // 幅・高さ・画素の縦横比・ビットレート
+    let mut rotation = 0.0;
+    let mut in_video = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("Duration:") {
+            total = t.split("bitrate:").nth(1).and_then(kbps);
+        } else if t.starts_with("Stream #") {
+            in_video = false;
+            if t.contains(": Video:") && video.is_none() {
+                let words: Vec<&str> = t.split([' ', ',']).filter(|w| !w.is_empty()).collect();
+                let size = words.iter().enumerate().find_map(|(i, w)| {
+                    let (a, b) = w.split_once('x')?;
+                    let (w, h) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
+                    (w > 0.0 && h > 0.0).then_some((i, w, h))
+                });
+                if let Some((i, w, h)) = size {
+                    // 「1920x1080 [SAR 1:1 DAR 16:9]」（WebM などは「SAR 1:1 DAR 16:9」）
+                    let sar = matches!(words.get(i + 1), Some(&"[SAR") | Some(&"SAR"))
+                        .then(|| words.get(i + 2))
+                        .flatten()
+                        .and_then(|r| r.split_once(':'))
+                        .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+                        .filter(|k| *k > 0.0 && k.is_finite())
+                        .unwrap_or(1.0);
+                    video = Some((w, h, sar, kbps(t)));
+                    in_video = true;
+                }
+            } else if t.contains(": Audio:") {
+                audio += kbps(t).unwrap_or(0.0);
+            }
+        } else if in_video {
+            // 回転の情報（「displaymatrix: rotation of -90.00 degrees」か「rotate : 90」）
+            let r = t
+                .split_once("rotation of ")
+                .and_then(|(_, r)| r.split_whitespace().next()?.parse::<f64>().ok())
+                .or_else(|| {
+                    let (k, v) = t.split_once(':')?;
+                    (k.trim() == "rotate")
+                        .then(|| v.trim().parse().ok())
+                        .flatten()
+                });
+            if let Some(r) = r {
+                rotation = r;
+            }
+        }
+    }
+    let (w, h, sar, bps) = video?;
+    let w = w * sar;
+    let (w, h) = if (rotation.round() as i64).rem_euclid(180) == 90 {
+        (h, w)
+    } else {
+        (w, h)
+    };
+    let video_bps = bps.or_else(|| total.map(|t: f64| t - audio).filter(|b| *b > 0.0));
+    Some(SourceInfo { w, h, video_bps })
 }
 
 /// ffprobe の stream から見た目の大きさを求める
@@ -581,23 +731,29 @@ pub fn even_size(h: u32, aspect: f64) -> (u32, u32) {
     ((w + w % 2).max(2), h)
 }
 
-/// 書き出しの縦横比と、既定の高さ（短い辺が 2160 を超えないようにする）
+/// 書き出しの縦横比と、既定の高さ（元の動画と同じ大きさ。Web アプリの「元動画と同じ」と同じ）。
+/// 元の動画が無いときは 1920×1080
 pub fn output_shape(src: Option<(f64, f64)>, wide: bool) -> (f64, u32) {
     let (sw, sh) = src.unwrap_or((1920.0, 1080.0));
     let aspect = if wide { 16.0 / 9.0 } else { sw / sh };
-    let h = if aspect >= 1.0 || wide {
-        sh.min(2160.0)
-    } else {
-        sh.min(2160.0 / aspect)
-    };
-    (aspect, h.round() as u32)
+    (aspect, sh.round() as u32)
 }
 
 pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
     if !ffmpeg_available() {
         bail!("ffmpeg が見つかりません。動画に焼き込むには ffmpeg（libass 付き）をインストールしてください: https://ffmpeg.org/download.html\n（--ass で字幕ファイルだけを書き出すこともできます）");
     }
-    let (aspect, src_h) = output_shape(probe_size(&opt.video), opt.wide);
+    let src = probe(&opt.video)?;
+    let (aspect, src_h) = output_shape(Some((src.w, src.h)), opt.wide);
+    let vbps = match opt.bitrate {
+        None => None,
+        Some(Bitrate::Bps(b)) => Some(b),
+        Some(Bitrate::Same) => Some(src.video_bps.ok_or_else(|| {
+            anyhow::anyhow!("元の動画のビットレートを調べられませんでした。--bitrate に数値（Mbps）を指定してください")
+        })?),
+    };
+    // 映像の画質（ビットレートを指定しなければ CRF）
+    let vbps = vbps.map(|b| (b.round() as u64).max(1000).to_string());
     let (w, h) = even_size(opt.height.unwrap_or(src_h).max(144), aspect);
     let start = opt.start.unwrap_or(0.0).max(0.0);
     let ass = to_ass(
@@ -647,35 +803,19 @@ pub fn render(items: &[Item], opt: &RenderOptions) -> Result<()> {
     vf.push_str(",ass=comments.ass");
     cmd.args(["-vf", &vf, "-map", "0:v:0", "-map", "0:a:0?"]);
     if ext == "webm" {
-        cmd.args([
-            "-c:v",
-            "libvpx-vp9",
-            "-b:v",
-            "0",
-            "-crf",
-            &(opt.crf + 12).to_string(),
-            "-row-mt",
-            "1",
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "160k",
-        ]);
+        cmd.args(["-c:v", "libvpx-vp9"]);
+        match &vbps {
+            Some(b) => cmd.args(["-b:v", b]),
+            None => cmd.args(["-b:v", "0", "-crf", &(opt.crf + 12).to_string()]),
+        };
+        cmd.args(["-row-mt", "1", "-c:a", "libopus", "-b:a", "160k"]);
     } else {
-        cmd.args([
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            &opt.crf.to_string(),
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-        ]);
+        cmd.args(["-c:v", "libx264", "-preset", "medium"]);
+        match &vbps {
+            Some(b) => cmd.args(["-b:v", b]),
+            None => cmd.args(["-crf", &opt.crf.to_string()]),
+        };
+        cmd.args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
         if ext == "mp4" || ext == "mov" {
             cmd.args(["-movflags", "+faststart"]);
         }
@@ -970,10 +1110,13 @@ mod tests {
     fn output_size_of_portrait_video() {
         assert_eq!(output_shape(Some((1080.0, 1920.0)), false), (0.5625, 1920));
         assert_eq!(output_shape(Some((1080.0, 1920.0)), true).1, 1920);
-        // 4K の縦長は短い辺を 2160 に
+        // 既定は元の動画と同じ大きさ（4K・8K も縮めない）
         assert_eq!(output_shape(Some((2160.0, 3840.0)), false).1, 3840);
         assert_eq!(output_shape(Some((3840.0, 2160.0)), false).1, 2160);
-        assert_eq!(output_shape(Some((4320.0, 7680.0)), false).1, 3840);
+        assert_eq!(output_shape(Some((4320.0, 7680.0)), false).1, 7680);
+        assert_eq!(output_shape(Some((7680.0, 4320.0)), false).1, 4320);
+        let (a, h) = output_shape(Some((400.0, 4000.0)), false);
+        assert_eq!(even_size(h, a), (400, 4000));
         assert_eq!(output_shape(None, false), (16.0 / 9.0, 1080));
         // スマホで撮った動画（横長で保存し、回転の情報で縦にする）
         let st = serde_json::json!({"width": 1920, "height": 1080, "side_data_list": [{"rotation": -90}]});
@@ -981,5 +1124,105 @@ mod tests {
         let st = serde_json::json!({"width": 720, "height": 480, "sample_aspect_ratio": "32:27"});
         let (w, h) = display_size(&st).unwrap();
         assert!((w - 720.0 * 32.0 / 27.0).abs() < 1e-9 && h == 480.0);
+    }
+
+    #[test]
+    fn bitrate_option() {
+        assert_eq!(parse_bitrate("same"), Ok(Bitrate::Same));
+        assert_eq!(parse_bitrate("SAME"), Ok(Bitrate::Same));
+        assert_eq!(parse_bitrate("8"), Ok(Bitrate::Bps(8e6)));
+        assert_eq!(parse_bitrate("2.5"), Ok(Bitrate::Bps(2.5e6)));
+        assert_eq!(parse_bitrate("40M"), Ok(Bitrate::Bps(40e6)));
+        assert_eq!(parse_bitrate("16mbps"), Ok(Bitrate::Bps(16e6)));
+        for bad in ["", "0", "-3", "abc", "nan", "inf", "1e9"] {
+            assert!(parse_bitrate(bad).is_err(), "{bad} を受け付けました");
+        }
+    }
+
+    #[test]
+    fn source_info_from_ffprobe() {
+        // 映像のビットレートがあればそれを使う
+        let v = serde_json::json!({
+            "streams": [
+                {"codec_type": "video", "width": 1920, "height": 1080, "bit_rate": "6176000",
+                 "side_data_list": [{"rotation": -90}]},
+                {"codec_type": "audio", "bit_rate": "69000"}
+            ],
+            "format": {"bit_rate": "6260000", "duration": "2.0", "size": "1565145"}
+        });
+        assert_eq!(
+            info_from_ffprobe(&v),
+            Some(SourceInfo {
+                w: 1080.0,
+                h: 1920.0,
+                video_bps: Some(6176000.0)
+            })
+        );
+        // 映像のビットレートが無い（WebM など）ときは全体から音声を引く。全体も無ければ大きさと長さから
+        let v = serde_json::json!({
+            "streams": [{"codec_type": "audio", "bit_rate": 1000000}, {"codec_type": "video", "width": 3840, "height": 2160}],
+            "format": {"bit_rate": "5000000"}
+        });
+        assert_eq!(info_from_ffprobe(&v).unwrap().video_bps, Some(4000000.0));
+        let v = serde_json::json!({
+            "streams": [{"codec_type": "video", "width": 640, "height": 360}],
+            "format": {"duration": "2.0", "size": "1000000"}
+        });
+        assert_eq!(info_from_ffprobe(&v).unwrap().video_bps, Some(4000000.0));
+        // 映像が無ければ読めない
+        let v = serde_json::json!({"streams": [{"codec_type": "audio"}], "format": {}});
+        assert_eq!(info_from_ffprobe(&v), None);
+    }
+
+    #[test]
+    fn source_info_from_ffmpeg() {
+        // スマホで撮った動画（回転の情報で縦にする）
+        let text = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'a.mp4':
+  Metadata:
+    encoder         : Lavf60.16.100
+  Duration: 00:00:02.00, start: 0.000000, bitrate: 6260 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 6176 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+    Side data:
+      displaymatrix: rotation of -90.00 degrees
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 69 kb/s (default)
+At least one output file must be specified
+";
+        assert_eq!(
+            info_from_ffmpeg(text),
+            Some(SourceInfo {
+                w: 1080.0,
+                h: 1920.0,
+                video_bps: Some(6176000.0)
+            })
+        );
+        // 画素が正方形でない動画
+        let text = "  Duration: 00:00:02.00, start: 0.000000, bitrate: 12216 kb/s
+  Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1440x1080 [SAR 4:3 DAR 16:9], 12133 kb/s, 30 fps (default)
+";
+        let i = info_from_ffmpeg(text).unwrap();
+        assert!((i.w - 1920.0).abs() < 1e-9 && i.h == 1080.0);
+        // WebM（映像のビットレートが無いので、全体から音声を引く。古い形式の rotate も読む）
+        let text = "  Duration: 00:00:02.01, start: -0.007000, bitrate: 4342 kb/s
+  Stream #0:0: Video: vp9 (Profile 0), yuv420p(tv, progressive), 3840x2160, SAR 1:1 DAR 16:9, 30 fps, 30 tbr, 1k tbn
+    Metadata:
+      rotate          : 270
+  Stream #0:1: Audio: opus, 48000 Hz, stereo, fltp, 342 kb/s
+";
+        assert_eq!(
+            info_from_ffmpeg(text),
+            Some(SourceInfo {
+                w: 2160.0,
+                h: 3840.0,
+                video_bps: Some(4000000.0)
+            })
+        );
+        // 映像が無い・読めない
+        assert_eq!(info_from_ffmpeg("a.mp4: No such file or directory\n"), None);
+        assert_eq!(
+            info_from_ffmpeg("  Stream #0:0: Audio: mp3, 44100 Hz, stereo, fltp, 128 kb/s\n"),
+            None
+        );
     }
 }
