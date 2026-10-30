@@ -205,12 +205,15 @@ systemd などで常駐させる場合も、止めるとき（SIGTERM）は書�
 ```sh
 komenagare render video.mp4                      # 今のフォルダの comments.jsonl を焼き込んで video_comments.mp4 に
 komenagare render video.mp4 -c comments.json -o out.mp4 --height 1080 --start 1:00 --end 2:30
+komenagare render video.mp4 --bitrate same          # 映像のビットレートを元動画と同じに（既定は画質を一定にする CRF 20）
 komenagare render --ass comments.ass -c comments.json   # 字幕ファイル（ASS）だけ。mpv などで動画に重ねて再生できる
 ```
 
 Web アプリの書き出しと同じ規則で配置し、ffmpeg（libass 付き）で描きます。ffmpeg が必要です。
 縦長の動画は縦長のまま書き出し、コメントも動画の範囲に流します（`--wide` で 16:9 に固定。Web アプリの設定「コメントを流す範囲」と同じ）。
-既定の大きさは元動画と同じで、短い辺が 2160 を超えるとき（8K など）は 4K に縮めます。元の大きさのまま書き出すには `--height`（例 `--height 4320`）を付けます。
+既定の大きさは元動画と同じです（8K なら 8K。Web アプリの「元動画と同じ」と同じ）。小さくするには `--height`（例 `--height 1080`）を付けます。
+画質は既定では x264 の CRF（`--crf`、既定 20。小さいほど高画質）で決めます。ビットレートで決めるなら `--bitrate`（Mbps の数値か、元動画と同じにする `same`）を付けます。
+元動画の大きさ・回転・ビットレートは ffprobe で調べます（無ければ ffmpeg の出力から読みます）。
 フォントは `--font` / `--font-serif` で変えられます（既定は Windows では MS PGothic / Yu Mincho、ほかは fontconfig の sans-serif / serif）。
 文字の幅はフォントで測らず見積もるため、流れるコメントの重なり方は Web アプリの書き出しと少し違うことがあります。
 
