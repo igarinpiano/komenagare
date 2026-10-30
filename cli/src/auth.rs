@@ -147,6 +147,12 @@ impl Auth {
     /// ワンタイムパスワードを発行する
     pub fn issue(&self, name: &str, admin: bool, kind: Kind, ttl: Duration) -> Result<Issued> {
         let name = clean_name(name).context("名前を入れてください")?;
+        // admin・all は --remote-users で「管理者」「全員」を表すので、参加者の名前にすると紛らわしい
+        if crate::remote::is_reserved_user(&name) {
+            bail!(
+                "「{name}」は名前に使えません（--remote-users で admin は管理者、all は全員を表すため）"
+            );
+        }
         let ttl = kind.max_ttl().map_or(ttl, |m| ttl.min(m));
         // 未使用のものと同じにならないようにする（同じだと、打った人が別の人としてログインしてしまう）
         let used: std::collections::HashSet<String> =
@@ -421,6 +427,24 @@ mod tests {
         let r = new_code(Kind::Random);
         assert_eq!(r.len(), 10);
         assert!(r.bytes().all(|c| RANDOM_CHARS.contains(&c)));
+    }
+
+    #[test]
+    fn reserved_names_are_refused() {
+        // --remote-users の admin（管理者）・all（全員）と紛らわしい名前では発行しない
+        let (_d, a) = auth();
+        for n in ["admin", "all", " Admin ", "ALL"] {
+            let Err(e) = a.issue(n, false, Kind::Random, Duration::from_secs(60)) else {
+                panic!("{n} で発行できてしまいました");
+            };
+            assert!(e.to_string().contains("名前に使えません"), "{n}: {e}");
+        }
+        assert!(a.otps().is_empty());
+        // 含むだけなら使える
+        a.issue("admin2", false, Kind::Random, Duration::from_secs(60))
+            .unwrap();
+        a.issue("みんな all", false, Kind::Random, Duration::from_secs(60))
+            .unwrap();
     }
 
     #[test]
