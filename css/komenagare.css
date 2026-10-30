@@ -298,7 +298,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .vim-head button{padding:3px 8px;font-size:12px}
 .vim-head .muted{white-space:nowrap}
 .vim{--vbg:#0d100d;--vfg:#d6d6d0;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--vbg);color:var(--vfg);position:relative;
-  font-family:monospace;font-size:13px;line-height:1.45}
+  font-family:ui-monospace,monospace;font-size:13px;line-height:1.45}
 .vim-screen{flex:1;min-height:0;overflow:hidden;cursor:text;touch-action:none;padding-top:2px}
 .vim.bell .vim-screen{filter:brightness(1.6)}
 .vl{display:flex;min-height:1.45em}
@@ -308,6 +308,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .vl .ln.now::before{content:"▶";font-size:9px;position:absolute;left:1px;top:.3em}
 .vim.nonu .ln{display:none}
 .vl .lt{flex:1;min-width:0;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;tab-size:8}
+.vim.lbr .vl .lt{word-break:keep-all}
 .vim.nowrap .vl .lt{flex:none;white-space:pre}
 .vl.tilde .lt{color:#4b63d8}
 .k-time{color:#e5c07b}.k-cmd{color:#56b6c2}.k-pos{color:#c678dd}.k-dur{color:#98c379}.k-sep{color:#5c6370}

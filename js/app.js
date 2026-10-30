@@ -2499,8 +2499,10 @@ function vimHelp(){
     'Ex          :s :& :&& :g :v :d :y :m :t :co :j :> :< :normal :sort :pu :k :mark',
     '            :noh :set :reg :marks :jumps :delm :p :nu := :undo :redo :retab',
     '            範囲  % . $ 数字 \'a \'<,\'> /pat/ ?pat? +n -n ;   区切り |',
-    ':set        number relativenumber wrap ignorecase smartcase hlsearch incsearch',
+    ':set        number relativenumber wrap linebreak ignorecase smartcase hlsearch incsearch',
     '            wrapscan shiftwidth expandtab tabstop joinspaces report',
+    '            例) :set nowrap 折り返さない  :set linebreak 単語の区切りで折り返す',
+    '            変えた設定は次に開いたときも使われます（:set {名前}& / :set all& で既定に戻す）',
     '',
     '注意        Ctrl-w / Ctrl-n / Ctrl-t などブラウザ予約キーは効かないことがあります。',
     '            ノーマルモードでは IME をオフにしてください（挿入モードの日本語入力は可）。',
@@ -2515,13 +2517,25 @@ function vimEnsure(){
     clipboardWrite: (t) => { try { navigator.clipboard?.writeText(t).catch(() => {}); } catch {} },
     clipboardRead: navigator.clipboard?.readText ? () => navigator.clipboard.readText() : null,
     bell: () => { vimEl.classList.add('bell'); setTimeout(() => vimEl.classList.remove('bell'), 90); },
-    onChange: vimScheduleRender,
+    onChange: vimScheduleRender, onOption: vimSaveOpts,
   });
+  // :set で変えた設定（既定値と違うものだけ）を settings.vimOpts に控え、次に開いたときにも使う
+  const saved = settings.vimOpts && typeof settings.vimOpts === 'object' ? settings.vimOpts : {};
+  for (const [k, v] of Object.entries(saved)){
+    const d = E.optDefaults[k];
+    if (typeof d === 'boolean' ? typeof v === 'boolean' : typeof d === 'number' && Number.isInteger(v) && v >= 0) E.opts[k] = v;
+  }
   E.fileName = 'コメント';
   E.load(vimBufferText());
   E.setCursor(VIM_HEADER.length, 0);
   vim.synced = state.version;
   return E;
+}
+function vimSaveOpts(){
+  const E = vim.E;
+  settings.vimOpts = Object.fromEntries(Object.keys(E.opts).filter(k => E.opts[k] !== E.optDefaults[k]).map(k => [k, E.opts[k]]));
+  saveSettings();
+  vimScheduleRender();
 }
 function vimScheduleRender(){ vim.needsRender = true; }
 function vimFrame(playing, t){
@@ -2611,6 +2625,7 @@ function vimRender(){
   E.top = clamp(E.top, 0, Math.max(0, L.length - 1));
   vimEl.classList.toggle('nonu', !E.opts.number && !E.opts.relativenumber);
   vimEl.classList.toggle('nowrap', !E.opts.wrap);
+  vimEl.classList.toggle('lbr', E.opts.linebreak);
   const nw = Math.max(3, String(L.length).length);
   const nowT = video.currentTime || 0, playingNow = state.videoLoaded;
   const ctx = {

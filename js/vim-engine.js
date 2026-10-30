@@ -12,14 +12,15 @@ function createVimEngine(hooks = {}){
   let L = [''];
   const cur = { line:0, col:0 };
   let want = 0;
-  const opts = {
-    number:true, relativenumber:false, wrap:true, ignorecase:false, smartcase:false, hlsearch:true,
+  const OPT_DEF = Object.freeze({
+    number:true, relativenumber:false, wrap:true, linebreak:false, ignorecase:false, smartcase:false, hlsearch:true,
     incsearch:true, wrapscan:true, shiftwidth:2, expandtab:false, tabstop:8, scrolloff:0, report:2, joinspaces:false,
-  };
-  const OPT_ALIAS = { nu:'number', rnu:'relativenumber', ic:'ignorecase', scs:'smartcase', hls:'hlsearch', is:'incsearch',
+  });
+  const opts = { ...OPT_DEF };
+  const OPT_ALIAS = { nu:'number', rnu:'relativenumber', lbr:'linebreak', ic:'ignorecase', scs:'smartcase', hls:'hlsearch', is:'incsearch',
     ws:'wrapscan', sw:'shiftwidth', et:'expandtab', ts:'tabstop', so:'scrolloff', js:'joinspaces' };
   const E = {
-    cur, opts, mode:'normal', vmode:null, vstart:null, top:0, rows:20,
+    cur, opts, optDefaults:OPT_DEF, mode:'normal', vmode:null, vstart:null, top:0, rows:20,
     msg:'', msgErr:false, more:null, cmd:null, showcmd:'', recording:null, hlOff:false, incMatch:null,
     oneShot:false, fileName:'comments',
   };
@@ -2540,13 +2541,18 @@ function createVimEngine(hooks = {}){
   }
   function exSet(a0){
     if (!a0 || a0 === 'all'){
-      const def = { number:true, relativenumber:false, wrap:true, ignorecase:false, smartcase:false, hlsearch:true, incsearch:true, wrapscan:true, shiftwidth:2, expandtab:false, tabstop:8, scrolloff:0, report:2, joinspaces:false };
-      const ch = Object.keys(opts).filter(k => a0 === 'all' || opts[k] !== def[k]).map(k => typeof opts[k] === 'boolean' ? (opts[k] ? '  ' : 'no') + k : `  ${k}=${opts[k]}`);
+      const ch = Object.keys(opts).filter(k => a0 === 'all' || opts[k] !== OPT_DEF[k]).map(k => typeof opts[k] === 'boolean' ? (opts[k] ? '  ' : 'no') + k : `  ${k}=${opts[k]}`);
       E.more = ['--- Options ---', ...(ch.length ? ch : ['  （既定値から変更なし）'])];
       return;
     }
-    const msgs = [];
+    const msgs = [], before = JSON.stringify(opts);
+    try { exSetEach(a0, msgs); }
+    finally { if (JSON.stringify(opts) !== before) hooks.onOption?.(); }
+    if (msgs.length) setMsg(msgs.join(' '));
+  }
+  function exSetEach(a0, msgs){
     for (const tok of a0.split(/\s+/)){
+      if (tok === 'all&'){ Object.assign(opts, OPT_DEF); continue; }
       const m = /^(no|inv)?([a-z]+)(!|\?|&|([+\-^]?=)(.*))?$/.exec(tok);
       if (!m) err(`E518: Unknown option: ${tok}`);
       let [, pre, nm, suf, opEq, val] = m;
@@ -2557,7 +2563,7 @@ function createVimEngine(hooks = {}){
       }
       const isBool = typeof opts[nm] === 'boolean';
       if (suf === '?'){ msgs.push(isBool ? (opts[nm] ? '  ' : 'no') + nm : `  ${nm}=${opts[nm]}`); continue; }
-      if (suf === '&'){ continue; }
+      if (suf === '&'){ opts[nm] = OPT_DEF[nm]; continue; }
       if (isBool){
         if (opEq) err(`E474: Invalid argument: ${tok}`);
         opts[nm] = pre === 'no' ? false : (pre === 'inv' || suf === '!') ? !opts[nm] : true;
@@ -2569,7 +2575,6 @@ function createVimEngine(hooks = {}){
         opts[nm] = opEq === '+=' ? opts[nm] + n : opEq === '-=' ? opts[nm] - n : opEq === '^=' ? opts[nm] * n : n;
       }
     }
-    if (msgs.length) setMsg(msgs.join(' '));
   }
   let lastSubPat = null, lastRep = '', lastSubFlags = '';
   function exSubstitute([a, b], args, bang, repeat, useSearch){
