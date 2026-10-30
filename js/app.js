@@ -1116,11 +1116,11 @@ const EXP_MIME = { mp4:'video/mp4', mov:'video/quicktime', webm:'video/webm', mk
 // 保存先を先に選んでもらい、そこへ少しずつ書く（Chrome / Edge など）。大きな動画もメモリに持たずに書き出せる
 const canSaveStream = () => typeof window.showSaveFilePicker === 'function';
 // 元動画の映像のビットレートとフレームレート（書き出しの画面を開いたときに調べる）
-const expSrc = { file: null, vbps: 0, fps: 0 };
+const expSrc = { file: null, vbps: 0, fps: 0, done: false };
 async function expProbeSource(){
   const file = state.videoFile;
   if (!file || expSrc.file === file) return;
-  Object.assign(expSrc, { file, vbps: 0, fps: 0 });
+  Object.assign(expSrc, { file, vbps: 0, fps: 0, done: false });
   try {
     const MB = await loadMediabunny();
     const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(file) });
@@ -1131,6 +1131,7 @@ async function expProbeSource(){
     expSrc.fps = fps > 0 && isFinite(fps) ? fps : 0;
     if (dur > 0) expSrc.vbps = Math.max(0, file.size * 8 / dur - (abps || 0));
   } catch (e){ console.warn('動画の情報を読めませんでした', e); }
+  if (expSrc.file === file) expSrc.done = true;
   if (expSrc.file === file && exportDlg.open && !exportState.running){ expFillBitrate(); expSyncForm(); }
 }
 const roundMbps = (bps) => { const m = bps / 1e6; return (m < 10 ? Math.round(m * 10) / 10 : Math.round(m)) * 1e6; };
@@ -1142,12 +1143,14 @@ function expRecommendBps(W, H, fps){
 }
 const expFpsOf = () => +$('#expFps').value || expSrc.fps || 30;
 function expFillBitrate(){
-  const sel = $('#expBitrate'), keep = sel.value || 'auto';
+  const sel = $('#expBitrate'), keep = sel.value || 'src';
   const { W, H } = exportSize(+$('#expRes').value || 720);
   sel.replaceChildren();
   const add = (v, l) => { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); };
-  add('auto', `解像度に合わせる（${fmtMbps(expRecommendBps(W, H, expFpsOf()))}）`);
+  // 元動画と同じ（既定）。調べ終わるまでは「調べています」と出し、その間に始めたら解像度に合わせる。調べられなければ出さない
   if (expSrc.vbps > 0) add('src', `元動画と同じ（約 ${fmtMbps(expSrc.vbps)}）`);
+  else if (!(expSrc.done && expSrc.file === state.videoFile)) add('src', '元動画と同じ（調べています…）');
+  add('auto', `解像度に合わせる（${fmtMbps(expRecommendBps(W, H, expFpsOf()))}）`);
   for (const m of [2, 4, 8, 16, 30, 50, 80, 120]) add(m, `${m} Mbps`);
   sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'auto';
 }
@@ -1265,7 +1268,7 @@ $('#btnExport').onclick = () => {
   $('#expMode').value = fastOk ? 'fast' : 'realtime';
   if (fastOk) $('#expFps').value = '0';
   $('#expText').textContent = ''; $('#expHint').replaceChildren(); $('#expBar').style.width = '0%';
-  $('#expBitrate').value = 'auto';
+  $('#expBitrate').replaceChildren();
   expFillBitrate();
   expSyncForm();
   expSetBusy(false);
