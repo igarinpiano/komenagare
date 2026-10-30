@@ -3,22 +3,45 @@
 'use strict';
 /* コメント付き動画の高速書き出し（WebCodecs）。ワーカーとメインスレッドの両方で使う */
 
-// 入力・出力と映像コーデックを用意する
+const EXPORT_FORMATS = (MB) => ({ mp4: MB.Mp4OutputFormat, mov: MB.MovOutputFormat, webm: MB.WebMOutputFormat, mkv: MB.MkvOutputFormat });
+const EXPORT_CODECS = { mp4: ['avc', 'hevc', 'vp9', 'av1'], mov: ['avc', 'hevc'], webm: ['vp9', 'vp8', 'av1'], mkv: ['avc', 'vp9', 'hevc', 'av1', 'vp8'] };
+// この大きさ・形式でエンコードできる映像コーデック（できなければ null）
+async function exportPickCodec(MB, container, W, H, vbps){
+  const supported = new (EXPORT_FORMATS(MB)[container])().getSupportedVideoCodecs();
+  return MB.getFirstEncodableVideoCodec(EXPORT_CODECS[container].filter(c => supported.includes(c)), { width: W, height: H, bitrate: vbps });
+}
+// 入力・出力と映像コーデックを用意する。
+// d.handle（保存先のファイル）があれば少しずつそこへ書き、無ければ出力を丸ごとメモリに持つ（4 GiB まで）。
+// ファイルへの書き込みは、成功したら exportCommit で確定し、失敗・中止したら exportAbort で捨てる
 async function exportSetup(MB, d){
   const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(d.file) });
-  const FMT = { mp4: MB.Mp4OutputFormat, mov: MB.MovOutputFormat, webm: MB.WebMOutputFormat, mkv: MB.MkvOutputFormat }[d.container];
-  const format = new FMT(d.container === 'mp4' || d.container === 'mov' ? { fastStart: 'in-memory' } : {});
-  const output = new MB.Output({ format, target: new MB.BufferTarget() });
-  const pref = { mp4: ['avc', 'hevc', 'vp9', 'av1'], mov: ['avc', 'hevc'], webm: ['vp9', 'vp8', 'av1'], mkv: ['avc', 'vp9', 'hevc', 'av1', 'vp8'] }[d.container];
-  const supported = format.getSupportedVideoCodecs();
-  const vcodec = await MB.getFirstEncodableVideoCodec(pref.filter(c => supported.includes(c)), { width: d.W, height: d.H, bitrate: d.vbps });
-  if (!vcodec) throw new Error(d.container === 'mov'
-    ? 'このブラウザは H.264 / HEVC のエンコードに対応していないため MOV で書き出せません（MP4 や WebM を選んでください）'
-    : 'このブラウザはこの形式の映像をエンコードできません（別の形式を選んでください）');
+  // ファイルへ書くときは moov を後ろに置く（前に置く 'in-memory' は出力を全部メモリに持つため）
+  const format = new (EXPORT_FORMATS(MB)[d.container])(d.container === 'mp4' || d.container === 'mov' ? { fastStart: d.handle ? false : 'in-memory' } : {});
+  const vcodec = await exportPickCodec(MB, d.container, d.W, d.H, d.vbps);
+  if (!vcodec){
+    const e = new Error(d.container === 'mov'
+      ? `このブラウザはこの大きさ（${d.W}×${d.H}）の H.264 / HEVC をエンコードできないため MOV で書き出せません（MP4 や WebM を選んでください）`
+      : `このブラウザはこの大きさ（${d.W}×${d.H}）・形式の映像をエンコードできません（別の形式や解像度を選んでください）`);
+    e.code = 'unencodable';
+    throw e;
+  }
   const track = await input.getPrimaryVideoTrack();
   if (!track) throw new Error('動画ファイルに映像トラックが見つかりません');
-  return { input, format, output, vcodec, track };
+  let sink = null, target;
+  if (d.handle){
+    sink = await d.handle.createWritable();
+    // 閉じるのは自分で行う（変換ライブラリは中止したときも閉じるため、途中までのファイルが確定してしまう）
+    target = new MB.StreamTarget(new WritableStream({ write: (c) => sink.write(c) }), { chunked: true, chunkSize: 16 * 1024 * 1024 });
+  } else target = new MB.BufferTarget();
+  const output = new MB.Output({ format, target });
+  return { input, format, output, vcodec, track, sink };
 }
+async function exportCommit(d, sink){
+  if (!sink) return null;
+  await sink.close();
+  return (await d.handle.getFile()).size;
+}
+function exportAbort(sink){ return sink ? sink.abort().catch(() => {}) : Promise.resolve(); }
 // 元のコマから出力フレームを作る。
 // フレームレート指定時は、指定 fps の等間隔の時刻ごとに1フレーム作る。
 // 映像はその時刻を含む元のコマを使い（元が 30fps なら実質 30fps）、コメントはフレームごとの時刻で描く。
@@ -50,7 +73,11 @@ function exportFramer(MB, d){
 }
 // 変換の本体
 async function exportConvert(MB, d, ctl){
-  const { input, format, output, vcodec, track } = await exportSetup(MB, d);
+  const { input, format, output, vcodec, track, sink } = await exportSetup(MB, d);
+  try { return await exportConvertWith(MB, d, ctl, { input, format, output, vcodec, track, sink }); }
+  catch (e){ await exportAbort(sink); throw e; }
+}
+async function exportConvertWith(MB, d, ctl, { input, format, output, vcodec, track, sink }){
   // このブラウザの WebCodecs で元動画の映像をデコードできない（Firefox で HEVC など）ときは、呼び出し側で再生プレーヤーから映像を取り出す
   if (!(await track.canDecode())){
     const e = new Error('このブラウザでは元動画の映像（' + ((await track.getCodec()) || '不明な形式') + '）を直接デコードできません');
@@ -85,7 +112,8 @@ async function exportConvert(MB, d, ctl){
   if (ctl.canceled) await conv.cancel();
   conv.onProgress = (p, t) => ctl.onProgress(p, t);
   await conv.execute();
-  const buffer = output.target.buffer;
-  return { buffer, mime: format.mimeType, ext: format.fileExtension.replace(/^\./, ''), codec: vcodec,
+  const buffer = sink ? null : output.target.buffer;
+  const size = sink ? await exportCommit(d, sink) : buffer.byteLength;
+  return { buffer, size, mime: format.mimeType, ext: format.fileExtension.replace(/^\./, ''), codec: vcodec,
     audioDropped: d.audio && conv.discardedTracks.some(x => x.track.type === 'audio') };
 }

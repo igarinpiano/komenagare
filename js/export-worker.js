@@ -12,7 +12,7 @@ self.onmessage = async (ev) => {
   try {
     importScripts(d.lib);
     const r = await exportConvert(self.Mediabunny, d, ctl);
-    self.postMessage(Object.assign({ type: 'done' }, r), [r.buffer]);
+    self.postMessage(Object.assign({ type: 'done' }, r), r.buffer ? [r.buffer] : []);
   } catch (e){
     self.postMessage({ type: ctl.canceled ? 'canceled' : 'error', message: String((e && e.message) || e), code: e && e.code });
   }

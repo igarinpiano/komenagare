@@ -43,8 +43,8 @@ function fmt(t){
   return h ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${m}:${String(sec).padStart(2,'0')}`;
 }
 function fmtList(t){
-  const s = Math.floor(t), m = Math.floor(s/60), sec = s%60;
-  return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  const s = Math.floor(t), h = Math.floor(s/3600), m = Math.floor(s%3600/60), sec = s%60;
+  return (h ? `${h}:` : '') + `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
 }
 function parseTime(str){
   if (typeof str === 'number') return str;
@@ -1105,6 +1105,79 @@ function expProgress(p, text){
   $('#expText').textContent = text;
   if (exportState.running && exportState.mode === 'fast') $('#btnExport').textContent = `⏺ 書き出し中 ${Math.floor(p * 100)}%`;
 }
+// 解像度の選択肢（短い辺の長さ）。元動画と同じ大きさ・それより小さい標準の大きさ・1080p 以下
+const EXP_RES = [[4320, '8K'], [2160, '4K'], [1440, '1440p'], [1080, '1080p'], [720, '720p'], [480, '480p']];
+// ブラウザで書き出すには大きい目安（4K より画素が多い・長い辺が 4096 を超える。H.264 のハードウェアエンコーダーの多くはここまで）
+const expLarge = (W, H) => W * H > 3840 * 2160 || Math.max(W, H) > 4096;
+// 保存先へ直接書けないブラウザで、一度に持てる出力の大きさ（変換ライブラリの上限）
+const EXP_MEM_MAX = 4 * 1024 ** 3;
+const EXP_AUDIO_BPS = 192000;
+const EXP_MIME = { mp4:'video/mp4', mov:'video/quicktime', webm:'video/webm', mkv:'video/x-matroska' };
+// 保存先を先に選んでもらい、そこへ少しずつ書く（Chrome / Edge など）。大きな動画もメモリに持たずに書き出せる
+const canSaveStream = () => typeof window.showSaveFilePicker === 'function';
+// 元動画の映像のビットレートとフレームレート（書き出しの画面を開いたときに調べる）
+const expSrc = { file: null, vbps: 0, fps: 0 };
+async function expProbeSource(){
+  const file = state.videoFile;
+  if (!file || expSrc.file === file) return;
+  Object.assign(expSrc, { file, vbps: 0, fps: 0 });
+  try {
+    const MB = await loadMediabunny();
+    const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(file) });
+    const [vt, at, dur] = await Promise.all([input.getPrimaryVideoTrack(), input.getPrimaryAudioTrack(), input.computeDuration()]);
+    const fps = vt ? (await vt.computePacketStats(120)).averagePacketRate : 0;
+    const abps = at ? (await at.computePacketStats(200)).averageBitrate : 0;
+    if (expSrc.file !== file) return;
+    expSrc.fps = fps > 0 && isFinite(fps) ? fps : 0;
+    if (dur > 0) expSrc.vbps = Math.max(0, file.size * 8 / dur - (abps || 0));
+  } catch (e){ console.warn('動画の情報を読めませんでした', e); }
+  if (expSrc.file === file && exportDlg.open && !exportState.running){ expFillBitrate(); expSyncForm(); }
+}
+const roundMbps = (bps) => { const m = bps / 1e6; return (m < 10 ? Math.round(m * 10) / 10 : Math.round(m)) * 1e6; };
+const fmtMbps = (bps) => roundMbps(bps) / 1e6 + ' Mbps';
+// 解像度とフレームレートに合ったビットレート（1080p 30fps で 8 Mbps。画素の数に合わせて増やし、30fps を超えるなら 1.5 倍）
+function expRecommendBps(W, H, fps){
+  const r = W * H / (1920 * 1080);
+  return roundMbps((r >= 1 ? 8 * r : 8 * r ** 0.75) * ((fps || 30) > 30 ? 1.5 : 1) * 1e6);
+}
+const expFpsOf = () => +$('#expFps').value || expSrc.fps || 30;
+function expFillBitrate(){
+  const sel = $('#expBitrate'), keep = sel.value || 'auto';
+  const { W, H } = exportSize(+$('#expRes').value || 720);
+  sel.replaceChildren();
+  const add = (v, l) => { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); };
+  add('auto', `解像度に合わせる（${fmtMbps(expRecommendBps(W, H, expFpsOf()))}）`);
+  if (expSrc.vbps > 0) add('src', `元動画と同じ（約 ${fmtMbps(expSrc.vbps)}）`);
+  for (const m of [2, 4, 8, 16, 30, 50, 80, 120]) add(m, `${m} Mbps`);
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'auto';
+}
+function expBitrate(W, H){
+  const v = $('#expBitrate').value;
+  return v === 'src' && expSrc.vbps > 0 ? roundMbps(expSrc.vbps) : v === 'auto' || v === 'src' || !v ? expRecommendBps(W, H, expFpsOf()) : +v * 1e6;
+}
+// 大きな動画向けに CLI（komenagare render）のコマンドを作る
+function expCliCmd(o){
+  const q = (v) => /^[\w.\/:-]+$/.test(v) ? v : `"${String(v).replace(/(["\\$`])/g, '\\$1')}"`;
+  const parts = ['komenagare render', q(state.videoName || 'video.mp4')];
+  if (!state.collab) parts.push('-c', q(state.fileName || defaultFileName('json')));
+  parts.push('--height', o.H);
+  if (settings.commentArea === 'wide') parts.push('--wide');
+  if (o.start > 0) parts.push('--start', fmtPrecise(o.start));
+  if (o.end < video.duration - 0.01) parts.push('--end', fmtPrecise(o.end));
+  return parts.join(' ');
+}
+function expCliHint(o){
+  const d = document.createElement('div'); d.className = 'exp-hint';
+  const c = document.createElement('code'); c.textContent = expCliCmd(o);
+  d.append('大きな動画は、CLI の komenagare render で書き出すのがおすすめです（ffmpeg で書き出すので、ブラウザのメモリやエンコーダーの制限を受けません）。'
+    + (state.collab ? '作業フォルダで: ' : 'コメントを JSON で保存してから、同じフォルダで: '), c);
+  return d;
+}
+const expWarn = (text) => { const d = document.createElement('div'); d.className = 'exp-hint'; d.textContent = text; return d; };
+// 見込みの大きさ（バイト）
+const expEstimate = (o) => (o.vbps + (o.audio ? EXP_AUDIO_BPS : 0)) * Math.max(0, o.end - o.start) / 8;
+const fmtBytes = (n) => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(1) + ' GB' : Math.max(0.1, n / 1024 ** 2).toFixed(1) + ' MB';
+let expCheckSeq = 0;
 function expSyncForm(){
   const fast = $('#expMode').value === 'fast';
   const cont = $('#expContainer');
@@ -1113,44 +1186,91 @@ function expSyncForm(){
   $('#expMuteRow').hidden = fast;
   if (!fast && $('#expFps').value === '0') $('#expFps').value = '30';
   $('#expFps').options[0].disabled = !fast;
+  const o = readExportOptions(), est = expEstimate(o);
+  const notes = [];
   let ok = true, out;
   if (fast){
-    out = `${CONTAINERS[cont.value].label}（コーデックは対応するものを自動で選択）`;
-    $('#expNote').textContent = '動画ファイルを直接読み込んで変換するので、再生するより速く書き出せます。'
+    out = `${CONTAINERS[cont.value].label}（確かめています…）`;
+    notes.push('動画ファイルを直接読み込んで変換するので、再生するより速く書き出せます。'
       + (fastExportInWorker() ? '処理はバックグラウンドで行うため、書き出し中もほかの作業やタブの切り替えができます。' : 'ファイルを直接開いているため、このタブで処理します（書き出し中はタブを開いたままにしてください）。')
-      + 'フレームレートを動画より高くすると、映像は元のコマのまま、コメントだけが指定したフレームレートで滑らかに動きます。';
+      + 'フレームレートを動画より高くすると、映像は元のコマのまま、コメントだけが指定したフレームレートで滑らかに動きます。'
+      + (canSaveStream() ? '書き出し開始で保存先を選ぶと、そこへ少しずつ書き込みます（長い動画もメモリをあまり使いません）。' : ''));
   } else {
     const mime = pickMime(cont.value);
     const canCapture = typeof HTMLCanvasElement.prototype.captureStream === 'function';
     ok = !!(mime && canCapture);
     out = ok ? mime : 'このブラウザはこの形式での録画に対応していません';
-    $('#expNote').textContent = '動画を実際に等倍で再生しながら録画するため、動画の長さと同じ時間がかかります。録画中はこのタブを前面に表示したままにしてください。パソコンの処理が追いつかないと、指定したフレームレートより粗くなることがあります。高速書き出しが使えない動画や環境向けです。';
+    notes.push('動画を実際に等倍で再生しながら録画するため、動画の長さと同じ時間がかかります。録画中はこのタブを前面に表示したままにしてください。パソコンの処理が追いつかないと、指定したフレームレートより粗くなることがあります。高速書き出しが使えない動画や環境向けです。');
   }
+  const nodes = notes.map(t => document.createTextNode(t));
+  if (fast && !canSaveStream() && est > EXP_MEM_MAX * 0.9)
+    nodes.push(expWarn(`見込みの大きさ（約 ${fmtBytes(est)}）が、このブラウザで一度に書き出せる 4 GB を超えそうです。ビットレートを下げるか、範囲を分けて書き出してください（Chrome / Edge なら保存先へ直接書き出せるので、この制限はありません）。`));
+  if (expLarge(o.W, o.H)){
+    nodes.push(expWarn(`この大きさ（${o.W}×${o.H}）はブラウザでの書き出しに時間がかかり、パソコンによっては途中で失敗することがあります。`));
+    nodes.push(expCliHint(o));
+  }
+  $('#expNote').replaceChildren(...nodes);
   $('#expFormat').textContent = out;
   $('#expStartBtn').disabled = !ok;
+  if (fast) expCheckCodec(o, est);
+}
+// この大きさ・形式でエンコードできるかを確かめて、使うコーデックを出す（できなければ書き出せる形式か CLI を案内する）
+async function expCheckCodec(o, est){
+  const seq = ++expCheckSeq;
+  const CODEC = { avc:'H.264', hevc:'H.265', vp9:'VP9', vp8:'VP8', av1:'AV1' };
+  const size = `・見込み 約 ${fmtBytes(est)}`;
+  let codec = null, others = [];
+  try {
+    const MB = await loadMediabunny();
+    codec = await exportPickCodec(MB, o.container, o.W, o.H, o.vbps);
+    if (!codec) for (const c of Object.keys(CONTAINERS)) if (c !== o.container && await exportPickCodec(MB, c, o.W, o.H, o.vbps)) others.push(CONTAINERS[c].label);
+  } catch (e){ console.warn(e); if (seq === expCheckSeq) $('#expFormat').textContent = `${CONTAINERS[o.container].label}${size}`; return; }
+  if (seq !== expCheckSeq || exportState.running) return;
+  if (codec){
+    $('#expFormat').textContent = `${CONTAINERS[o.container].label}・${CODEC[codec] || codec}${size}`
+      + ((o.container === 'mp4' || o.container === 'mkv') && codec !== 'avc' ? `（この大きさ・環境では H.264 が使えないため ${CODEC[codec] || codec}。古いプレーヤーでは再生できないことがあります）` : '');
+    $('#expStartBtn').disabled = false;
+    return;
+  }
+  $('#expFormat').textContent = `このブラウザでは、この大きさ（${o.W}×${o.H}）を ${CONTAINERS[o.container].label} で書き出せません。`
+    + (others.length ? `${others.join(' / ')} なら書き出せます。` : '解像度を下げてください。');
+  $('#expStartBtn').disabled = true;
+  if (!expLarge(o.W, o.H)) $('#expNote').append(expCliHint(o));
 }
 $('#expMode').onchange = expSyncForm;
 $('#expContainer').onchange = expSyncForm;
+$('#expRes').onchange = () => { expFillBitrate(); expSyncForm(); };
+$('#expFps').onchange = () => { expFillBitrate(); expSyncForm(); };
+$('#expBitrate').onchange = expSyncForm;
+for (const id of ['#expStart', '#expEnd']) $(id).addEventListener('change', expSyncForm);
+$('#expAudio').addEventListener('change', expSyncForm);
 $('#btnExport').onclick = () => {
   if (exportState.running){ exportDlg.showModal(); return; }
   if (!state.videoLoaded){ toast('先に動画を開いてください'); return; }
   // 解像度は短い辺の長さで選ぶ（縦長なら幅。1080p なら 1080×1920）
   const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
-  const same = Math.min(2160, state.stage.w >= state.stage.h ? vh : vw);
+  const same = state.stage.w >= state.stage.h ? vh : vw;
   const res = $('#expRes'); res.replaceChildren();
-  const size = (v) => { const { W, H } = exportSize(v); return `${W}×${H}`; };
-  const opts = [[same, `元動画と同じ (${size(same)})`], [1080, `1080p (${size(1080)})`], [720, `720p (${size(720)})`], [480, `480p (${size(480)})`]];
+  const label = (v, name) => { const { W, H } = exportSize(v); return `${name} (${W}×${H})` + (expLarge(W, H) ? ' ※大きい' : ''); };
+  const opts = [[same, label(same, '元動画と同じ')]];
+  for (const [v, name] of EXP_RES) if (v !== same && (v < same || v <= 1080)) opts.push([v, label(v, name)]);
   for (const [v, l] of opts){ const o = document.createElement('option'); o.value = v; o.textContent = l; res.append(o); }
+  // 元動画が大きいときは、大きくない中でいちばん大きいものを選んでおく（元動画と同じも選べる）
+  const fit = opts.find(([v]) => { const { W, H } = exportSize(v); return !expLarge(W, H); });
+  res.value = fit ? fit[0] : same;
   $('#expStart').value = '0:00';
   $('#expEnd').value = fmt(video.duration);
   const fastOk = canFastExport();
   $('#expMode').options[0].disabled = !fastOk;
   $('#expMode').value = fastOk ? 'fast' : 'realtime';
   if (fastOk) $('#expFps').value = '0';
-  $('#expText').textContent = ''; $('#expBar').style.width = '0%';
+  $('#expText').textContent = ''; $('#expHint').replaceChildren(); $('#expBar').style.width = '0%';
+  $('#expBitrate').value = 'auto';
+  expFillBitrate();
   expSyncForm();
   expSetBusy(false);
   exportDlg.showModal();
+  expProbeSource();
 };
 $('#expClose').onclick = () => { if (!exportUsesPlayer()) exportDlg.close(); };
 $('#expBg').onclick = () => { exportDlg.close(); toast('書き出しをバックグラウンドで続けます（上の「書き出し中」ボタンで進み具合を確認できます）', { timeout:5000 }); };
@@ -1160,12 +1280,22 @@ $('#expCancel').onclick = () => {
   if (exportState.worker) exportState.worker.postMessage({ type:'cancel' });
   if (exportState.ctl){ exportState.ctl.canceled = true; exportState.ctl.conv?.cancel().catch(() => {}); }
 };
+// メモリが足りない・出力が大きすぎるときのエラー
+const expMemError = (e) => /array ?buffer|allocation failed|out of memory|maximum size|RangeError|QuotaExceeded/i.test(`${e?.name} ${e?.message}`);
 $('#expStartBtn').onclick = () => {
+  const o = readExportOptions();
   const run = $('#expMode').value === 'fast' ? runFastExport : runRealtimeExport;
+  $('#expHint').replaceChildren();
   run().catch(e => {
     console.error(e);
     expSetBusy(false);
     expProgress(0, '失敗しました: ' + e.message);
+    const hint = [];
+    if (expMemError(e)) hint.push(expWarn(canSaveStream()
+      ? 'メモリが足りなかったようです。ビットレートや解像度を下げるか、範囲を分けて書き出してください。'
+      : 'メモリが足りないか、出力が大きすぎたようです（このブラウザでは一度に 4 GB まで）。ビットレートを下げるか範囲を分けるか、Chrome / Edge（保存先へ直接書き出せる）を使ってください。'));
+    if (expMemError(e) || expLarge(o.W, o.H) || e.code === 'unencodable') hint.push(expCliHint(o));
+    $('#expHint').replaceChildren(...hint);
     toast('書き出しに失敗しました: ' + e.message, { type:'error', timeout:8000 });
   });
 };
@@ -1180,27 +1310,50 @@ function readExportOptions(){
   const dur = video.duration;
   let start = parseTime($('#expStart').value); if (!isFinite(start) || start < 0) start = 0;
   let end = parseTime($('#expEnd').value); if (!isFinite(end) || end > dur) end = dur;
-  return { W, H, stage: state.stage, fps: +$('#expFps').value, vbps: +$('#expBitrate').value * 1e6, start, end,
+  return { W, H, stage: state.stage, fps: +$('#expFps').value, vbps: expBitrate(W, H), start, end,
     audio: $('#expAudio').checked, container: $('#expContainer').value };
+}
+// 保存先を選んでもらう（選べないブラウザでは null。やめたら false）
+async function expPickSaveFile(container){
+  if (!canSaveStream()) return null;
+  try {
+    return await window.showSaveFilePicker({ suggestedName: exportFileName(container),
+      types: [{ description: `${CONTAINERS[container].label} 動画`, accept: { [EXP_MIME[container]]: ['.' + container] } }] });
+  } catch (e){
+    if (e.name === 'AbortError') return false;
+    // 保存先の画面を開けない環境（埋め込み表示など）では、今までどおりダウンロードで書き出す
+    console.warn('保存先を選べないため、ダウンロードで書き出します', e);
+    return null;
+  }
+}
+// 書き出しに失敗・中止したとき、空のまま残った保存先のファイルを消す（上書きしようとした元のファイルはそのまま残る）
+async function expDropEmpty(handle){
+  try { if (handle && (await handle.getFile()).size === 0) await handle.remove?.(); } catch {}
 }
 function exportFileName(ext){ return `${baseName(state.videoName) || 'video'}_comments.${ext}`; }
 
 /* ---------- 高速書き出し（WebCodecs。Web Worker で処理し、使えない環境ではこのタブで処理） ---------- */
+let mediabunnyLoading = null;
 function loadMediabunny(){
   if (window.Mediabunny) return Promise.resolve(window.Mediabunny);
-  return new Promise((resolve, reject) => {
+  // 同時に呼ばれても1度だけ読み込む（失敗したら次に呼ばれたときに読み直す）
+  return mediabunnyLoading = mediabunnyLoading || new Promise((resolve, reject) => {
     const sc = document.createElement('script');
     sc.src = MB_URL;
     sc.onload = () => window.Mediabunny ? resolve(window.Mediabunny) : reject(new Error('変換ライブラリを読み込めませんでした'));
     sc.onerror = () => reject(new Error('変換ライブラリ（lib/' + MB_URL.split('/').pop() + '）が見つかりません。index.html と同じ場所に lib フォルダを置いてください'));
     document.head.append(sc);
-  });
+  }).catch(e => { mediabunnyLoading = null; throw e; });
 }
 // 元動画の映像をこのブラウザの WebCodecs でデコードできないとき（Firefox で HEVC など）の書き出し。
 // 映像は再生プレーヤーから元のコマを1つずつ取り込み（等倍で再生しながら取り込み、取りこぼしたコマはシークして取る）、
 // エンコードと音声は高速書き出しと同じ仕組みで行う
 async function exportViaPlayer(MB, d, ctl){
-  const { input, format, output, vcodec, track } = await exportSetup(MB, d);
+  const setup = await exportSetup(MB, d);
+  try { return await exportViaPlayerWith(MB, d, ctl, setup); }
+  catch (e){ await exportAbort(setup.sink); throw e; }
+}
+async function exportViaPlayerWith(MB, d, ctl, { input, format, output, vcodec, track, sink: fileSink }){
   // 範囲内の元のコマの時刻（表示順）
   const sink = new MB.EncodedPacketSink(track);
   const meta = { metadataOnly: true };
@@ -1311,7 +1464,9 @@ async function exportViaPlayer(MB, d, ctl){
     video.playbackRate = saved.rate; video.muted = saved.muted;
     video.currentTime = saved.t;
   }
-  return { buffer: output.target.buffer, mime: format.mimeType, ext: format.fileExtension.replace(/^\./, ''), codec: vcodec,
+  const buffer = fileSink ? null : output.target.buffer;
+  const size = fileSink ? await exportCommit(d, fileSink) : buffer.byteLength;
+  return { buffer, size, mime: format.mimeType, ext: format.fileExtension.replace(/^\./, ''), codec: vcodec,
     audioDropped, viaPlayer: true };
 }
 function snapshotLayouts(start, end){
@@ -1327,7 +1482,11 @@ async function runFastExport(){
   const o = readExportOptions();
   if (o.end - o.start < 0.5){ toast('書き出し範囲が短すぎます', { type:'error' }); return; }
   if (!state.videoFile) throw new Error('動画ファイルが見つかりません');
-  const d = { type: 'start', lib: MB_URL, file: state.videoFile, layouts: snapshotLayouts(o.start, o.end), ...o };
+  const handle = await expPickSaveFile(o.container);
+  if (handle === false) return;
+  if (!handle && expEstimate(o) > EXP_MEM_MAX * 0.9
+    && !confirm(`見込みの大きさ（約 ${fmtBytes(expEstimate(o))}）が、このブラウザで一度に書き出せる 4 GB を超えそうです。途中で失敗することがありますが、書き出しますか？`)) return;
+  const d = { type: 'start', lib: MB_URL, file: state.videoFile, layouts: snapshotLayouts(o.start, o.end), ...o, handle };
   exportState.mode = 'fast'; exportState.cancel = false;
   expSetBusy(true);
   expProgress(0, '準備中…');
@@ -1339,16 +1498,18 @@ async function runFastExport(){
     const left = p > 0.02 ? el * (1 - p) / p : NaN;
     expProgress(p, (exportState.mode === 'seek' ? 'プレーヤーから読み込みながら書き出し中（このタブを前面に表示したままにしてください）… ' : '書き出し中… ') + `${Math.floor(p * 100)}%` + (speed ? `（再生速度の約 ${speed.toFixed(1)} 倍` + (isFinite(left) ? `・残り約 ${fmt(left)}` : '') + '）' : ''));
   };
+  let done = false;
   const onDone = (m) => {
-    const name = exportFileName(m.ext);
-    download(new Blob([m.buffer], { type: m.mime }), name);
+    done = true;
+    const name = handle ? handle.name : exportFileName(m.ext);
+    if (m.buffer) download(new Blob([m.buffer], { type: m.mime }), name);
     const el = (performance.now() - t0) / 1000;
     const CODEC = { avc:'H.264', hevc:'H.265', vp9:'VP9', vp8:'VP8', av1:'AV1' };
-    expProgress(1, `完了: ${name}（${CODEC[m.codec] || m.codec}・${o.fps ? o.fps + 'fps' : '元動画と同じfps'}・${(m.buffer.byteLength / 1048576).toFixed(1)} MB・${fmt(span)} 分を ${fmt(el)} で書き出し）`
+    expProgress(1, `完了: ${name}（${CODEC[m.codec] || m.codec}・${o.fps ? o.fps + 'fps' : '元動画と同じfps'}・${fmtBytes(m.size)}・${fmt(span)} 分を ${fmt(el)} で書き出し）`
       + ((o.container === 'mp4' || o.container === 'mkv') && m.codec !== 'avc' ? '　※この環境では H.264 が使えないため ' + (CODEC[m.codec] || m.codec) + ' で書き出しました（古いプレーヤーでは再生できないことがあります）' : '')
       + (m.audioDropped ? '　※音声はこの形式に変換できなかったため含まれていません' : '')
       + (m.viaPlayer ? '　※このブラウザでは元動画を直接デコードできないため、プレーヤーで1コマずつ読み込んで書き出しました' : ''));
-    toast(`${name} を書き出しました`, { timeout:6000 });
+    toast(handle ? `${name} に書き出しました` : `${name} を書き出しました`, { timeout:6000 });
   };
   // このタブで変換する（ファイルを直接開いているとき・プレーヤーから映像を取り出すとき）
   const inTab = async (convert) => {
@@ -1394,7 +1555,10 @@ async function runFastExport(){
       expProgress(0, e.message + '。プレーヤーで1コマずつ読み込みながら書き出します…');
       await inTab(exportViaPlayer);
     }
-  } finally { expSetBusy(false); }
+  } finally {
+    expSetBusy(false);
+    if (!done) await expDropEmpty(handle);
+  }
 }
 
 /* ---------- リアルタイム録画（互換モード） ---------- */
@@ -1403,6 +1567,9 @@ async function runRealtimeExport(){
   const mime = pickMime(o.container); if (!mime) return;
   const { W, H, start, end } = o, fps = o.fps || 30, vbps = o.vbps;
   if (end - start < 0.5){ toast('書き出し範囲が短すぎます', { type:'error' }); return; }
+  // 保存先を選べるブラウザでは、録画したものを少しずつそこへ書く
+  const handle = await expPickSaveFile(o.container);
+  if (handle === false) return;
 
   const g = o.audio ? ensureAudioGraph() : null;
   if (g) await g.actx.resume().catch(() => {});
@@ -1422,8 +1589,9 @@ async function runRealtimeExport(){
   expSetBusy(true);
   expProgress(0, '準備中…');
 
-  let rec = null;
+  let rec = null, sink = null, done = false;
   try {
+    if (handle) sink = await handle.createWritable();
     video.pause();
     video.playbackRate = 1;
     if (g){
@@ -1437,7 +1605,12 @@ async function runRealtimeExport(){
     if (g) tracks.push(...g.dest.stream.getAudioTracks());
     rec = new MediaRecorder(new MediaStream(tracks), { mimeType: mime, videoBitsPerSecond: vbps, audioBitsPerSecond: 192000 });
     const chunks = [];
-    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    let writing = Promise.resolve(), writeError = null;
+    rec.ondataavailable = (e) => {
+      if (!e.data || !e.data.size) return;
+      if (sink) writing = writing.then(() => sink.write(e.data)).catch(err => { writeError = writeError || err; exportState.cancel = true; });
+      else chunks.push(e.data);
+    };
     const stopped = new Promise(r => { rec.onstop = r; });
     rec.start(1000);
     await video.play();
@@ -1455,16 +1628,27 @@ async function runRealtimeExport(){
     video.pause();
     rec.stop();
     await stopped;
+    await writing;
+    if (writeError) throw writeError;
     if (!exportState.cancel){
-      const name = exportFileName(o.container);
-      download(new Blob(chunks, { type: mime.split(';')[0] }), name);
-      expProgress(1, `完了: ${name} をダウンロードしました`);
-      toast(`${name} を書き出しました`);
+      if (sink){
+        await sink.close(); sink = null; done = true;
+        expProgress(1, `完了: ${handle.name} に書き出しました（${fmtBytes((await handle.getFile()).size)}）`);
+        toast(`${handle.name} に書き出しました`);
+      } else {
+        const name = exportFileName(o.container);
+        download(new Blob(chunks, { type: mime.split(';')[0] }), name);
+        done = true;
+        expProgress(1, `完了: ${name} をダウンロードしました`);
+        toast(`${name} を書き出しました`);
+      }
     } else {
       expProgress(0, '中止しました');
     }
   } finally {
     if (rec && rec.state !== 'inactive') try { rec.stop(); } catch {}
+    if (sink) await sink.abort().catch(() => {});
+    if (!done) await expDropEmpty(handle);
     video.pause();
     video.playbackRate = saved.rate;
     if (g) g.speaker.gain.value = 1;

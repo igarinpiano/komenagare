@@ -252,6 +252,9 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .help td:first-child{white-space:nowrap;color:#ccc}
 .muted{color:var(--muted);font-size:12px}
 .exp-audio{display:flex;flex-direction:column;gap:4px}
+.exp-hint{margin-top:6px;color:#e5c07b}
+.exp-hint code{display:block;margin-top:4px;padding:4px 6px;background:#111;border:1px solid #333;border-radius:4px;color:#ddd;font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}
+#expHint .exp-hint:first-child{margin-top:8px}
 #btnExport.busy{background:#3a2a10;border-color:#a8741c;color:#ffd58a}
 
 /* ---------- side tabs / panes ---------- */
