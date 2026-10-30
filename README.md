@@ -170,6 +170,18 @@ komenagare ~/projects/a --otp --tunnel ngrok
 - Quick Tunnel の URL は起動のたびに変わります。`--otp` のログインはブラウザが URL ごとに覚えるので、URL が変わるとログインし直しになります（Quick Tunnel なら合言葉の方が手軽です）。
 - Linux の Tailscale で権限のエラーが出たら、一度 `sudo tailscale set --operator=$USER` を実行してください。
 
+##### メールアドレスで入れる人を絞る（--allowed-mail。Cloudflare Quick Tunnel）
+
+```sh
+komenagare ~/projects/a --otp --tunnel cloudflare --allowed-mail 'alice@example.com,bob@example.com'
+komenagare ~/projects/a --otp --tunnel cloudflare --allowed-mail '*@example.com'   # ドメインごと
+```
+
+- 公開 URL を開いた人は、まず Cloudflare の画面でメールアドレスを入れ、届いた PIN で確認します。許可したアドレスの人だけが komenagare のページまで届きます（cloudflared 2026.9.3 以上が要ります）。
+- 確認は最長 4 時間有効です。切れるとつながらなくなるので、画面の案内に従ってページを再読み込みし、確認し直してください（未送信の変更はブラウザに残ります）。
+- 誰のアドレスかは komenagare には渡らないので、名前・管理者・`--remote` は今までどおり `--otp` で決めます（`--otp` と一緒に使います）。
+- 許すアドレスを変えるには komenagare を起動し直します（URL も変わります）。
+
 #### 自分で用意したトンネル・サーバー（--public-url）
 
 トンネルやリバースプロキシを自分で動かすときは、その URL を `--public-url` で渡します（環境変数 `KOMENAGARE_PUBLIC_URL` でも可）。共有・招待のリンクがその URL になります。

@@ -66,6 +66,10 @@ struct Args {
     /// トンネルを始めて、ローカルネットワークの外から入れるようにする（cloudflared / tailscale / ngrok が必要）
     #[arg(long, value_enum, value_name = "KIND")]
     tunnel: Option<tunnel::Kind>,
+    /// 入れる人をメールアドレスで絞る（--tunnel cloudflare と --otp のとき。cloudflared 2026.9.3 以上）。
+    /// 開いた人はまずメールに届く PIN で確認する（最長 4 時間）。「,」区切りか繰り返しで並べ、'*@example.com' でドメインごと
+    #[arg(long, value_name = "EMAIL", requires = "tunnel")]
+    allowed_mail: Vec<String>,
     /// 外から入るときの URL（自分で用意したトンネルやリバースプロキシのもの。共有・招待のリンクに使う）
     #[arg(
         long,
@@ -470,11 +474,23 @@ async fn run(args: Args) -> Result<()> {
     if args.tunnel.is_some() && matches!(server.access, server::Access::None) {
         bail!("トンネルでインターネットに公開するときは --no-token は使えません（--otp か合言葉で入るようにしてください）");
     }
+    let allowed_mail = if args.allowed_mail.is_empty() {
+        vec![]
+    } else {
+        if args.tunnel != Some(tunnel::Kind::Cloudflare) {
+            bail!("--allowed-mail は --tunnel cloudflare のときだけ使えます");
+        }
+        // メールの確認では誰なのかが komenagare に渡らないので、名前や管理者は --otp で決める
+        if !matches!(server.access, server::Access::Otp(_)) {
+            bail!("--allowed-mail は --otp と一緒に使ってください（メールの確認では、誰なのかが komenagare に渡らないため）");
+        }
+        tunnel::parse_allowed_mail(&args.allowed_mail)?
+    };
     let mut tunnel = None;
     let public = match args.tunnel {
         Some(kind) => {
             println!("{} を始めています…", kind.label());
-            let (t, url) = tunnel::start(kind, addr.port()).await?;
+            let (t, url) = tunnel::start(kind, addr.port(), &allowed_mail).await?;
             tunnel = Some(t);
             Some(url)
         }
@@ -485,6 +501,7 @@ async fn run(args: Args) -> Result<()> {
             .transpose()?,
     };
     server.set_public_url(public.clone());
+    server.set_email_gate(!allowed_mail.is_empty());
     if let (server::Access::Otp(a), Some(u)) = (&server.access, &public) {
         tunnel::write_url_file(a.dir(), Some(u))?;
     }
@@ -559,6 +576,12 @@ async fn run(args: Args) -> Result<()> {
         }
         if args.tunnel == Some(tunnel::Kind::Cloudflare) {
             println!("  ※ Quick Tunnel の URL は起動のたびに変わります（変わるとワンタイムパスワードでのログインもやり直しです）");
+        }
+        if !allowed_mail.is_empty() {
+            println!(
+                "  メールの確認: 公開 URL を開いた人は、まずメールに届く PIN で確認します（入れるのは {}。最長 4 時間）",
+                allowed_mail.join("・")
+            );
         }
     }
     if addr.ip().is_unspecified() {

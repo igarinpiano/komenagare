@@ -5,6 +5,11 @@
 //! komenagare が cloudflared / tailscale / ngrok を子プロセスとして起動し、それが出力する公開 URL を読み取る。
 //! 公開 URL は、共有の URL・管理者用の URL・招待のリンクに使う。komenagare を止めればトンネルも止まる。
 //! 自分で用意したトンネルやリバースプロキシ（名前付きトンネル、VPS と Caddy など）なら --public-url で URL を渡す。
+//!
+//! Cloudflare Quick Tunnel では --allowed-mail を cloudflared に渡せる（cloudflared 2026.9.3 から）。
+//! 開いた人は、まず Cloudflare Access の画面でメールに届く PIN を入れ、許可したアドレスの人だけがページまで届く
+//! （最長 4 時間。cloudflared を止めると全員入れなくなる）。誰のアドレスかは komenagare には渡らないので、
+//! 名前や管理者かどうかは今までどおり --otp で決める。
 
 use anyhow::{bail, Context, Result};
 use std::process::Stdio;
@@ -44,15 +49,20 @@ impl Kind {
         .into()
     }
 
-    fn args(self, port: u16) -> Vec<String> {
+    fn args(self, port: u16, allowed_mail: &[String]) -> Vec<String> {
         let target = format!("http://127.0.0.1:{port}");
         match self {
-            Kind::Cloudflare => vec![
-                "tunnel".into(),
-                "--no-autoupdate".into(),
-                "--url".into(),
-                target,
-            ],
+            Kind::Cloudflare => {
+                let mut a: Vec<String> = vec![
+                    "tunnel".into(),
+                    "--no-autoupdate".into(),
+                    "--url".into(),
+                    target,
+                ];
+                // 「--allowed-mail=値」の1つにまとめて渡す（値がほかのオプションとして読まれないように）
+                a.extend(allowed_mail.iter().map(|m| format!("--allowed-mail={m}")));
+                a
+            }
             Kind::Tailscale => vec!["funnel".into(), port.to_string()],
             Kind::Ngrok => vec![
                 "http".into(),
@@ -123,11 +133,90 @@ impl Tunnel {
     }
 }
 
-/// トンネルを始めて、公開 URL が分かるまで待つ
-pub async fn start(kind: Kind, port: u16) -> Result<(Tunnel, String)> {
+/// --allowed-mail を使える cloudflared の版
+pub const ALLOWED_MAIL_SINCE: (u32, u32, u32) = (2026, 9, 3);
+
+/// --allowed-mail の値をそろえる（「,」区切りも分ける）。メールアドレスか「*@ドメイン」でなければ断る
+pub fn parse_allowed_mail(values: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = vec![];
+    for v in values.iter().flat_map(|v| v.split(',')) {
+        let m = v.trim();
+        if m.is_empty() {
+            continue;
+        }
+        let ok = m.split_once('@').is_some_and(|(user, domain)| {
+            !user.is_empty()
+                && (user == "*" || !user.contains('*'))
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+                && !domain.contains(['@', '*'])
+        }) && !m.starts_with('-')
+            && !m.chars().any(|c| c.is_whitespace() || c.is_control());
+        if !ok {
+            bail!("--allowed-mail の「{m}」はメールアドレスではありません（例 alice@example.com、ドメインごとなら '*@example.com'）");
+        }
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(m)) {
+            out.push(m.to_string());
+        }
+    }
+    if out.is_empty() {
+        bail!("--allowed-mail にメールアドレスを指定してください");
+    }
+    Ok(out)
+}
+
+/// 「cloudflared version 2026.9.3 (built …)」から版を読む
+fn parse_cloudflared_version(text: &str) -> Option<(u32, u32, u32)> {
+    text.split_whitespace().find_map(|w| {
+        let mut p = w.trim_start_matches('v').split('.');
+        let v = (
+            p.next()?.parse().ok()?,
+            p.next()?.parse().ok()?,
+            p.next()?.parse().ok()?,
+        );
+        p.next().is_none().then_some(v)
+    })
+}
+
+/// cloudflared が --allowed-mail を使える版か確かめる（版が読めなければ cloudflared に任せる）
+fn check_allowed_mail_support(program: &str) -> Result<()> {
+    let Ok(out) = std::process::Command::new(program)
+        .arg("--version")
+        .output()
+    else {
+        return Ok(()); // 見つからないときは、起動するところで案内する
+    };
+    let text = format!(
+        "{} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if let Some(v) = parse_cloudflared_version(&text) {
+        if v < ALLOWED_MAIL_SINCE {
+            let (a, b, c) = ALLOWED_MAIL_SINCE;
+            bail!(
+                "--allowed-mail には cloudflared {a}.{b}.{c} 以上が要ります（今は {}.{}.{}）。cloudflared を更新してください（macOS なら brew upgrade cloudflared）",
+                v.0,
+                v.1,
+                v.2
+            );
+        }
+    }
+    Ok(())
+}
+
+/// トンネルを始めて、公開 URL が分かるまで待つ。allowed_mail を渡すと、そのアドレスの人だけが入れる（Cloudflare のみ）
+pub async fn start(kind: Kind, port: u16, allowed_mail: &[String]) -> Result<(Tunnel, String)> {
     let program = kind.program();
+    if !allowed_mail.is_empty() {
+        if kind != Kind::Cloudflare {
+            bail!("--allowed-mail は --tunnel cloudflare のときだけ使えます");
+        }
+        check_allowed_mail_support(&program)?;
+    }
     let mut child = tokio::process::Command::new(&program)
-        .args(kind.args(port))
+        .args(kind.args(port, allowed_mail))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -286,6 +375,65 @@ mod tests {
             Kind::Ngrok.find_url("not json https://x.ngrok-free.app"),
             None
         );
+    }
+
+    #[test]
+    fn allowed_mail_goes_to_cloudflared() {
+        let m = parse_allowed_mail(&[
+            "alice@example.com, bob@example.com".into(),
+            "*@example.org".into(),
+            "Alice@example.com".into(),
+        ])
+        .unwrap();
+        assert_eq!(m, ["alice@example.com", "bob@example.com", "*@example.org"]);
+        let a = Kind::Cloudflare.args(8080, &m);
+        assert_eq!(
+            a,
+            [
+                "tunnel",
+                "--no-autoupdate",
+                "--url",
+                "http://127.0.0.1:8080",
+                "--allowed-mail=alice@example.com",
+                "--allowed-mail=bob@example.com",
+                "--allowed-mail=*@example.org"
+            ]
+        );
+        // 指定しなければ今までどおり
+        assert_eq!(Kind::Cloudflare.args(8080, &[]).len(), 4);
+        for bad in [
+            "alice",
+            "@example.com",
+            "alice@",
+            "alice@localhost",
+            "a b@example.com",
+            "a*b@example.com",
+            "*@*.example.com",
+            "alice@example.com.",
+            "--url=x@example.com x",
+            "--url=x@example.com",
+            " , ",
+        ] {
+            assert!(
+                parse_allowed_mail(&[bad.into()]).is_err(),
+                "{bad} を受け付けました"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_cloudflared_version() {
+        assert_eq!(
+            parse_cloudflared_version("cloudflared version 2026.9.3 (built 2026-09-15-1200 UTC)"),
+            Some((2026, 9, 3))
+        );
+        assert_eq!(
+            parse_cloudflared_version("cloudflared version 2025.11.1 (built ...)"),
+            Some((2025, 11, 1))
+        );
+        assert!(Some((2025, 11, 1)) < Some(ALLOWED_MAIL_SINCE));
+        assert!((2026, 10, 0) > ALLOWED_MAIL_SINCE);
+        assert_eq!(parse_cloudflared_version("cloudflared version DEV"), None);
     }
 
     #[test]

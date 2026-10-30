@@ -25,7 +25,7 @@
   - `auth.rs` — 参加者ごとのワンタイムパスワード（`--otp`、`komenagare otp`）。1件1ファイルで置き、動いているホストと `komenagare otp` が同時に書いても壊れないようにする
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
-  - `tunnel.rs` — `--tunnel`（cloudflared / tailscale / ngrok を子プロセスで起動し、出力から公開 URL を読む）と `--public-url`。公開 URL は共有・招待のリンクに使い、ページには `<meta>` の `data-public-url` で渡す
+  - `tunnel.rs` — `--tunnel`（cloudflared / tailscale / ngrok を子プロセスで起動し、出力から公開 URL を読む）と `--public-url`。公開 URL は共有・招待のリンクに使い、ページには `<meta>` の `data-public-url` で渡す。`--allowed-mail`（Cloudflare のみ・`--otp` と一緒）は cloudflared に渡してメールの PIN で入る人を絞り、ページには `data-email-gate` で知らせる（確認が切れたら再読み込みを案内する）
   - `firewall.rs` — macOS のファイアウォールの検出と許可（LAN で待ち受けたら自分の LAN のアドレスにつないでみて、切られたら許可するコマンドを y/N で実行する。socketfilterfw の出力の文言には頼らない）
   - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）。署名（`web.sums` と `web.sums.minisig`）が合い、手元の控えより新しいものだけを使う
   - `sign.rs` — 署名（minisign）を確かめる。公開鍵は `cli/minisign.pub`（CLI に埋め込む）。リリースは `SHA256SUMS` に `komenagare-release tag:vX.Y.Z`、Web アプリは `web.sums` に `komenagare-web protocol:N time:T` の署名
