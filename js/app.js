@@ -3213,6 +3213,8 @@ const collab = {
   auth: document.querySelector('meta[name="komenagare-host"]')?.dataset.auth || 'token',
   // 外から入るときの URL（ホストの --tunnel / --public-url。招待のリンクに使う。localhost で開いていても外の人に渡せるように）
   publicUrl: document.querySelector('meta[name="komenagare-host"]')?.dataset.publicUrl || '',
+  // 公開 URL の手前でメールの確認（ホストの --allowed-mail。Cloudflare Access の PIN）をしているか
+  emailGate: document.querySelector('meta[name="komenagare-host"]')?.dataset.emailGate === '1',
   session: null, // --otp のときのログイン（{ token, name, admin }。localStorage に控える）
   project: null, projects: [], // 開いているプロジェクト（{ id, name }）と、ホストにあるプロジェクトの一覧
   workspace: 'default', // 控え（IndexedDB）の名前に使う。プロジェクトの id
@@ -3328,7 +3330,21 @@ function collabConnect(){
     if (!was) collab.failed++;
     collabUI();
     collab.timer = setTimeout(collabConnect, Math.min(10000, 1000 * 2 ** Math.min(collab.retry++, 4)));
+    if (collab.emailGate && collab.failed === 2) collabCheckEmailGate();
   };
+}
+// メールの確認（--allowed-mail）の期限が切れると、ページの読み込みが確認の画面へ転送され、つながらなくなる。
+// そうなっていたら、つなぎ直すのをやめて再読み込み（確認のやり直し）を案内する
+async function collabCheckEmailGate(){
+  let r;
+  try { r = await fetch(location.pathname + '?gate=' + Date.now(), { redirect: 'manual', cache: 'no-store', credentials: 'same-origin' }); }
+  catch { return; } // ネットワークが切れている・ホストが止まっているなど（いつもどおりつなぎ直す）
+  if (!(r.type === 'opaqueredirect' || r.status === 401 || r.status === 403) || collab.connected) return;
+  clearTimeout(collab.timer);
+  collab.blocked = 'email';
+  if (collab.ws) collab.ws.close();
+  collabUI();
+  toast('メールでの確認の期限が切れました。ページを再読み込みして、もう一度確認してください（未送信の変更はこのブラウザに残っています）', { type:'error', timeout:15000, action:{ label:'再読み込み', fn: () => location.reload() } });
 }
 
 function collabHandle(m){
@@ -3448,7 +3464,7 @@ function collabUI(){
     el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで参加者の一覧（追いかける・表示名の変更）`;
   } else {
     el.className = 'collab off';
-    const blocked = { protocol: '○ ページを再読み込みしてください', auth: '○ ログインしてください', project: '○ プロジェクトを選んでください' }[collab.blocked];
+    const blocked = { protocol: '○ ページを再読み込みしてください', auth: '○ ログインしてください', project: '○ プロジェクトを選んでください', email: '○ メールでの確認の期限切れ（再読み込み）' }[collab.blocked];
     el.textContent = (blocked || (collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン')) + (pending ? `（未送信 ${pending}）` : '');
     el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
   }
@@ -3663,7 +3679,7 @@ async function loadConflicts(){
 /* ---------- プロジェクト ---------- */
 async function collabInit(){
   if (!state.collab) return;
-  $('#collabStatus').onclick = peersOpen;
+  $('#collabStatus').onclick = () => { if (collab.blocked === 'email') location.reload(); else peersOpen(); };
   $('#projectBtn').onclick = () => projectsOpen();
   $('#projectBtn').hidden = false;
   $('#projectBtn').textContent = '📁 プロジェクト';

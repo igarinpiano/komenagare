@@ -108,6 +108,8 @@ pub struct Server {
     web_dir: Option<PathBuf>,
     /// 外から入るときの URL（--tunnel / --public-url。招待のリンクに使う）
     public_url: std::sync::RwLock<Option<String>>,
+    /// 公開 URL の手前でメールの確認（--allowed-mail。Cloudflare Access の PIN）をしているか
+    email_gate: std::sync::atomic::AtomicBool,
     next_conn: AtomicU64,
     /// まだ hello（ログイン）を済ませていない接続の数
     pending: AtomicUsize,
@@ -138,6 +140,7 @@ impl Server {
             remote,
             web_dir,
             public_url: std::sync::RwLock::new(None),
+            email_gate: std::sync::atomic::AtomicBool::new(false),
             next_conn: AtomicU64::new(1),
             pending: AtomicUsize::new(0),
             shutdown: tokio::sync::watch::channel(false).0,
@@ -148,6 +151,11 @@ impl Server {
 
     pub fn set_public_url(&self, url: Option<String>) {
         *self.public_url.write().unwrap() = url;
+    }
+
+    pub fn set_email_gate(&self, on: bool) {
+        self.email_gate
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn project(&self, id: Option<&str>) -> Option<&Project> {
@@ -384,10 +392,16 @@ async fn static_handler(State(server): State<Arc<Server>>, uri: Uri) -> Response
             .as_deref()
             .map(|u| format!(" data-public-url=\"{}\"", html_attr(u)))
             .unwrap_or_default();
+        // メールの確認（--allowed-mail）の期限が切れると、公開 URL からはつながらなくなる。ページはそれを案内する
+        let gate = if server.email_gate.load(std::sync::atomic::Ordering::Relaxed) {
+            " data-email-gate=\"1\""
+        } else {
+            ""
+        };
         let html = String::from_utf8_lossy(&data).replacen(
             "</head>",
             &format!(
-                "<meta name=\"komenagare-host\" content=\"{}\" data-auth=\"{}\"{public}>\n</head>",
+                "<meta name=\"komenagare-host\" content=\"{}\" data-auth=\"{}\"{public}{gate}>\n</head>",
                 env!("CARGO_PKG_VERSION"),
                 server.access.label()
             ),

@@ -41,6 +41,15 @@ pub struct Remote {
     pub users: Vec<String>,
 }
 
+/// --remote-users で決まった意味を持つ言葉（参加者の名前には使わせない。大文字・小文字は区別しない）
+pub const RESERVED_USERS: [&str; 2] = ["admin", "all"];
+
+pub fn is_reserved_user(name: &str) -> bool {
+    RESERVED_USERS
+        .iter()
+        .any(|r| name.trim().eq_ignore_ascii_case(r))
+}
+
 impl Remote {
     pub fn new(mode: Mode, users: &str) -> Remote {
         let users = users
