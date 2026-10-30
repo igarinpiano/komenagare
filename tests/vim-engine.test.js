@@ -271,6 +271,23 @@ t(':q modified', 'a', 'x:q<CR>', 'a'.slice(1), undefined, { msg:'E37' });
 t(':w', 'a', 'x:w<CR>', '', undefined, { msg:'w' });
 t(':set', 'a', ':set nonu<CR>', 'a');
 t(':unknown', 'a', ':foo<CR>', 'a', undefined, { msg:'E492' });
+{
+  // :set の変更を知らせる（アプリが設定を控える）。& と all& で既定に戻す
+  let n = 0;
+  const E = mk('a', { onOption: () => n++ });
+  const run = (keys) => { for (const k of toks(keys)) E.feed(k); };
+  const check = (name, ok) => { if (ok) pass++; else { fail++; console.log(`FAIL ${name}  opts=${JSON.stringify(E.opts)} n=${n}`); } };
+  run(':set nowrap lbr<CR>');
+  check(':set nowrap lbr', E.opts.wrap === false && E.opts.linebreak === true && n === 1);
+  run(':set wrap?<CR>');
+  check(':set wrap? does not notify', n === 1);
+  run(':set wrap&<CR>');
+  check(':set wrap&', E.opts.wrap === true && E.opts.linebreak === true && n === 2);
+  run(':set sw=4 all&<CR>');
+  check(':set all&', JSON.stringify(E.opts) === JSON.stringify(E.optDefaults) && n === 3);
+  run(':set nowrap foo<CR>');
+  check(':set error still notifies', E.opts.wrap === false && n === 4 && E.msg.includes('E518'));
+}
 // --- marks / jumps
 t("m '", 'a\nb\nc', "jmaG'a", undefined, [1,0]);
 t('m `', 'abc\nd', 'lmaG`a', undefined, [0,1]);
