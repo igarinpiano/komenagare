@@ -212,7 +212,7 @@
       <label for="expFps">フレームレート</label>
       <select id="expFps"><option value="0">動画に合わせる</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select>
       <label for="expBitrate">ビットレート</label>
-      <select id="expBitrate"><option value="4">4 Mbps</option><option value="8" selected>8 Mbps</option><option value="16">16 Mbps</option><option value="30">30 Mbps</option></select>
+      <select id="expBitrate"></select>
       <label>範囲</label>
       <div class="inline"><input type="text" id="expStart" value="0:00"> 〜 <input type="text" id="expEnd" value=""></div>
       <label>音声</label>
@@ -226,6 +226,7 @@
     <div id="expProgressBox" hidden>
       <div class="progress"><div id="expBar"></div></div>
       <div id="expText" class="muted"></div>
+      <div id="expHint" class="muted"></div>
     </div>
   </div>
   <div class="dlg-foot">
@@ -421,7 +422,7 @@
     <p class="muted" style="margin:0">入力欄の下の「＋ プリセットを登録」（登録後は「⚙ 編集」）から、よく使うコメント（<code>888</code> など）を好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿、Shift+クリックで入力欄に挿入。先頭10個はキー <code>1</code>〜<code>9</code>, <code>0</code> でも投稿できます。</p>
 
     <h4>書き出し</h4>
-    <p class="muted" style="margin:0">「高速」は動画ファイルを直接デコード・エンコードするので再生より速く、処理中も編集やタブの切り替えができます（「バックグラウンドで続行」でダイアログを閉じても続きます）。形式は MP4 / MOV / WebM / MKV。対応していない環境や動画では「リアルタイム録画」を使ってください。</p>
+    <p class="muted" style="margin:0">「高速」は動画ファイルを直接デコード・エンコードするので再生より速く、処理中も編集やタブの切り替えができます（「バックグラウンドで続行」でダイアログを閉じても続きます）。形式は MP4 / MOV / WebM / MKV。対応していない環境や動画では「リアルタイム録画」を使ってください。解像度は元動画と同じ大きさ（8K なども）か、それより小さい大きさを選べます。ビットレートは「解像度に合わせる」「元動画と同じ」か数値で選べます。Chrome / Edge などでは書き出し開始で保存先を選び、そこへ少しずつ書き込むので、長い動画もメモリをあまり使いません。保存先を選べないブラウザではダウンロードで保存し、一度に書き出せるのは 4 GB までです。8K のような大きな動画は、CLI の <code>komenagare render</code> で書き出すのがおすすめです。</p>
 
     <h4>Vim エディタ</h4>
     <p class="muted" style="margin:0">コメントを1行1件のテキスト（<code>01:23.45 ue red | 本文</code>）として Vim のキー操作で編集できます。時刻やコマンドを書き換えて <code>:w</code> で反映、<code>:q</code> で閉じます。<code>:now</code> で再生位置に行を追加、<code>:seek</code> でカーソル行の時刻へ移動。長い行は折り返して表示します。<code>:set nowrap</code> で折り返さない（横にスクロール）、<code>:set linebreak</code> で単語の区切りで折り返します（<code>:set</code> で変えた設定は次に開いたときも使われます）。対応キーの一覧はエディタ内で <code>:help</code>。スマホでは画面下のキーバーで Esc や Ctrl を入力できます（Esc は上の :w の隣にもあります）。</p>

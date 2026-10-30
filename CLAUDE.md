@@ -10,7 +10,7 @@
 - `js/comment-store.js` — コメントの保管と変更（DOM 非依存）。UUID v7、変更セット、3-way マージによる衝突の検出、打ち消し（元に戻す）
 - `js/comment-csv.js` — コメントの CSV の書き出しと読み取り（DOM 非依存）。表計算ソフトで数式にならないよう、先頭が `'*[=+\-@\t\r]` のセルに `'` を足し、コメナガレの CSV（見出しが `time,command,text,id`）を読むときに外す。`cli/src/files.rs` も同じ規則で読む（両方を同じに保つ）
 - `js/comment-render.js` — コメント描画の定数と描画処理（画面・書き出し・ワーカーで共通）
-- `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通
+- `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通。保存先のファイル（`showSaveFilePicker` が使えるブラウザ）があれば少しずつそこへ書き、無ければ今までどおり出力をメモリに持ってダウンロードする（4 GiB まで）。どちらの方式も残す
 - `js/export-worker.js` — 高速書き出し用 Web Worker
 - `js/term-ansi.js` — ターミナル（`--remote`）の出力の色（ANSI のエスケープシーケンス）の読み取り（DOM 非依存。Node からも `require` できる）
 - `js/app.js` — アプリ本体（1つの IIFE。上のファイルのグローバルを使う）
