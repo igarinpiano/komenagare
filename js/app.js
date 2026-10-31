@@ -2460,12 +2460,12 @@ TL.main.addEventListener('pointerdown', (e) => {
     return;
   }
   const hit = tlHit(p.x, p.y, touch);
-  // 範囲選択: Option（Alt）＋ドラッグはどこからでも、Ctrl・⌘＋ドラッグと「範囲選択」ボタンがオンのときは空いている所から。
-  // Shift・Ctrl・⌘ も押していれば今の選択に足す
-  const add = e.shiftKey || e.ctrlKey || e.metaKey;
+  // 複数選択: ⌘（Windows・Linux は Ctrl）＋ドラッグで範囲を囲み、今の選択に足す（コメントの上から始めてもよい。
+  // 動かさずに離したら、今まで通りそのコメントを足す・外す）。「範囲選択」ボタンがオンのときは、空いている所のドラッグで囲む
+  const multi = e.ctrlKey || e.metaKey;
   const empty = !hit || touch && !TL.sel.has(hit.c.id);
-  if (p.x >= TL_HEAD && (e.altKey || empty && (e.ctrlKey || e.metaKey || TL.marqueeMode))){
-    TL.drag = { ...base, type:'marquee', at: xt(p.x), ay: p.y + TL.scrollY, base: add ? new Set(TL.sel) : new Set() };
+  if (p.x >= TL_HEAD && (multi || empty && TL.marqueeMode)){
+    TL.drag = { ...base, type:'marquee', at: xt(p.x), ay: p.y + TL.scrollY, base: multi ? new Set(TL.sel) : new Set(), toggle: multi && hit ? hit.c.id : null, multi };
     return;
   }
   // Shift＋横にドラッグ（空いている所から）: その長さのコメントを、その段（上・流・下）に作る
@@ -2512,19 +2512,19 @@ TL.main.addEventListener('pointermove', (e) => {
   else if (d.orig){ d.lastX = p.x; tlDragUpdate(p.x); }
   TL.dirty = true;
 });
-// マウスを重ねているときのカーソル（Option を押していれば範囲選択の十字、Shift なら空いている所でコメントを作る印）
+// マウスを重ねているときのカーソル（⌘・Ctrl を押していれば複数選択の十字、Shift なら空いている所でコメントを作る印）
 function tlCursor(mods){
   const p = TL.hover;
   if (!p || TL.drag) return;
   const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
   TL.main.style.cursor = p.y < TL_RULER ? 'col-resize'
-    : p.x >= TL_HEAD && (mods.altKey || !hit && (mods.ctrlKey || mods.metaKey || TL.marqueeMode)) ? 'crosshair'
+    : p.x >= TL_HEAD && (mods.ctrlKey || mods.metaKey || !hit && TL.marqueeMode) ? 'crosshair'
     : p.x >= TL_HEAD && mods.shiftKey && !hit && tlGroupAt(p.y) != null ? 'copy'
     : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
 }
 TL.main.addEventListener('pointerleave', () => { TL.hover = null; });
 // 押しているキーが変わったら、マウスを動かさなくてもカーソルを変える
-for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Alt', 'Shift', 'Control', 'Meta'].includes(e.key)) tlCursor(e); });
+for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Shift', 'Control', 'Meta'].includes(e.key)) tlCursor(e); });
 window.addEventListener('blur', () => tlCursor({}));
 // Shift＋ドラッグで作るコメント: ドラッグした範囲が見えている間になるように、時刻と表示時間を決めて新規の画面を開く
 // （流れるコメントは 1 秒前から見えるので、始まりを 1 秒後ろにする）
@@ -2555,6 +2555,11 @@ function tlPointerEnd(e, cancel){
   const dbl = !!TL.lastTap && now - TL.lastTap.time < 380 && Math.hypot(p.x - TL.lastTap.x, p.y - TL.lastTap.y) < 24;
   TL.lastTap = dbl ? null : { time: now, x: p.x, y: p.y };
   if (d.type === 'scrub') return;
+  // ⌘（Ctrl）＋クリック: そのコメントを選択に足す・外す（空いている所なら何もしない。選択はそのまま）
+  if (d.type === 'marquee' && d.multi){
+    if (d.toggle){ if (TL.sel.has(d.toggle)) TL.sel.delete(d.toggle); else TL.sel.add(d.toggle); tlSelChanged(); TL.dirty = true; }
+    return;
+  }
   const hit = tlHit(p.x, p.y, d.touch);
   if (hit){
     if (d.type !== 'none' && !(TL.sel.size === 1 && TL.sel.has(hit.c.id))){ TL.sel.clear(); TL.sel.add(hit.c.id); tlSelChanged(); }
