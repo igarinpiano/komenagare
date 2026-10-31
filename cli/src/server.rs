@@ -21,11 +21,13 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":6,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき)}
+//!   {"type":"hello","protocol":7,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき)}
 //!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
+//!   {"type":"call","state":{"t":秒,"sel":[...]}}             「ここ見て」（ほかの人に一度だけ配る。覚えない）
+//!   {"type":"ping"}                                          生きているかの確認（pong が返る）。何も届かない接続は切る
 //!   {"type":"conflict_add","conflicts":[{"key":..,...}]}     「あとで」にした衝突を全員に見せる
 //!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
 //!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
@@ -34,6 +36,8 @@
 //!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
 //!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
+//!   {"type":"call","id":接続id,"name":"名前","state":{...}}   ほかの人の「ここ見て」
+//!   {"type":"pong"}                                          ping への返事
 //!   {"type":"conflicts","list":[{"key",..,"author","client"}]} 保留中の衝突（変わるたびに全体）
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
 //!   {"type":"history","entries":[{"rev","time","author","change"},...]} 最近の変更（新しい順）
@@ -65,7 +69,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -204,6 +208,11 @@ struct Peer {
 const CONFLICTS_KEEP: usize = 500;
 /// presence 1件の大きさの上限（バイト）
 const PRESENCE_MAX: usize = 16 * 1024;
+/// これだけ何も届かない接続は切る（ブラウザは 20 秒ごとに ping を送る。裏のタブは 1 分に 1 回ほどに
+/// 間引かれることがあるので余裕を持たせる）。回線が黙って切れた人を参加者の一覧に残さない
+const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// 「ここ見て」を送れる間隔の最短（ほかの人の画面をお知らせで埋めないように）
+const CALL_GAP: Duration = Duration::from_secs(2);
 
 /// 変更履歴として覚えておく件数
 pub const HISTORY_KEEP: usize = 1000;
@@ -871,6 +880,10 @@ async fn connection(
     // つないでから hello が届くまで待つ（届かなければ切る）
     let hello_deadline = tokio::time::sleep(HELLO_TIMEOUT);
     tokio::pin!(hello_deadline);
+    // 最後に何か届いてから IDLE_TIMEOUT たったら切る
+    let idle = tokio::time::sleep(IDLE_TIMEOUT);
+    tokio::pin!(idle);
+    let mut last_call: Option<Instant> = None;
     let kick = |out_tx: &tokio::sync::mpsc::UnboundedSender<String>| {
         let _ = out_tx.send(
             json!({ "type": "error", "code": "auth", "message": "ログインし直してください" })
@@ -882,6 +895,7 @@ async fn connection(
             m = stream.next() => match m { Some(Ok(m)) => m, _ => break },
             _ = shutdown.changed() => break,
             _ = &mut hello_deadline, if !joined => break,
+            _ = &mut idle, if joined => break,
             r = revoked.recv() => {
                 if matches!((&r, &session), (Ok(id), Some(s)) if id == s) { kick(&out_tx); break; }
                 continue;
@@ -893,6 +907,8 @@ async fn connection(
                 continue;
             }
         };
+        idle.as_mut()
+            .reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
         let text = match msg {
             Message::Text(t) => t,
             // hello より前は、hello 以外（バイナリ）を送ってきたら切る
@@ -992,6 +1008,21 @@ async fn connection(
                 p.presence = Some(state.clone());
                 let msg = json!({ "type": "presence", "id": conn, "state": state }).to_string();
                 let _ = hub.tx.send((conn, msg.into()));
+            }
+            Some("ping") => {
+                let _ = out_tx.send(r#"{"type":"pong"}"#.to_string());
+            }
+            Some("call") => {
+                let state = &v["state"];
+                if !state.is_object() || text.len() > PRESENCE_MAX {
+                    continue;
+                }
+                if last_call.is_some_and(|t| t.elapsed() < CALL_GAP) {
+                    continue;
+                }
+                last_call = Some(Instant::now());
+                let msg = json!({ "type": "call", "id": conn, "name": name, "state": state });
+                let _ = hub.tx.send((conn, msg.to_string().into()));
             }
             Some("conflict_add") => {
                 let mut inner = hub.inner.lock().await;

@@ -43,7 +43,7 @@
         <video id="video" playsinline preload="auto"></video>
         <canvas id="commentCanvas"></canvas>
         <div class="peer-cursors" id="peerCursors"></div>
-        <div class="follow-bar" id="followBar" hidden><span class="dot"></span><span><b id="followName"></b> を追いかけています</span><button id="followStop">やめる</button></div>
+        <div class="follow-bar" id="followBar" hidden><span class="dot"></span><span><b id="followName"></b> を追いかけています<span id="followWaiting" hidden>（つなぎ直すのを待っています）</span></span><button id="followStop">やめる</button></div>
         <div class="empty" id="emptyState">
           <div class="empty-title">動画ファイルをここにドロップ</div>
           <div class="empty-sub">または上の「動画を開く」から選択してください。<br>
@@ -66,6 +66,8 @@
           </div>
           <div class="spacer"></div>
           <span class="ccount" id="commentCount">コメント 0</span>
+          <button class="icon" id="btnCall" hidden title="ここ見て：今の再生位置（と選んでいるコメント）を、ほかの参加者に知らせる"></button>
+          <button class="icon" id="btnLink" title="この位置へのリンクをコピー（コメントを1件選んでいれば、そのコメントへのリンク）"></button>
           <select id="rate" title="再生速度">
             <option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1" selected>1.0x</option>
             <option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2.0x</option>
@@ -434,7 +436,9 @@
     <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、「⚠ 衝突」から自分の変更にする・相手のままにする・両方残すを選べます。「あとで」にした衝突はほかの参加者にも出て、誰でも選べます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
     <p class="muted" style="margin:6px 0 0">ホストが複数のプロジェクトを共有しているときは、右上の「📁」からプロジェクトを切り替えたり、新しいタブで開いたりできます（同じプロジェクトを複数のタブで開いてもかまいません）。ホストがワンタイムパスワードを使っているときは、最初に受け取ったワンタイムパスワードでログインします。</p>
     <p class="muted" style="margin:6px 0 0">ローカルネットワークの外から使うときは、ホストを <code>komenagare --otp --tunnel tailscale</code>（または <code>cloudflare</code> / <code>ngrok</code>）で起動するか、自分で用意した URL を <code>--public-url</code> で渡します。詳しくは README を見てください。</p>
-    <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます）。</p>
+    <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます。回線が切れても、同じ人がつなぎ直してくれば追いかけ続けます）。参加者が入ったり抜けたりすると、短く知らせます。</p>
+    <p class="muted" style="margin:6px 0 0">再生バーの 📣（ここ見て）を押すと、今の再生位置と選んでいるコメントをほかの参加者に知らせます。受け取った人は「見る」でそこへ移れます。🔗 は今の位置へのリンク（コメントを1件選んでいればそのコメントへのリンク）をコピーします。メッセージで送れば、開いた人がそこへ移ります（動画を開く前なら、開いたときに移ります）。</p>
+    <p class="muted" style="margin:6px 0 0">動画は各自が手元のファイルを開くので、ほかの人と動画の長さが違うと知らせます（違う動画だと、コメントの出る場面がずれます）。参加者の一覧にも出ます。</p>
     <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「⌨ ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
 
     <h4>ファイル形式</h4>

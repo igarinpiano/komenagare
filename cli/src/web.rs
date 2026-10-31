@@ -307,28 +307,31 @@ mod tests {
     #[test]
     fn verifies_signed_cache() {
         let key = test_key();
-        assert_eq!(verify_dir(&fixture_dir(), &key, 6).unwrap(), 1_700_000_000);
+        assert_eq!(
+            verify_dir(&fixture_dir(), &key, PROTOCOL).unwrap(),
+            1_700_000_000
+        );
         // 別の鍵・違う版数では使わない
         let other =
             minisign_verify::PublicKey::decode(include_str!("../../tests/fixtures/sign/other.pub"))
                 .unwrap();
-        assert!(verify_dir(&fixture_dir(), &other, 6).is_err());
-        assert!(verify_dir(&fixture_dir(), &key, 5).is_err());
+        assert!(verify_dir(&fixture_dir(), &other, PROTOCOL).is_err());
+        assert!(verify_dir(&fixture_dir(), &key, PROTOCOL - 1).is_err());
 
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         copy_dir(&fixture_dir(), d);
         // ファイルを書き換えた控え
         std::fs::write(d.join("js/app.js"), "alert(1);\n").unwrap();
-        assert!(verify_dir(d, &key, 6).is_err());
+        assert!(verify_dir(d, &key, PROTOCOL).is_err());
         copy_dir(&fixture_dir(), d);
-        assert!(verify_dir(d, &key, 6).is_ok());
+        assert!(verify_dir(d, &key, PROTOCOL).is_ok());
         // ファイルが欠けた控え・署名の無い控え（前の版の komenagare が取ってきたもの）
         std::fs::remove_file(d.join("index.html")).unwrap();
-        assert!(verify_dir(d, &key, 6).is_err());
+        assert!(verify_dir(d, &key, PROTOCOL).is_err());
         copy_dir(&fixture_dir(), d);
         std::fs::remove_file(d.join(SIG)).unwrap();
-        assert!(verify_dir(d, &key, 6).is_err());
+        assert!(verify_dir(d, &key, PROTOCOL).is_err());
         // 公開鍵がまだ置かれていなければ、控えは使わない（内蔵の Web アプリを使う）
         if crate::sign::trusted_key().is_err() {
             assert!(!cached_usable(&fixture_dir()));

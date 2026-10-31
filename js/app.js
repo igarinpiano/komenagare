@@ -371,8 +371,12 @@ const ICON = {
   full:'<svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z"/></svg>',
   cmt:'<svg viewBox="0 0 24 24"><path d="M4 4h16v12H8.5L4 20zm3 4v2h10V8zm0 3v2h7v-2z" fill-rule="evenodd"/></svg>',
   cmtOff:'<svg viewBox="0 0 24 24"><path d="M4 4h16v12H8.5L4 20zm3 4v2h10V8zm0 3v2h7v-2z" fill-rule="evenodd"/><path d="M3 3l18 18" stroke="#eee" stroke-width="2"/></svg>',
+  link:'<svg viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>',
+  call:'<svg viewBox="0 0 24 24"><path d="M18 11v2h4v-2zm-2 6.61c.96.71 2.21 1.65 3.2 2.39.4-.53.8-1.07 1.2-1.6-.99-.74-2.24-1.68-3.2-2.4-.4.54-.8 1.08-1.2 1.61zM20.4 5.6c-.4-.53-.8-1.07-1.2-1.6-.99.74-2.24 1.68-3.2 2.4.4.53.8 1.07 1.2 1.6.96-.72 2.21-1.65 3.2-2.4zM4 9c-1.1 0-2 .9-2 2v2c0 1.1.9 2 2 2h1v4h2v-4h1l5 3V6L8 9zm11.5 3c0-1.33-.58-2.53-1.5-3.35v6.69c.92-.81 1.5-2.01 1.5-3.34z"/></svg>',
 };
 $('#btnFull').innerHTML = ICON.full;
+$('#btnLink').innerHTML = ICON.link;
+$('#btnCall').innerHTML = ICON.call;
 function updatePlayIcon(){ $('#btnPlay').innerHTML = video.paused ? ICON.play : ICON.pause; }
 function updateVolIcon(){ $('#btnMute').innerHTML = (video.muted || video.volume === 0) ? ICON.mute : ICON.vol; }
 function updateCommentIcon(){
@@ -416,6 +420,7 @@ video.addEventListener('loadedmetadata', () => {
   tlResetView();
   if (state.videoRestoreAt != null){ video.currentTime = Math.min(state.videoRestoreAt, video.duration || 0); state.videoRestoreAt = null; }
   if (state.viewRestore){ tlRestoreView(state.viewRestore); state.viewRestore = null; }
+  presenceDirty(); videoCheck(); linkTry();
 });
 video.addEventListener('error', () => {
   if (!video.src) return;
@@ -3201,7 +3206,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 6;
+const COLLAB_PROTOCOL = 7;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
@@ -3209,6 +3214,12 @@ const collab = {
   me: null, peerList: [], // 自分の接続 id と、参加者（{ id, name, client }）
   presence: new Map(), // 接続 id → { state, at }（ほかの人の再生位置・選択・カーソル）
   follow: null, // 追いかけている人の接続 id
+  // 追いかけている人のブラウザの id と名前（どちらかがつなぎ直して接続 id が変わっても、同じ人を追いかけ続ける）
+  followClient: null, followName: '', followWait: 0,
+  synced: false, // このプロジェクトでホストから全体（snapshot）を受け取ったか
+  pingAt: 0, pongTimer: 0, // 返事を待っている ping を送った時刻と、待つのをやめる timer
+  // 入退室のお知らせ（つないで最初の peers では入った人を知らせない）・抜けたお知らせの保留・切れる前にいた人
+  peersReady: false, leaving: new Map(), lastPeers: [],
   // 入り方（token: URL の k= / otp: 参加者ごとのワンタイムパスワード / none）
   auth: document.querySelector('meta[name="komenagare-host"]')?.dataset.auth || 'token',
   // 外から入るときの URL（ホストの --tunnel / --public-url。招待のリンクに使う。localhost で開いていても外の人に渡せるように）
@@ -3318,21 +3329,58 @@ function collabConnect(){
   const ws = new WebSocket(url);
   collab.ws = ws;
   ws.onopen = () => { ws.send(JSON.stringify(collabHello())); };
-  ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } collabHandle(m); };
-  ws.onclose = () => {
-    if (collab.ws !== ws) return;
-    if (collab.blocked){ collab.connected = false; collabUI(); return; }
-    const was = collab.connected;
-    collab.connected = false; collab.peers = []; collab.peerList = []; collab.presence.clear();
-    termDropped('接続が切れたため');
-    if (collab.follow != null) collabUnfollow();
-    presenceChanged();
-    if (!was) collab.failed++;
-    collabUI();
-    collab.timer = setTimeout(collabConnect, Math.min(10000, 1000 * 2 ** Math.min(collab.retry++, 4)));
-    if (collab.emailGate && collab.failed === 2) collabCheckEmailGate();
+  ws.onmessage = (ev) => {
+    // 何か届けば生きている
+    collab.pingAt = 0; clearTimeout(collab.pongTimer);
+    let m; try { m = JSON.parse(ev.data); } catch { return; } collabHandle(m);
   };
+  ws.onclose = () => collabClosed(ws);
 }
+function collabClosed(ws){
+  if (collab.ws !== ws) return;
+  collab.pingAt = 0; clearTimeout(collab.pongTimer);
+  if (collab.blocked){ collab.connected = false; collabUI(); return; }
+  const was = collab.connected;
+  if (collab.peersReady) collab.lastPeers = collab.peerList;
+  collab.connected = false; collab.peers = []; collab.peerList = []; collab.presence.clear(); collab.peersReady = false;
+  termDropped('接続が切れたため');
+  followLost();
+  presenceChanged();
+  if (!was) collab.failed++;
+  collabUI();
+  collab.timer = setTimeout(collabConnect, Math.min(10000, 1000 * 2 ** Math.min(collab.retry++, 4)));
+  if (collab.emailGate && collab.failed === 2) collabCheckEmailGate();
+}
+// 返事の無い接続を見切ってつなぎ直す（回線が黙って切れると、ブラウザが気づくまで何分もかかる）
+function collabLost(ws){
+  if (collab.ws !== ws) return;
+  ws.onclose = ws.onmessage = null;
+  try { ws.close(); } catch {}
+  collabClosed(ws);
+}
+// 生きているかを確かめる（返事が timeout ミリ秒のうちに無ければ、つなぎ直す）。
+// 定期的に送るのは、何も流れない接続をトンネルなどの途中で切られないようにするためでもある
+const COLLAB_PING_MS = 20000, COLLAB_PONG_MS = 10000;
+function collabPing(timeout = COLLAB_PONG_MS){
+  if (!collab.connected || collab.pingAt) return;
+  const ws = collab.ws;
+  collab.pingAt = performance.now();
+  try { ws.send('{"type":"ping"}'); } catch {}
+  clearTimeout(collab.pongTimer);
+  collab.pongTimer = setTimeout(() => { if (collab.pingAt) collabLost(ws); }, timeout);
+}
+setInterval(collabPing, COLLAB_PING_MS);
+// ネットワークが戻ったとき・タブが前に出たときは、待たずにつなぎ直す（つながっているなら確かめる）
+function collabWake(){
+  if (!state.collab || !collab.project || collab.blocked) return;
+  if (collab.connected){ collabPing(5000); return; }
+  // つなぎかけ・ログイン待ちの接続があれば、それに任せる
+  if (collab.ws && collab.ws.readyState <= WebSocket.OPEN) return;
+  collab.retry = 0;
+  collabConnect();
+}
+window.addEventListener('online', collabWake);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') collabWake(); });
 // メールの確認（--allowed-mail）の期限が切れると、ページの読み込みが確認の画面へ転送され、つながらなくなる。
 // そうなっていたら、つなぎ直すのをやめて再読み込み（確認のやり直し）を案内する
 async function collabCheckEmailGate(){
@@ -3356,6 +3404,7 @@ function collabHandle(m){
     commentsChanged();
     collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null; collab.myClient = typeof m.client === 'string' ? m.client : null;
     collab.remote = m.remote || null;
+    collab.synced = true; collab.peersReady = false;
     termDropped('接続し直したため');
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
     collabShareConflicts();
@@ -3363,6 +3412,7 @@ function collabHandle(m){
     collabSaveSoon();
     collabUI();
     histChanged();
+    linkTry();
   } else if (m.type === 'change'){
     const r = store.apply(m.change);
     if (r.applied){ commentsChanged(); collabSaveSoon(); }
@@ -3387,15 +3437,23 @@ function collabHandle(m){
     hist.entries = m.entries || [];
     histRender();
   } else if (m.type === 'peers'){
+    const before = collab.peerList;
     collab.peers = m.names || [];
     collab.peerList = m.peers || [];
     const ids = new Set(collab.peerList.map(p => p.id));
     for (const id of [...collab.presence.keys()]) if (!ids.has(id)) collab.presence.delete(id);
-    if (collab.follow != null && !ids.has(collab.follow)) collabUnfollow('追いかけていた人が抜けました');
+    peersAnnounce(collab.peersReady ? before : collab.lastPeers, collab.peerList, !collab.peersReady);
+    collab.peersReady = true;
+    if (collab.follow != null && !ids.has(collab.follow)) followLost();
+    followRebind();
     collabUI(); presenceChanged();
+  } else if (m.type === 'call'){
+    callReceived(m);
   } else if (m.type === 'presence'){
     if (m.id === collab.me) return;
-    collab.presence.set(m.id, { state: cleanPresence(m.state), at: performance.now() });
+    const pr = { state: cleanPresence(m.state), at: performance.now() };
+    collab.presence.set(m.id, pr);
+    videoCheckPeer(m.id, pr);
     presenceChanged();
     if (m.id === collab.follow) followApply(true);
   } else if (m.type === 'conflicts'){
@@ -3457,6 +3515,8 @@ function collabUI(){
   if (!el) return;
   termUI();
   el.hidden = !state.collab;
+  $('#btnCall').hidden = !state.collab;
+  $('#btnCall').disabled = !collab.connected;
   const pending = collab.outbox.length;
   if (collab.connected){
     el.className = 'collab on';
@@ -3765,13 +3825,17 @@ function collabClose(){
   const ws = collab.ws;
   collab.ws = null;
   clearTimeout(collab.timer); clearTimeout(collab.saveTimer); clearTimeout(presence.timer); presence.timer = 0;
+  clearTimeout(collab.pongTimer); clearTimeout(collab.followWait);
+  for (const t of collab.leaving.values()) clearTimeout(t);
+  collab.leaving.clear();
   if (ws){ try { ws.close(); } catch {} }
   if (collab.db){ collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts:' + collab.owner)).catch(() => {}); }
   ownerRelease();
   const db = collab.db;
   setTimeout(() => db?.close(), 1000); // 書きかけの控えを書き終えてから閉じる
   Object.assign(collab, { db: null, connected: false, blocked: false, retry: 0, failed: 0, me: null, serverName: null,
-    outbox: [], conflicts: [], shared: [], peers: [], peerList: [], follow: null, project: null });
+    outbox: [], conflicts: [], shared: [], peers: [], peerList: [], follow: null, followClient: null, project: null,
+    synced: false, pingAt: 0, peersReady: false, lastPeers: [] });
   collab.presence.clear();
   presence.sent = '';
   followUI();
@@ -4002,7 +4066,7 @@ const cleanLane = (y) => y && typeof y === 'object' && Number.isInteger(y.g) && 
   ? { g: y.g, l: clamp(finiteOr(y.l, 0), 0, 10000) } : null;
 function cleanPresence(s){
   if (!s || typeof s !== 'object') return {};
-  const v = s.view, c = s.cur;
+  const v = s.view, c = s.cur, vd = s.video;
   const t = finiteOr(s.t);
   return {
     t: t == null ? undefined : Math.max(0, t),
@@ -4015,7 +4079,14 @@ function cleanPresence(s){
     cur: !c || typeof c !== 'object' ? null
       : c.a === 'st' ? (finiteOr(c.x) != null && finiteOr(c.y) != null ? { a: 'st', x: clamp(c.x, 0, 1), y: clamp(c.y, 0, 1) } : null)
       : c.a === 'tl' && finiteOr(c.t) != null ? { a: 'tl', t: c.t, y: cleanLane(c.y) } : null,
+    video: vd && typeof vd === 'object' && finiteOr(vd.d, 0) > 0
+      ? { d: vd.d, name: typeof vd.name === 'string' ? vd.name.slice(0, 200) : '' } : null,
   };
+}
+// 「ここ見て」（{ t: 秒, sel: [コメントの id] }。形が違えば null）
+function cleanCall(s){
+  if (!s || typeof s !== 'object' || finiteOr(s.t) == null) return null;
+  return { t: Math.max(0, s.t), sel: Array.isArray(s.sel) ? s.sel.filter(x => typeof x === 'string' && x.length <= 64).slice(0, 200) : [] };
 }
 // 衝突の記録の時刻・コマンド・本文（形が違えば null）
 const cleanConflictFields = (v) => v && typeof v === 'object' && finiteOr(v.t) != null ? normFields(v.t, v.cmd, v.text) : null;
@@ -4180,6 +4251,8 @@ function presenceState(){
     sel: [...TL.sel].slice(0, 200),
     view: TL.inited && tlShown() ? { t0: +TL.t0.toFixed(3), span: +((TL.W - TL_HEAD) / TL.pps).toFixed(3), y: tlYToLane(TL.scrollY) } : null,
     cur: presence.cursor,
+    // 開いている動画（ほかの人と同じ動画かを長さで確かめる）
+    video: state.videoLoaded && isFinite(video.duration) ? { d: +video.duration.toFixed(3), name: clipStr(state.videoName || '', 200) } : null,
   };
 }
 function presenceDirty(){
@@ -4345,6 +4418,8 @@ function presenceText(s, t = s.t){
   if (typeof t !== 'number') return '—';
   const parts = [(s.playing ? '再生中 ' : '停止中 ') + fmt(t)];
   if (s.sel && s.sel.length) parts.push(`${s.sel.length} 件選択中`);
+  if (!s.video) parts.push('動画を開いていません');
+  else if (videoDiffers(s.video)) parts.push(`⚠ 動画の長さが違います（${fmtPrecise(s.video.d)}）`);
   return parts.join('　');
 }
 function peersRender(){
@@ -4380,23 +4455,50 @@ function peersUpdate(){
 function peersOpen(){ peersRender(); if (!$('#peersDlg').open) $('#peersDlg').showModal(); }
 $('#peersClose').onclick = () => $('#peersDlg').close();
 
+// 追いかけている人か自分の接続が切れてから、つなぎ直してくるのを待つ時間
+const FOLLOW_WAIT_MS = 20000;
+const following = () => collab.follow != null || collab.followClient != null;
 function collabFollow(id){
   if (id == null || id === collab.me) return collabUnfollow();
-  collab.follow = id;
+  const p = peerOf(id);
+  clearTimeout(collab.followWait);
+  collab.follow = id; collab.followClient = p?.client || null; collab.followName = p?.name || '';
   followUI();
   followApply();
 }
 function collabUnfollow(msg){
-  if (collab.follow == null) return;
-  collab.follow = null;
+  if (!following()) return;
+  clearTimeout(collab.followWait);
+  collab.follow = null; collab.followClient = null;
   followUI();
   if (msg) toast(msg, { timeout: 2500 });
 }
+// 追いかけている人（か自分）の接続が切れた。しばらくは、同じブラウザでつなぎ直してくるのを待つ
+function followLost(){
+  if (collab.follow == null) return;
+  collab.follow = null;
+  if (!collab.followClient) return collabUnfollow('追いかけていた人が抜けました');
+  clearTimeout(collab.followWait);
+  collab.followWait = setTimeout(() => collabUnfollow('追いかけていた人が抜けました'), FOLLOW_WAIT_MS);
+  followUI();
+}
+// 追いかけていた人（のブラウザ）がまた一覧にいれば、その接続を追いかける
+function followRebind(){
+  if (collab.follow != null || !collab.followClient) return;
+  const p = collab.peerList.find(p => p.client === collab.followClient && p.id !== collab.me);
+  if (!p) return;
+  clearTimeout(collab.followWait);
+  collab.follow = p.id; collab.followName = p.name;
+  followUI();
+  followApply();
+}
 function followUI(){
-  const p = collab.follow != null ? peerOf(collab.follow) : null;
-  $('#followBar').hidden = !p;
-  $('#player').classList.toggle('following', !!p);
-  if (p){ $('#player').style.setProperty('--peer', peerColor(p)); $('#followName').textContent = p.name; }
+  const p = collab.follow != null ? peerOf(collab.follow) : null, waiting = !p && collab.followClient != null;
+  $('#followBar').hidden = !p && !waiting;
+  $('#player').classList.toggle('following', !!p || waiting);
+  if (p) $('#player').style.setProperty('--peer', peerColor(p));
+  $('#followName').textContent = p ? p.name : collab.followName;
+  $('#followWaiting').hidden = !waiting;
   if ($('#peersDlg').open) peersRender();
 }
 // 追いかけている人の再生位置・速さ・タイムラインの表示に合わせる（その人の様子が届くたび）
@@ -4427,10 +4529,165 @@ for (const el of [TL.main, TL.ovBox, tlVbar, seekEl, stage, list, $('#btnPlay'),
 }
 for (const el of [TL.main, TL.ovBox]) el.addEventListener('wheel', () => collabUnfollow(), { capture: true, passive: true });
 document.addEventListener('keydown', (e) => {
-  if (collab.follow == null || e.ctrlKey || e.metaKey || e.altKey || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+  if (!following() || e.ctrlKey || e.metaKey || e.altKey || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || document.querySelector('dialog[open]')) return;
   collabUnfollow();
 }, true);
+
+/* ---------- 同じ動画を開いているか ----------
+   動画は各自が手元のファイルを開くので、長さを presence で配り合い、違えば知らせる
+   （再エンコードや切り出しで長さが違うと、同じ時刻のコメントが違う場面に出る） */
+const VIDEO_DIFF = 0.5; // これより長さが違えば別の動画とみなす（秒）
+const videoWarned = new Set();
+function videoDiffers(v){
+  return !!(v && state.videoLoaded && isFinite(video.duration) && Math.abs(v.d - video.duration) > VIDEO_DIFF);
+}
+function videoCheckPeer(id, pr){
+  const p = peerOf(id), v = pr.state.video;
+  if (!p || !videoDiffers(v) || (collab.myClient && p.client === collab.myClient)) return;
+  const key = `${p.client}|${v.d}|${video.duration}`;
+  if (videoWarned.has(key)) return;
+  videoWarned.add(key);
+  const name = clip(p.name, 20);
+  toast(`${name}さんの動画と長さが違います（${name}さん: ${fmtPrecise(v.d)}${v.name ? `「${clip(v.name, 30)}」` : ''}、あなた: ${fmtPrecise(video.duration)}）。同じ動画ファイルか確かめてください（違うと、コメントの出る場面がずれます）`, { type:'error', timeout:15000 });
+}
+function videoCheck(){
+  if (!state.collab) return;
+  for (const [id, pr] of collab.presence) videoCheckPeer(id, pr);
+  if ($('#peersDlg').open) peersUpdate();
+}
+
+/* ---------- 入退室のお知らせ ---------- */
+// 抜けたお知らせは少し待ってから出す（回線が切れてつなぎ直しただけなら出さない）
+const LEAVE_WAIT_MS = 8000;
+// before: 前の参加者の一覧（つないで最初の一覧なら、切れる前の一覧）。
+// first: つないで最初の一覧（入った人は知らせない。切れる前にいて今いない人は、つなぎ直してくるのを待つ）
+function peersAnnounce(before, after, first){
+  const others = (list) => {
+    const m = new Map();
+    for (const p of list) if (p.id !== collab.me && !(collab.myClient && p.client === collab.myClient)) m.set(p.client, p.name);
+    return m;
+  };
+  const a = others(before), b = others(after), joined = [];
+  for (const [client, name] of b){
+    const w = collab.leaving.get(client);
+    if (w){ clearTimeout(w); collab.leaving.delete(client); continue; } // つなぎ直しただけ
+    if (!first && !a.has(client)) joined.push(clip(name, 20));
+  }
+  for (const [client, name] of a){
+    if (b.has(client) || collab.leaving.has(client)) continue;
+    collab.leaving.set(client, setTimeout(() => {
+      collab.leaving.delete(client);
+      if (collab.connected) toast(`${clip(name, 20)}さんが抜けました`, { timeout: 3000 });
+    }, LEAVE_WAIT_MS));
+  }
+  if (joined.length) toast(`${joined.join('、')}さんが入りました`, { timeout: 3000 });
+}
+
+/* ---------- 「ここ見て」（ほかの人を呼ぶ） ---------- */
+const CALL_GAP_MS = 2000; // ホストも 2 秒に 1 回までしか配らない
+let callLast = -Infinity;
+function callSend(){
+  if (!collab.connected) return toast('ホストにつながっていません', { type:'error' });
+  if (!state.videoLoaded) return toast('動画を開いてから使ってください');
+  if (performance.now() - callLast < CALL_GAP_MS) return;
+  if (collab.peerList.every(p => p.id === collab.me)) return toast('ほかに参加している人がいません');
+  callLast = performance.now();
+  const t = video.currentTime || 0, sel = [...TL.sel].slice(0, 200);
+  collab.ws.send(JSON.stringify({ type: 'call', state: { t: +t.toFixed(3), sel } }));
+  toast(`ほかの人に ${fmt(t)}${sel.length ? `（コメント ${sel.length} 件）` : ''} を見てもらうよう知らせました`, { timeout: 2500 });
+}
+function callReceived(m){
+  const c = cleanCall(m.state);
+  if (!c) return;
+  const p = peerOf(m.id);
+  if (p && collab.myClient && p.client === collab.myClient) return; // 自分の別のタブ
+  const name = clip(typeof m.name === 'string' && m.name ? m.name : p?.name || '誰か', 20);
+  const what = fmt(c.t) + (c.sel.length ? `（コメント ${c.sel.length} 件）` : '');
+  toast(`📣 ${name}さんが ${what} を見てほしいそうです`, { timeout: 15000, action: { label: '見る', fn: () => jumpTo(c.t, c.sel) } });
+}
+// その時刻へ移り、コメントを選ぶ（t が無ければ最初のコメントの時刻へ）
+function jumpTo(t, ids = []){
+  collabUnfollow();
+  const cs = ids.map(id => store.get(id)).filter(Boolean);
+  if (t == null && cs.length) t = parseCmd(cs[0].cmd).pos === 'naka' ? cs[0].t - NAKA_LEAD : cs[0].t;
+  if (t != null){
+    seekTo(t);
+    // タイムラインの見えている範囲の外なら、その時刻が見えるようにする
+    const vis = (TL.W - TL_HEAD) / TL.pps;
+    if (TL.inited && (t < TL.t0 || t > TL.t0 + vis)){ TL.t0 = t - vis * 0.3; tlClampView(); }
+  }
+  if (cs.length){ TL.sel = new Set(cs.map(c => c.id)); tlSelChanged(); tlEnsureVisible(cs[0]); }
+  TL.dirty = true;
+}
+
+/* ---------- 位置・コメントへのリンク ----------
+   #t=秒&c=コメントの id を付けた URL。電話やメッセージで送り、開いた人がその位置へ移れるように */
+const link = { pending: null };
+function linkUrl(){
+  const t = video.currentTime || 0, one = TL.sel.size === 1 ? [...TL.sel][0] : null;
+  let u;
+  if (state.collab){
+    // 外の人にも渡せるよう、公開 URL があればそちらにする。入るのに要るもの（プロジェクト・合言葉）だけ付ける
+    u = new URL(collab.publicUrl || location.origin + location.pathname, location.href);
+    u.search = '';
+    if (collab.project) u.searchParams.set('p', collab.project.id);
+    if (collab.auth === 'token' && collab.key) u.searchParams.set('k', collab.key);
+  } else {
+    u = new URL(location.href);
+  }
+  const h = new URLSearchParams();
+  h.set('t', String(+t.toFixed(2)));
+  if (one) h.set('c', one);
+  u.hash = h.toString();
+  return { url: u.href, t, comment: one };
+}
+function copyText(text){
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.append(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    ta.remove();
+    return ok ? Promise.resolve() : Promise.reject(new Error('copy'));
+  };
+  // http（LAN の IP アドレスなど）では navigator.clipboard が無い
+  return navigator.clipboard?.writeText ? navigator.clipboard.writeText(text).catch(fallback) : fallback();
+}
+function linkCopy(){
+  if (!state.videoLoaded) return toast('動画を開いてから使ってください');
+  const { url, t, comment } = linkUrl();
+  copyText(url).then(
+    () => toast(`${fmt(t)}${comment ? 'のコメント' : ''}へのリンクをコピーしました（メッセージに貼って送れます）`, { timeout: 3000 }),
+    () => prompt('このリンクをコピーしてください', url));
+}
+// 開いた URL の #t= / #c= を読む（読んだら URL から外す。同じリンクをもう一度開いても動くように）
+function linkParse(){
+  const h = new URLSearchParams(location.hash.slice(1));
+  const t = parseFloat(h.get('t')), c = h.get('c');
+  if (!(isFinite(t) && t >= 0) && !c) return;
+  link.pending = { t: isFinite(t) && t >= 0 ? t : null, c: c && c.length <= 64 ? c : null, told: false };
+  window.history.replaceState(null, '', location.pathname + location.search);
+  linkTry();
+}
+// 動画とコメントがそろったら移る
+function linkTry(){
+  const p = link.pending;
+  if (!p) return;
+  if (!state.videoLoaded){
+    if (!p.told && p.t != null) toast(`動画を開くと ${fmt(p.t)} に移ります`, { timeout: 5000 });
+    p.told = true;
+    return;
+  }
+  if (p.c && state.collab && !collab.synced) return; // ホストからコメントが届くのを待つ
+  link.pending = null;
+  if (p.c && !store.has(p.c)) toast('リンクのコメントが見つかりません（消されたか、別のコメントかもしれません）', { type:'error' });
+  jumpTo(p.t, p.c ? [p.c] : []);
+}
+window.addEventListener('hashchange', linkParse);
+$('#btnLink').onclick = linkCopy;
+$('#btnCall').onclick = callSend;
 
 /* =====================================================================
    設定UI・ショートカット・その他
@@ -4501,5 +4758,6 @@ updateUndoUI();
 tlSelChanged();
 applyPanes();
 collabInit();
+linkParse();
 requestAnimationFrame(loop);
 })();

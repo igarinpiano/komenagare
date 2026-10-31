@@ -8,6 +8,7 @@
 //! Web アプリを配信する。ブラウザから届いた変更は comments.jsonl に書き込み、git があれば変更ごとにコミットする。
 
 mod auth;
+mod awake;
 mod files;
 mod firewall;
 mod remote;
@@ -97,6 +98,10 @@ struct Args {
     /// 起動したらブラウザで開く
     #[arg(long)]
     open: bool,
+    /// ほかの人と共有している間も、このパソコンのスリープを止めない
+    /// （既定では --host 0.0.0.0・--tunnel・--public-url のとき、終わるまでスリープさせない）
+    #[arg(long)]
+    allow_sleep: bool,
     /// 起動時に更新を確かめない（Web アプリは前回取ってきたもの、無ければ内蔵のものを使う）
     #[arg(long)]
     no_update: bool,
@@ -603,6 +608,26 @@ async fn run(args: Args) -> Result<()> {
         ),
         server::Access::Token(_) => {}
     }
+    // ほかの人とつないでいる間に寝てしまうと、全員が編集を送れなくなる
+    let shared = !addr.ip().is_loopback() || public.is_some();
+    let _awake = if shared && !args.allow_sleep {
+        match awake::start() {
+            Ok(g) => {
+                println!("  スリープ防止: 終わるまでこのパソコンをスリープさせません（--allow-sleep で止める）");
+                #[cfg(target_os = "macos")]
+                println!(
+                    "  ※ ノートパソコンのふたを閉じるとスリープします（開いたままにしてください）"
+                );
+                Some(g)
+            }
+            Err(e) => {
+                println!("  スリープ防止: {e}。省電力の設定でスリープしないようにしてください");
+                None
+            }
+        }
+    } else {
+        None
+    };
     if let Some(tag) = newer {
         println!("  新しい版: komenagare {tag} があります（komenagare update で更新できます）");
     }

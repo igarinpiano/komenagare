@@ -5,7 +5,7 @@
 //! 署名は .github/minisign.py で作る。秘密鍵は GitHub の environment「signing」の secret にだけ置き、
 //! 承認しないと使えないようにする（main に push できるだけでは署名できない）。
 //!   リリース: SHA256SUMS に「komenagare-release tag:v1.2.3」の署名（SHA256SUMS.minisig）
-//!   Web アプリ: web.sums（web.json と各ファイルの SHA-256）に「komenagare-web protocol:6 time:…」の署名
+//!   Web アプリ: web.sums（web.json と各ファイルの SHA-256）に「komenagare-web protocol:7 time:…」の署名
 //! 公開鍵は cli/minisign.pub（CLI に埋め込む）。鍵を作り直したら書き換えて、CLI をリリースする。
 
 use anyhow::{anyhow, Context, Result};
