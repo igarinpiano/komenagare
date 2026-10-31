@@ -2099,6 +2099,13 @@ function tlDraw(){
   for (const id of TL.sel) if (!drawnSel.has(id)){ const c = store.get(id); if (c) drawOne(c); }
   if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
   tlDrawPeerSel(g, t1);
+  const md = TL.drag;
+  if (md && md.type === 'marquee' && md.started && md.lastX != null){
+    const r = tlMarqueeRect(md), x0 = tx(r.ta), x1 = tx(r.tb), y0 = r.ya - TL.scrollY, y1 = r.yb - TL.scrollY;
+    g.fillStyle = 'rgba(80,150,255,.14)'; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    g.strokeStyle = 'rgba(120,180,255,.9)'; g.lineWidth = 1; g.setLineDash([4, 3]);
+    g.strokeRect(Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.round(x1 - x0), Math.round(y1 - y0)); g.setLineDash([]);
+  }
   g.restore();
   // 見出し列
   g.fillStyle = '#101010'; g.fillRect(0, TL_RULER, TL_HEAD, H);
@@ -2240,6 +2247,13 @@ function tlFrame(playing, t){
   if (d && d.orig && d.started && d.lastX != null){
     const edge = 28, v = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
     if (v){ TL.t0 += v * 0.25 / TL.pps; tlClampView(); tlDragUpdate(d.lastX); }
+  }
+  // 範囲選択の途中で端へ寄せたら、横（時間）と縦（段）に自動スクロールして範囲を広げる
+  if (d && d.type === 'marquee' && d.started && d.lastX != null){
+    const edge = 28;
+    const vx = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
+    const vy = d.lastY < TL_RULER + edge ? -(TL_RULER + edge - d.lastY) : d.lastY > TL.H - edge ? d.lastY - (TL.H - edge) : 0;
+    if (vx || vy){ TL.t0 += vx * 0.25 / TL.pps; TL.scrollY += vy * 0.25; tlClampView(); tlMarqueeUpdate(d); }
   }
   if (t !== TL.lastT){ TL.lastT = t; TL.dirty = true; }
   if (TL.dirty){ TL.dirty = false; tlDraw(); tlDrawOverview(); }
@@ -2383,6 +2397,28 @@ function tlCancelDrag(){
   const d = TL.drag;
   TL.drag = null; TL.snapT = null;
   if (d && d.orig && d.started){ tlDragRestore(d); relayout(); tlSelChanged(); }
+  if (d && d.type === 'marquee' && d.started){ TL.sel = new Set(d.base); tlSelChanged(); }
+}
+// 範囲選択: 囲んだ範囲（時刻と段。ドラッグを始めた所は時刻と全体の中の高さで覚え、スクロールしてもずれない）に掛かるコメントを選ぶ
+function tlMarqueeRect(d){
+  const t1 = xt(d.lastX), y1 = d.lastY + TL.scrollY;
+  return { ta: Math.min(d.at, t1), tb: Math.max(d.at, t1), ya: Math.min(d.ay, y1), yb: Math.max(d.ay, y1) };
+}
+function tlMarqueeUpdate(d){
+  if (d.lastX == null) return;
+  const r = tlMarqueeRect(d), lh = laneH(), sel = new Set(d.base);
+  const cs = state.comments, lo = firstAtOrAfter(cs, r.ta - (TL.maxDur || DEFAULT_DURATION)), hi = firstAtOrAfter(cs, r.tb + NAKA_LEAD + 1e-6);
+  for (let i = lo; i < hi; i++){
+    const c = cs[i], pos = TL.laneOf.get(c.id);
+    if (!pos) continue;
+    const sp = spanOf(c);
+    if (sp.e < r.ta || sp.s > r.tb) continue;
+    const top = TL_RULER + TL.groups[pos.g].y + pos.lane * lh; // スクロールしていないときの位置（全体の中の高さ）
+    if (top + lh < r.ya || top > r.yb) continue;
+    sel.add(c.id);
+  }
+  if (sel.size !== TL.sel.size || [...sel].some(id => !TL.sel.has(id))){ TL.sel = sel; tlSelChanged(); }
+  TL.dirty = true;
 }
 function tlStartPinch(){
   const [a, b] = [...TL.pointers.values()];
@@ -2414,6 +2450,13 @@ TL.main.addEventListener('pointerdown', (e) => {
     return;
   }
   const hit = tlHit(p.x, p.y, touch);
+  // 範囲選択: Option（Alt）＋ドラッグはどこからでも、Shift・Ctrl・⌘＋ドラッグと「範囲選択」ボタンがオンのときは空いている所から。
+  // Shift・Ctrl・⌘ を押していれば今の選択に足す
+  const add = e.shiftKey || e.ctrlKey || e.metaKey;
+  if (p.x >= TL_HEAD && (e.altKey || (!hit || touch && !TL.sel.has(hit.c.id)) && (add || TL.marqueeMode))){
+    TL.drag = { ...base, type:'marquee', at: xt(p.x), ay: p.y + TL.scrollY, base: add ? new Set(TL.sel) : new Set() };
+    return;
+  }
   if (hit && (!touch || TL.sel.has(hit.c.id))){
     const c = hit.c;
     if (e.shiftKey || e.ctrlKey || e.metaKey){
@@ -2450,6 +2493,7 @@ TL.main.addEventListener('pointermove', (e) => {
     if (d.type === 'move') TL.main.style.cursor = 'grabbing';
   }
   if (d.type === 'scrub'){ if (state.videoLoaded) seekTo(Math.max(0, xt(p.x))); }
+  else if (d.type === 'marquee'){ d.lastX = p.x; d.lastY = p.y; tlMarqueeUpdate(d); }
   else if (d.type === 'pan'){ TL.t0 = d.t0 - dx / TL.pps; TL.scrollY = d.sy - dy; tlClampView(); }
   else if (d.orig){ d.lastX = p.x; tlDragUpdate(p.x); }
   TL.dirty = true;
@@ -2586,6 +2630,8 @@ function toggleSnap(){ TL.snap = settings.tlSnap = !TL.snap; saveSettings(); $('
 $('#tlSnap').classList.toggle('on', TL.snap);
 $('#tlFollow').classList.toggle('on', TL.follow);
 $('#tlSnap').onclick = toggleSnap;
+// 範囲選択ボタン（オンの間は、空いている所のドラッグで範囲を囲んで選ぶ。スマホ・タブレット向け。覚えない）
+$('#tlMarquee').onclick = () => { TL.marqueeMode = !TL.marqueeMode; $('#tlMarquee').classList.toggle('on', TL.marqueeMode); };
 $('#tlFollow').onclick = () => { TL.follow = settings.tlFollow = !TL.follow; saveSettings(); $('#tlFollow').classList.toggle('on', TL.follow); };
 $('#tlNew').onclick = () => openNewDialog(video.currentTime || 0);
 $('#tlEdit').onclick = () => { const s = tlSelected(); if (s.length === 1) openEditDialog(s[0]); };
