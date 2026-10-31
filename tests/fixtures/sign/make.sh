@@ -7,7 +7,7 @@
 # 使い方（リポジトリの直下で）: sh tests/fixtures/sign/make.sh
 set -eu
 d=tests/fixtures/sign
-PROTOCOL=6
+PROTOCOL=7
 py() { python3 .github/minisign.py "$@"; }
 if [ ! -f "$d/test.key" ]; then py keygen "$d/test.key" "$d/test.pub"; fi
 if [ ! -f "$d/other.pub" ]; then py keygen "$d/other.key" "$d/other.pub" && rm "$d/other.key"; fi

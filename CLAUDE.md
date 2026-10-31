@@ -26,6 +26,7 @@
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `tunnel.rs` — `--tunnel`（cloudflared / tailscale / ngrok を子プロセスで起動し、出力から公開 URL を読む）と `--public-url`。公開 URL は共有・招待のリンクに使い、ページには `<meta>` の `data-public-url` で渡す。`--allowed-mail`（Cloudflare のみ・`--otp` と一緒）は cloudflared に渡してメールの PIN で入る人を絞り、ページには `data-email-gate` で知らせる（確認が切れたら再読み込みを案内する）
+  - `awake.rs` — ほかの人と共有している間（`--host` が手元以外・`--tunnel`・`--public-url`）ホストをスリープさせない（macOS は `caffeinate -w`、Linux は `systemd-inhibit`、Windows は `SetThreadExecutionState`、Android は `termux-wake-lock`。`--allow-sleep` で止める）
   - `firewall.rs` — macOS のファイアウォールの検出と許可（LAN で待ち受けたら自分の LAN のアドレスにつないでみて、切られたら許可するコマンドを y/N で実行する。socketfilterfw の出力の文言には頼らない）
   - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）。署名（`web.sums` と `web.sums.minisig`）が合い、手元の控えより新しいものだけを使う
   - `sign.rs` — 署名（minisign）を確かめる。公開鍵は `cli/minisign.pub`（CLI に埋め込む）。リリースは `SHA256SUMS` に `komenagare-release tag:vX.Y.Z`、Web アプリは `web.sums` に `komenagare-web protocol:N time:T` の署名
@@ -49,7 +50,7 @@
 - localStorage のキー（`komenagare.settings` など）は変えない（保存済みデータを引き継ぐため）。
 - コメントの追加・変更・削除は必ず `commitOps`（`js/app.js`）で変更セットとして行い、`state.comments` や各コメントを直接書き換えない（複数人編集で変更を送り合うため）。タイムラインのドラッグ中の一時的な見た目の変更だけは例外で、確定時に戻してから `commitOps` する。
 - コメントの id は UUID v7。ファイル（JSON / CSV）に保存し、読み込み時に引き継ぐ。
-- ほかの参加者から届くもの（presence・共有された衝突）は、使う前に `cleanPresence` / `cleanConflict`（`js/app.js`）で型を確かめて取り出す。項目を足したらそこにも足す。
+- ほかの参加者から届くもの（presence・共有された衝突・「ここ見て」）は、使う前に `cleanPresence` / `cleanConflict` / `cleanCall`（`js/app.js`）で型を確かめて取り出す。項目を足したらそこにも足す。
 - ブラウザの id（client）はホストが `client_key`（ブラウザだけが知る秘密。localStorage の `komenagare.clientKey`）のハッシュから作る。自分のものかは snapshot の `client` と比べて見分ける（client_key は配らない）。
 - CLI から git を動かすときは、フックを動かさない（`core.hooksPath` を `workspace::no_hooks_path()` にする）。
 - 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
@@ -62,7 +63,9 @@
 - ホストに送る変更セットは `collabQueue`（`js/app.js`）で 2000 op・2MB ほどに分けて送る。ホストは 1 万 op・1 通 16MB・本文 40 万バイト・コマンド 4000 バイトまで（`server.rs` の `change_ok`）。どちらかを変えるときは、もう片方を超えないようにする。
 - hello（ログイン）より前の接続は、30 秒・64KB・同時に 32 まで（`server.rs`）。`--no-token` のときは、Host が手元の名前（IP・localhost・ドットの無い名前・.local など）か公開 URL のときだけ API と WebSocket を使わせる（DNS リバインディング対策）。
 - 再生位置・選択・タイムラインの表示範囲・カーソルは `presence` メッセージで配り合う（`presenceDirty` で送る。ホストは中継するだけで保存しない）。
-  参加者一覧（`#peersDlg`）から「追いかける」と `followApply` で相手に合わせ、自分で操作したらやめる。
+  参加者一覧（`#peersDlg`）から「追いかける」と `followApply` で相手に合わせ、自分で操作したらやめる。どちらかがつなぎ直しても、ブラウザの id（`collab.followClient`）で同じ人を追いかけ続ける。
+  presence の `video`（動画の長さ）で、ほかの人と同じ動画かを確かめる（`videoCheckPeer`）。「ここ見て」は `call` メッセージ（ホストは中継するだけ）。
+- ブラウザは 20 秒ごとに `ping` を送り、`pong`（か何か）が返らなければつなぎ直す（`collabPing`）。ホストは 2 分間何も届かない接続を切る（`server.rs` の `IDLE_TIMEOUT`。裏のタブの timer は 1 分に 1 回ほどに間引かれるので、これより短くしない）。
 - ホストの `--remote` で許された人には、snapshot の `remote` が付き、「⌨ ターミナル」（`#termDlg`）から `run` / `run_stop` を送れる。出力は `run_out`、終わりは `run_end`（`term`）。
   許すかどうかはホストが決める（画面で隠すだけに頼らない）。git で使えるサブコマンドやオプションを増やすときは、ほかのプログラムを動かせないか・作業フォルダの外を読み書きできないかを確かめ、`remote.rs` のテストに足す。
 - 変更履歴は、ひとりのときは `state.changeLog`（`recordChange`）、共同編集のときはホストの記録（`history` メッセージ）を出す。
