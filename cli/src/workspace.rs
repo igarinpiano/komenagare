@@ -3,7 +3,9 @@
 //! 作業フォルダ：コメント（comments.jsonl）、変更の記録（.komenagare/log.jsonl）、git の履歴。
 //!
 //! comments.jsonl は1行1コメント（時刻順）。git の差分やマージがコメント単位になる。
-//! クライアントから変更が届くたびに書き込み、git が使えれば1回ずつコミットする。
+//! クライアントから変更が届くと、まず log.jsonl に書き足してから受け取ったと返し、comments.jsonl の書き込みと
+//! git のコミットは書き込み担当が順に行う（溜まっていればまとめて1回で）。どこまで書き込んだかは
+//! .komenagare/saved に残し、起動したときにそれより新しい記録を当て直す（途中で止まっても変更を失わない）。
 
 use crate::store::{Change, Comment, Store};
 use anyhow::{bail, Context, Result};
@@ -15,6 +17,8 @@ use std::process::Command;
 pub const COMMENTS_FILE: &str = "comments.jsonl";
 const META_DIR: &str = ".komenagare";
 const LOG_FILE: &str = "log.jsonl";
+/// comments.jsonl に書き込み終えた記録の通し番号（rev）
+const SAVED_FILE: &str = "saved";
 /// 「あとで」にした衝突（全員に見せる。解決するまで残す）
 const CONFLICTS_FILE: &str = "conflicts.json";
 
@@ -226,11 +230,70 @@ impl Workspace {
     }
 
     pub fn append_log(&self, e: &LogEntry) -> Result<()> {
-        append_meta(
-            &self.dir,
-            LOG_FILE,
-            &format!("{}\n", serde_json::to_string(e)?),
-        )
+        append_log_in(&self.dir, e)
+    }
+
+    /// comments.jsonl に書き込み終えた記録の通し番号（無ければ None。古い版の作業フォルダ）
+    pub fn saved_rev(&self) -> Option<u64> {
+        read_meta(&self.dir, SAVED_FILE)?.trim().parse().ok()
+    }
+
+    pub fn set_saved_rev(&self, rev: u64) -> Result<()> {
+        let dir = meta_dir(&self.dir)?;
+        let tmp = dir.join("saved.tmp");
+        write_new(&tmp, rev.to_string().as_bytes())?;
+        std::fs::rename(&tmp, dir.join(SAVED_FILE))?;
+        Ok(())
+    }
+
+    /// 記録にあるが comments.jsonl にまだ書き込んでいない変更（通し番号が saved より大きいもの。古い順）
+    pub fn unsaved_log(&self, saved: u64) -> Vec<LogEntry> {
+        read_meta(&self.dir, LOG_FILE)
+            .map(|text| {
+                text.lines()
+                    .filter_map(|l| serde_json::from_str::<LogEntry>(l).ok())
+                    .filter(|e| e.rev > saved)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 前に止まったときに書き込めていなかった変更を当てて書き込む（当てた件数を返す）。
+    /// 古い版の作業フォルダ（.komenagare/saved が無い）は、記録を書き込んだ後に足していたので、全部書き込み済みとみなす。
+    /// 書き込んだ後に止まって saved を更新できていなかったものも、当て直すと衝突して何も変わらない
+    pub fn recover(&self, store: &mut Store, rev: u64) -> Result<usize> {
+        let Some(saved) = self.saved_rev() else {
+            self.set_saved_rev(rev)?;
+            return Ok(0);
+        };
+        let pending = self.unsaved_log(saved);
+        if pending.is_empty() {
+            if saved != rev {
+                self.set_saved_rev(rev)?;
+            }
+            return Ok(0);
+        }
+        let mut changed = 0;
+        for e in &pending {
+            if store.apply(&e.change, false).applied.is_some() {
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            let ids: Vec<(&str, &str)> = pending
+                .iter()
+                .map(|e| ("Change-Id", e.change.id.as_str()))
+                .collect();
+            self.save(
+                store,
+                &format!("komenagare: 前回書き込めていなかった変更 {changed} 件を書き込み"),
+                "komenagare",
+                "komenagare@localhost",
+                &ids,
+            )?;
+        }
+        self.set_saved_rev(rev)?;
+        Ok(changed)
     }
 
     /// comments.jsonl を書き換え（途中で止まっても壊れないよう、別名に書いてから置き換える）、git にコミットする
@@ -381,6 +444,11 @@ fn read_id(dir: &Path) -> Result<String> {
         );
     }
     Ok(id.to_string())
+}
+
+/// 変更の記録（.komenagare/log.jsonl）に1件書き足す
+pub fn append_log_in(dir: &Path, e: &LogEntry) -> Result<()> {
+    append_meta(dir, LOG_FILE, &format!("{}\n", serde_json::to_string(e)?))
 }
 
 /// .komenagare のファイルに書き足す（シンボリックリンクならたどらずに断る）
@@ -662,5 +730,64 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(co.trim().is_empty(), "{co}");
+    }
+
+    fn add(change: &str, id: &str, t: f64, text: &str) -> Change {
+        Change {
+            id: change.into(),
+            ops: vec![Op::Add {
+                id: id.into(),
+                after: Fields {
+                    t: Some(t),
+                    cmd: Some("".into()),
+                    text: Some(text.into()),
+                },
+            }],
+        }
+    }
+
+    fn entry(rev: u64, change: Change) -> LogEntry {
+        LogEntry {
+            rev,
+            time: 0,
+            author: "たろう".into(),
+            change,
+        }
+    }
+
+    #[test]
+    fn recovers_changes_not_yet_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(tmp.path(), GitMode::Off).unwrap();
+        // 古い版の作業フォルダ（saved が無い）は、記録を全部書き込み済みとみなす
+        let mut store = Store::new(ws.load_comments().unwrap());
+        let c1 = add("ch1", "a", 1.0, "書き込み済み");
+        store.apply(&c1, false);
+        ws.save(&store, "m", "たろう", "e", &[]).unwrap();
+        ws.append_log(&entry(1, c1)).unwrap();
+        assert_eq!(ws.saved_rev(), None);
+        assert_eq!(ws.recover(&mut store, 1).unwrap(), 0);
+        assert_eq!(ws.saved_rev(), Some(1));
+        // 記録には足したが comments.jsonl に書き込む前に止まった（rev 2・3）
+        ws.append_log(&entry(2, add("ch2", "b", 2.0, "未保存1")))
+            .unwrap();
+        ws.append_log(&entry(3, add("ch3", "c", 3.0, "未保存2")))
+            .unwrap();
+        let mut store = Store::new(ws.load_comments().unwrap());
+        assert_eq!(store.len(), 1);
+        let (_, rev, _) = ws.load_log(10).unwrap();
+        assert_eq!(rev, 3);
+        assert_eq!(ws.recover(&mut store, rev).unwrap(), 2);
+        assert_eq!(store.len(), 3);
+        assert_eq!(ws.saved_rev(), Some(3));
+        assert_eq!(Store::new(ws.load_comments().unwrap()).len(), 3);
+        // もう一度起動しても何もしない
+        assert_eq!(ws.recover(&mut store, rev).unwrap(), 0);
+        // 書き込んだ後に止まって saved を更新できなかったときは、当て直しても何も変わらない
+        ws.set_saved_rev(1).unwrap();
+        let mut store = Store::new(ws.load_comments().unwrap());
+        assert_eq!(ws.recover(&mut store, 3).unwrap(), 0);
+        assert_eq!(store.len(), 3);
+        assert_eq!(ws.saved_rev(), Some(3));
     }
 }

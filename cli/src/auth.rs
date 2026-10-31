@@ -362,7 +362,7 @@ fn new_code(kind: Kind) -> String {
     }
 }
 
-fn random_hex(bytes: usize) -> String {
+pub fn random_hex(bytes: usize) -> String {
     let mut r = rand::rng();
     (0..bytes)
         .map(|_| format!("{:02x}", r.random::<u8>()))

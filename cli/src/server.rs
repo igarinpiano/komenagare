@@ -21,8 +21,11 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":7,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき)}
+//!   {"type":"hello","protocol":8,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき),
+//!    "since":N,"epoch":"…"(つなぎ直しのとき)}
 //!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
+//!     since・epoch は、前の接続で最後に受け取った通し番号と、そのときのホストの起動ごとの id。同じ起動のホストで、
+//!     そこからの変更が最近の記録に全部残っていれば、snapshot に全体ではなくそれ以降の変更だけを入れて返す
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
@@ -33,8 +36,11 @@
 //!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
 //!   {"type":"run_stop","id":"…"}                             動いているコマンドを止める
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
-//!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類）
+//!   {"type":"snapshot","rev":N,"epoch":"…","you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
+//!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類。
+//!                                                            epoch はホストの起動ごとの id）
+//!     つなぎ直しで差分を返すときは comments の代わりに "changes":[{"rev","time","author","change"},...]（古い順）。
+//!     自分の変更も入るが、当て直しても衝突して何も変わらない（同じ内容が二重になることはない）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
 //!   {"type":"call","id":接続id,"name":"名前","state":{...}}   ほかの人の「ここ見て」
 //!   {"type":"pong"}                                          ping への返事
@@ -69,7 +75,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -183,6 +189,10 @@ pub struct Hub {
     tx: broadcast::Sender<(u64, Arc<str>)>,
     writer: std::sync::mpsc::Sender<Job>,
     conflicts_file: PathBuf,
+    /// 作業フォルダ（受け取った変更を .komenagare/log.jsonl に書き足す）
+    dir: PathBuf,
+    /// 起動ごとの id（つなぎ直しで差分を返してよいかを見分ける。起動し直したら、記録の外で変わったかもしれないので全体を返す）
+    epoch: String,
 }
 
 struct Inner {
@@ -291,36 +301,82 @@ fn client_id(key: Option<&str>) -> String {
     }
 }
 
-/// 書き込み担当（ファイルと git は受け取った順に1件ずつ処理する）への依頼
+/// 書き込み担当（comments.jsonl と git は受け取った順に処理する）への依頼。持つのは変更だけ
+/// （書き込み担当が自分の控えに当てる。待ちが溜まってもコメント全体のコピーは増えない）
 pub struct Job {
-    pub comments: Store,
     pub message: String,
     pub author: String,
     pub email: String,
     pub log: LogEntry,
 }
 
-pub fn spawn_writer(ws: Workspace) -> (std::sync::mpsc::Sender<Job>, std::thread::JoinHandle<()>) {
+/// 一度にまとめて書き込む変更の数の上限
+const WRITE_BATCH_MAX: usize = 1000;
+
+/// 書き込み担当を始める。store は今のコメント（ホストの Hub と同じ内容から始め、届いた変更を順に当てる）。
+/// 待ちが溜まっていたら、まとめて1回で書き込んでコミットする（変更が速く届いても追いつけるように）
+pub fn spawn_writer(
+    ws: Workspace,
+    mut store: Store,
+) -> (std::sync::mpsc::Sender<Job>, std::thread::JoinHandle<()>) {
     let (tx, rx) = std::sync::mpsc::channel::<Job>();
     let handle = std::thread::spawn(move || {
-        for job in rx {
-            let id = job.log.change.id.clone();
-            if let Err(e) = ws.save(
-                &job.comments,
-                &job.message,
-                &job.author,
-                &job.email,
-                &[("Change-Id", &id)],
-            ) {
-                eprintln!("保存に失敗しました: {e:#}");
+        while let Ok(first) = rx.recv() {
+            let mut jobs = vec![first];
+            while jobs.len() < WRITE_BATCH_MAX {
+                match rx.try_recv() {
+                    Ok(j) => jobs.push(j),
+                    Err(_) => break,
+                }
             }
-            // 保存できたものだけ記録する（再起動後に同じ変更が届いたら、記録にあるものは適用済みとみなす）
-            if let Err(e) = ws.append_log(&job.log) {
-                eprintln!("記録に失敗しました: {e:#}");
+            for j in &jobs {
+                store.apply(&j.log.change, false);
+            }
+            let (message, author, email) = batch_message(&jobs);
+            let ids: Vec<(&str, &str)> = jobs
+                .iter()
+                .map(|j| ("Change-Id", j.log.change.id.as_str()))
+                .collect();
+            match ws.save(&store, &message, &author, &email, &ids) {
+                Ok(()) => {
+                    if let Err(e) = ws.set_saved_rev(jobs.last().map_or(0, |j| j.log.rev)) {
+                        eprintln!("書き込んだ位置を残せませんでした: {e:#}");
+                    }
+                }
+                // 書き込めなかった変更は記録（log.jsonl）に残っているので、次に起動したときに当て直す
+                Err(e) => eprintln!("保存に失敗しました: {e:#}"),
             }
         }
     });
     (tx, handle)
+}
+
+/// まとめて書き込むときのコミットの説明と作者（1件ならその変更のもの。複数なら最初の人を作者にし、全員の名前を並べる）
+fn batch_message(jobs: &[Job]) -> (String, String, String) {
+    let first = &jobs[0];
+    if jobs.len() == 1 {
+        return (
+            first.message.clone(),
+            first.author.clone(),
+            first.email.clone(),
+        );
+    }
+    let mut names: Vec<&str> = vec![];
+    for j in jobs {
+        if !names.contains(&j.author.as_str()) {
+            names.push(&j.author);
+        }
+    }
+    let mut message = format!(
+        "{} 件の変更をまとめて保存（{}）\n",
+        jobs.len(),
+        names.join("・")
+    );
+    for j in jobs {
+        message.push('\n');
+        message.push_str(&j.message);
+    }
+    (message, first.author.clone(), first.email.clone())
 }
 
 impl Hub {
@@ -332,6 +388,7 @@ impl Hub {
         writer: std::sync::mpsc::Sender<Job>,
         conflicts: Vec<Value>,
         conflicts_file: PathBuf,
+        dir: PathBuf,
     ) -> Arc<Hub> {
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Hub {
@@ -346,6 +403,8 @@ impl Hub {
             tx,
             writer,
             conflicts_file,
+            dir,
+            epoch: crate::auth::random_hex(8),
         })
     }
 
@@ -976,16 +1035,25 @@ async fn connection(
                         presence,
                     },
                 );
-                let comments: Vec<&Comment> = inner.store.sorted();
                 let remote = server
                     .remote
                     .as_ref()
                     .filter(|_| can_run)
                     .map(|r| r.mode.label());
-                let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
-                        .to_string(),
-                );
+                // つなぎ直しなら、前に受け取ったところからの変更だけを返す（記録に全部残っているとき）
+                let since = (v["epoch"].as_str() == Some(hub.epoch.as_str()))
+                    .then(|| v["since"].as_u64())
+                    .flatten();
+                let snapshot = match since.and_then(|n| changes_since(&inner, n)) {
+                    Some(changes) => {
+                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "changes": changes, "remote": remote })
+                    }
+                    None => {
+                        let comments: Vec<&Comment> = inner.store.sorted();
+                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
+                    }
+                };
+                let _ = out_tx.send(snapshot.to_string());
                 let _ = out_tx.send(conflicts_msg(&inner));
                 for (id, p) in &inner.peers {
                     if let (true, Some(state)) = (*id != conn, &p.presence) {
@@ -1206,8 +1274,12 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
         if inner.history.len() > HISTORY_KEEP {
             inner.history.pop_front();
         }
+        // 受け取ったと返す前に記録へ書き足す（comments.jsonl と git への書き込みは後から。
+        // その前にホストが止まっても、次に起動したときに記録から当て直す）
+        if let Err(e) = crate::workspace::append_log_in(&hub.dir, &log) {
+            eprintln!("変更の記録に失敗しました: {e:#}");
+        }
         let job = Job {
-            comments: Store::new(inner.store.sorted().into_iter().cloned().collect()),
             message: format!("{name}: {summary}"),
             author: name.to_string(),
             email: email.to_string(),
@@ -1219,6 +1291,16 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
         let _ = hub.tx.send((conn, msg.into()));
     }
     json!({ "type": "ack", "id": change.id, "rev": inner.rev, "dup": false, "conflicts": r.conflicts, "fix": fix }).to_string()
+}
+
+/// 通し番号 since より後の変更（古い順）。最近の記録に全部残っていなければ None（全体を送る）
+fn changes_since(inner: &Inner, since: u64) -> Option<Vec<&LogEntry>> {
+    if since > inner.rev {
+        return None;
+    }
+    let changes: Vec<&LogEntry> = inner.history.iter().filter(|e| e.rev > since).collect();
+    // 通し番号は1つずつ増えるので、数がそろっていれば抜けは無い
+    (changes.len() as u64 == inner.rev - since).then_some(changes)
 }
 
 fn broadcast_peers(hub: &Hub, inner: &Inner) {
@@ -1317,6 +1399,114 @@ mod tests {
         ] {
             assert!(!web_path_ok(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn writer_batches_changes() {
+        use crate::store::{Change, Fields, Op};
+        use crate::workspace::GitMode;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(tmp.path(), GitMode::Off).unwrap();
+        let dir = ws.dir.clone();
+        let check = Workspace::open(tmp.path(), GitMode::Off).unwrap();
+        let (tx, handle) = spawn_writer(ws, Store::default());
+        // 書き込み担当が処理するより先に、まとめて送る
+        for i in 1..=5u64 {
+            let change = Change {
+                id: format!("ch{i}"),
+                ops: vec![Op::Add {
+                    id: format!("c{i}"),
+                    after: Fields {
+                        t: Some(i as f64),
+                        cmd: Some("".into()),
+                        text: Some(format!("コメント{i}")),
+                    },
+                }],
+            };
+            tx.send(Job {
+                message: format!("たろう: 追加 1 ({i})"),
+                author: "たろう".into(),
+                email: "t@komenagare".into(),
+                log: crate::workspace::LogEntry {
+                    rev: i,
+                    time: 0,
+                    author: "たろう".into(),
+                    change,
+                },
+            })
+            .unwrap();
+        }
+        drop(tx);
+        handle.join().unwrap();
+        assert_eq!(Store::new(check.load_comments().unwrap()).len(), 5);
+        assert_eq!(check.saved_rev(), Some(5));
+        assert!(dir.join("comments.jsonl").exists());
+    }
+
+    #[test]
+    fn batch_message_lists_everyone() {
+        let job = |name: &str, msg: &str| Job {
+            message: msg.into(),
+            author: name.into(),
+            email: format!("{name}@komenagare"),
+            log: crate::workspace::LogEntry {
+                rev: 1,
+                time: 0,
+                author: name.into(),
+                change: crate::store::Change {
+                    id: "x".into(),
+                    ops: vec![],
+                },
+            },
+        };
+        let (m, a, _) = batch_message(&[job("たろう", "たろう: 追加 1")]);
+        assert_eq!((m.as_str(), a.as_str()), ("たろう: 追加 1", "たろう"));
+        let (m, a, _) = batch_message(&[
+            job("たろう", "たろう: 追加 1"),
+            job("はなこ", "はなこ: 変更 1"),
+            job("たろう", "たろう: 削除 1"),
+        ]);
+        assert!(
+            m.starts_with("3 件の変更をまとめて保存（たろう・はなこ）"),
+            "{m}"
+        );
+        assert!(m.contains("はなこ: 変更 1"));
+        assert_eq!(a, "たろう");
+    }
+
+    #[test]
+    fn sends_only_missed_changes_when_history_has_them() {
+        let entry = |rev| LogEntry {
+            rev,
+            time: 0,
+            author: "たろう".into(),
+            change: crate::store::Change {
+                id: format!("ch{rev}"),
+                ops: vec![],
+            },
+        };
+        let mut inner = Inner {
+            store: Store::default(),
+            rev: 10,
+            seen: HashSet::new(),
+            peers: HashMap::new(),
+            // 記録に残っているのは 6〜10（それより古いものは押し出された）
+            history: (6..=10).map(entry).collect(),
+            conflicts: vec![],
+        };
+        let revs =
+            |v: Option<Vec<&LogEntry>>| v.map(|v| v.iter().map(|e| e.rev).collect::<Vec<_>>());
+        assert_eq!(revs(changes_since(&inner, 10)), Some(vec![]));
+        assert_eq!(revs(changes_since(&inner, 8)), Some(vec![9, 10]));
+        assert_eq!(revs(changes_since(&inner, 5)), Some(vec![6, 7, 8, 9, 10]));
+        // 記録から外れたところからは全体を送る
+        assert_eq!(revs(changes_since(&inner, 4)), None);
+        assert_eq!(revs(changes_since(&inner, 0)), None);
+        // ホストより先の番号（ほかのホストのもの）も全体
+        assert_eq!(revs(changes_since(&inner, 11)), None);
+        // 取り込み（通し番号 0）が混ざっていても数え違えない
+        inner.history.push_front(entry(0));
+        assert_eq!(revs(changes_since(&inner, 7)), Some(vec![8, 9, 10]));
     }
 
     #[test]

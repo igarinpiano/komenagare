@@ -385,6 +385,14 @@ async fn run(args: Args) -> Result<()> {
         }
         let mut store = Store::new(ws.load_comments()?);
         let (seen, rev, history) = ws.load_log(server::HISTORY_KEEP)?;
+        // 前に止まったときに書き込めていなかった変更（記録にはある）を当てて書き込む
+        let recovered = ws.recover(&mut store, rev)?;
+        if recovered > 0 {
+            println!(
+                "{}: 前回書き込めていなかった変更 {recovered} 件を書き込みました",
+                ws.dir.display()
+            );
+        }
         if let Some(file) = &args.import {
             let n = import(&ws, &mut store, file)?;
             println!("{} から {} 件のコメントを取り込みました", file.display(), n);
@@ -450,9 +458,20 @@ async fn run(args: Args) -> Result<()> {
         let id = ws.id.clone();
         let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
         let dir = ws.dir.clone();
-        let (writer, writer_thread) = server::spawn_writer(ws);
+        // 書き込み担当は自分の控え（今のコメントの写し）に届いた変更を当てていく
+        let copy = Store::new(store.sorted().into_iter().cloned().collect());
+        let (writer, writer_thread) = server::spawn_writer(ws, copy);
         writers.push(writer_thread);
-        let hub = server::Hub::new(store, rev, seen, history, writer, conflicts, conflicts_file);
+        let hub = server::Hub::new(
+            store,
+            rev,
+            seen,
+            history,
+            writer,
+            conflicts,
+            conflicts_file,
+            dir.clone(),
+        );
         projects.push(server::Project { id, name, dir, hub });
     }
     let remote = args
