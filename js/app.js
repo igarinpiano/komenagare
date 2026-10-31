@@ -2099,6 +2099,30 @@ function tlDraw(){
   for (const id of TL.sel) if (!drawnSel.has(id)){ const c = store.get(id); if (c) drawOne(c); }
   if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
   tlDrawPeerSel(g, t1);
+  const md = TL.drag;
+  // 複製中は、元の場所に点線の枠を描く（元はそこに残る）
+  if (md && md.copy && md.started){
+    g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1; g.setLineDash([4, 3]);
+    for (const [c, o] of md.orig){
+      const pos = TL.laneOf.get(c.id); if (!pos) continue;
+      const sp = spanFromVals(o.t, o.cmd), x0 = tx(sp.s), x1 = tx(sp.e), y = laneTop(pos.g, pos.lane);
+      if (x1 < TL_HEAD || x0 > W || y > H || y + lh < TL_RULER) continue;
+      g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5);
+    }
+    g.setLineDash([]);
+  }
+  if (md && md.type === 'create' && md.started && md.lastX != null){
+    const s = tlCreateSpan(md), x0 = tx(s.ta), x1 = tx(s.tb), y = laneTop(md.gi, md.lane);
+    g.fillStyle = TL.groups[md.gi].color; g.globalAlpha = 0.35; g.fillRect(x0, y + 2, x1 - x0, lh - 4); g.globalAlpha = 1;
+    g.strokeStyle = '#fff'; g.lineWidth = 1; g.setLineDash([4, 3]); g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5); g.setLineDash([]);
+    g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(`＋ ${fmtPrecise(s.t)}・${s.dur.toFixed(1)}秒`, Math.max(x0, TL_HEAD) + 6, y + lh / 2);
+  }
+  if (md && md.type === 'marquee' && md.started && md.lastX != null){
+    const r = tlMarqueeRect(md), x0 = tx(r.ta), x1 = tx(r.tb), y0 = r.ya - TL.scrollY, y1 = r.yb - TL.scrollY;
+    g.fillStyle = 'rgba(80,150,255,.14)'; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    g.strokeStyle = 'rgba(120,180,255,.9)'; g.lineWidth = 1; g.setLineDash([4, 3]);
+    g.strokeRect(Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.round(x1 - x0), Math.round(y1 - y0)); g.setLineDash([]);
+  }
   g.restore();
   // 見出し列
   g.fillStyle = '#101010'; g.fillRect(0, TL_RULER, TL_HEAD, H);
@@ -2241,6 +2265,17 @@ function tlFrame(playing, t){
     const edge = 28, v = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
     if (v){ TL.t0 += v * 0.25 / TL.pps; tlClampView(); tlDragUpdate(d.lastX); }
   }
+  // 範囲選択の途中で端へ寄せたら、横（時間）と縦（段）に自動スクロールして範囲を広げる
+  if (d && d.type === 'create' && d.started && d.lastX != null){
+    const edge = 28, vx = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
+    if (vx){ TL.t0 += vx * 0.25 / TL.pps; tlClampView(); TL.dirty = true; }
+  }
+  if (d && d.type === 'marquee' && d.started && d.lastX != null){
+    const edge = 28;
+    const vx = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
+    const vy = d.lastY < TL_RULER + edge ? -(TL_RULER + edge - d.lastY) : d.lastY > TL.H - edge ? d.lastY - (TL.H - edge) : 0;
+    if (vx || vy){ TL.t0 += vx * 0.25 / TL.pps; TL.scrollY += vy * 0.25; tlClampView(); tlMarqueeUpdate(d); }
+  }
   if (t !== TL.lastT){ TL.lastT = t; TL.dirty = true; }
   if (TL.dirty){ TL.dirty = false; tlDraw(); tlDrawOverview(); }
 }
@@ -2369,6 +2404,7 @@ function tlDragRestore(d){
   state.comments.sort(cmpComments);
 }
 function tlDragCommit(d){
+  if (d.copy){ tlDragCommitCopy(d); return; }
   const changes = [];
   for (const [c, o] of d.orig) if (c.t !== o.t || c.cmd !== o.cmd) changes.push({ c, t: c.t, cmd: c.cmd });
   tlDragRestore(d);
@@ -2379,10 +2415,46 @@ function tlDragCommit(d){
   if (!commitOps(ops)) relayout();
   tlSelChanged();
 }
+// Option＋ドラッグで複製: 動かした先に同じ本文・コマンドのコメントを作り、元は戻す。作ったものを選ぶ
+function tlDragCommitCopy(d){
+  const copies = [];
+  for (const [c, o] of d.orig) if (c.t !== o.t) copies.push(makeComment(c.t, c.cmd, c.text, true));
+  tlDragRestore(d);
+  TL.snapT = null;
+  if (!copies.length){ relayout(); return; }
+  const r = newComments(copies);
+  const ch = r.items.length ? commitOps(r.items.map(addOp)) : null;
+  if (!ch){ relayout(); toast('同じ時刻・内容のコメントがあるため複製できませんでした'); return; }
+  TL.sel = new Set(r.items.map(c => c.id));
+  tlSelChanged();
+  toast(`${r.items.length} 件を複製しました` + (r.dup ? `（同じ時刻・内容のものがある ${r.dup} 件は除きました）` : ''), { action: { label: '元に戻す', fn: () => revertChange(ch) } });
+}
 function tlCancelDrag(){
   const d = TL.drag;
   TL.drag = null; TL.snapT = null;
   if (d && d.orig && d.started){ tlDragRestore(d); relayout(); tlSelChanged(); }
+  if (d && d.type === 'marquee' && d.started){ TL.sel = new Set(d.base); tlSelChanged(); }
+}
+// 範囲選択: 囲んだ範囲（時刻と段。ドラッグを始めた所は時刻と全体の中の高さで覚え、スクロールしてもずれない）に掛かるコメントを選ぶ
+function tlMarqueeRect(d){
+  const t1 = xt(d.lastX), y1 = d.lastY + TL.scrollY;
+  return { ta: Math.min(d.at, t1), tb: Math.max(d.at, t1), ya: Math.min(d.ay, y1), yb: Math.max(d.ay, y1) };
+}
+function tlMarqueeUpdate(d){
+  if (d.lastX == null) return;
+  const r = tlMarqueeRect(d), lh = laneH(), sel = new Set(d.base);
+  const cs = state.comments, lo = firstAtOrAfter(cs, r.ta - (TL.maxDur || DEFAULT_DURATION)), hi = firstAtOrAfter(cs, r.tb + NAKA_LEAD + 1e-6);
+  for (let i = lo; i < hi; i++){
+    const c = cs[i], pos = TL.laneOf.get(c.id);
+    if (!pos) continue;
+    const sp = spanOf(c);
+    if (sp.e < r.ta || sp.s > r.tb) continue;
+    const top = TL_RULER + TL.groups[pos.g].y + pos.lane * lh; // スクロールしていないときの位置（全体の中の高さ）
+    if (top + lh < r.ya || top > r.yb) continue;
+    sel.add(c.id);
+  }
+  if (sel.size !== TL.sel.size || [...sel].some(id => !TL.sel.has(id))){ TL.sel = sel; tlSelChanged(); }
+  TL.dirty = true;
 }
 function tlStartPinch(){
   const [a, b] = [...TL.pointers.values()];
@@ -2414,6 +2486,19 @@ TL.main.addEventListener('pointerdown', (e) => {
     return;
   }
   const hit = tlHit(p.x, p.y, touch);
+  // 複数選択: ⌘（Windows・Linux は Ctrl）＋ドラッグで範囲を囲み、今の選択に足す（コメントの上から始めてもよい。
+  // 動かさずに離したら、今まで通りそのコメントを足す・外す）。「範囲選択」ボタンがオンのときは、空いている所のドラッグで囲む
+  const multi = e.ctrlKey || e.metaKey;
+  const empty = !hit || touch && !TL.sel.has(hit.c.id);
+  if (p.x >= TL_HEAD && (multi || empty && TL.marqueeMode)){
+    TL.drag = { ...base, type:'marquee', at: xt(p.x), ay: p.y + TL.scrollY, base: multi ? new Set(TL.sel) : new Set(), toggle: multi && hit ? hit.c.id : null, multi };
+    return;
+  }
+  // Shift＋横にドラッグ（空いている所から）: その長さのコメントを、その段（上・流・下）に作る
+  if (e.shiftKey && !hit && p.x >= TL_HEAD){
+    const gi = tlGroupAt(p.y);
+    if (gi != null){ TL.drag = { ...base, type:'create', ta: xt(p.x), gi, lane: Math.max(0, Math.floor((p.y - laneTop(gi, 0)) / laneH())) }; return; }
+  }
   if (hit && (!touch || TL.sel.has(hit.c.id))){
     const c = hit.c;
     if (e.shiftKey || e.ctrlKey || e.metaKey){
@@ -2424,7 +2509,9 @@ TL.main.addEventListener('pointerdown', (e) => {
     }
     if (!TL.sel.has(c.id)){ TL.sel.clear(); TL.sel.add(c.id); tlSelChanged(); }
     const moving = hit.zone === 'move' ? tlSelected() : [c];
-    TL.drag = { ...base, type: hit.zone, c, orig: new Map(moving.map(x => [x, { t: x.t, cmd: x.cmd }])) };
+    // Option（Alt）＋ドラッグ: 選んでいるコメントを複製して、ドラッグした所に置く（元はそのまま）
+    const copy = e.altKey && hit.zone === 'move';
+    TL.drag = { ...base, type: hit.zone, c, orig: new Map(moving.map(x => [x, { t: x.t, cmd: x.cmd }])), copy };
     return;
   }
   TL.drag = { ...base, type:'pan', t0: TL.t0, sy: TL.scrollY };
@@ -2435,10 +2522,7 @@ TL.main.addEventListener('pointermove', (e) => {
   if (TL.pinch){ tlPinchMove(); return; }
   const d = TL.drag;
   if (!d){
-    if (e.pointerType === 'mouse'){
-      const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
-      TL.main.style.cursor = p.y < TL_RULER ? 'col-resize' : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
-    }
+    if (e.pointerType === 'mouse'){ TL.hover = p; tlCursor(e); }
     return;
   }
   if (d.id !== e.pointerId) return;
@@ -2447,13 +2531,42 @@ TL.main.addEventListener('pointermove', (e) => {
     if (Math.hypot(dx, dy) < (d.touch ? 8 : 3)) return;
     d.started = true;
     if (d.orig) tlDragBegin(d);
-    if (d.type === 'move') TL.main.style.cursor = 'grabbing';
+    if (d.type === 'move') TL.main.style.cursor = d.copy ? 'copy' : 'grabbing';
   }
   if (d.type === 'scrub'){ if (state.videoLoaded) seekTo(Math.max(0, xt(p.x))); }
+  else if (d.type === 'marquee'){ d.lastX = p.x; d.lastY = p.y; tlMarqueeUpdate(d); }
+  else if (d.type === 'create'){ d.lastX = p.x; }
   else if (d.type === 'pan'){ TL.t0 = d.t0 - dx / TL.pps; TL.scrollY = d.sy - dy; tlClampView(); }
   else if (d.orig){ d.lastX = p.x; tlDragUpdate(p.x); }
   TL.dirty = true;
 });
+// マウスを重ねているときのカーソル（⌘・Ctrl を押していれば複数選択の十字、Shift なら空いている所でコメントを作る印、
+// Option ならコメントの上で複製の印）
+function tlCursor(mods){
+  const p = TL.hover;
+  if (!p || TL.drag) return;
+  const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
+  TL.main.style.cursor = p.y < TL_RULER ? 'col-resize'
+    : mods.altKey && hit && hit.zone === 'move' && !mods.ctrlKey && !mods.metaKey ? 'copy'
+    : p.x >= TL_HEAD && (mods.ctrlKey || mods.metaKey || !hit && TL.marqueeMode) ? 'crosshair'
+    : p.x >= TL_HEAD && mods.shiftKey && !hit && tlGroupAt(p.y) != null ? 'copy'
+    : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
+}
+TL.main.addEventListener('pointerleave', () => { TL.hover = null; });
+// 押しているキーが変わったら、マウスを動かさなくてもカーソルを変える
+for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) tlCursor(e); });
+window.addEventListener('blur', () => tlCursor({}));
+// Shift＋ドラッグで作るコメント: ドラッグした範囲が見えている間になるように、時刻と表示時間を決めて新規の画面を開く
+// （流れるコメントは 1 秒前から見えるので、始まりを 1 秒後ろにする）
+function tlCreateSpan(d){
+  const t1 = xt(d.lastX ?? d.x0), ta = Math.max(0, Math.min(d.ta, t1)), tb = Math.max(d.ta, t1);
+  const pos = TL_GROUPS[d.gi].pos, lead = pos === 'naka' ? NAKA_LEAD : 0;
+  return { ta, tb, pos, t: ta + lead, dur: Math.max(0.5, tb - ta - lead) };
+}
+function tlCreateCommit(d){
+  const s = tlCreateSpan(d);
+  openNewDialog(s.t, s.pos, s.dur);
+}
 function tlPointerEnd(e, cancel){
   TL.pointers.delete(e.pointerId);
   if (TL.pinch){ if (TL.pointers.size < 2) TL.pinch = null; TL.drag = null; return; }
@@ -2463,6 +2576,7 @@ function tlPointerEnd(e, cancel){
   TL.drag = null;
   if (d.started){
     if (d.orig) tlDragCommit(d);
+    if (d.type === 'create'){ TL.dirty = true; tlCreateCommit(d); return; }
     TL.snapT = null; TL.dirty = true;
     return;
   }
@@ -2471,6 +2585,11 @@ function tlPointerEnd(e, cancel){
   const dbl = !!TL.lastTap && now - TL.lastTap.time < 380 && Math.hypot(p.x - TL.lastTap.x, p.y - TL.lastTap.y) < 24;
   TL.lastTap = dbl ? null : { time: now, x: p.x, y: p.y };
   if (d.type === 'scrub') return;
+  // ⌘（Ctrl）＋クリック: そのコメントを選択に足す・外す（空いている所なら何もしない。選択はそのまま）
+  if (d.type === 'marquee' && d.multi){
+    if (d.toggle){ if (TL.sel.has(d.toggle)) TL.sel.delete(d.toggle); else TL.sel.add(d.toggle); tlSelChanged(); TL.dirty = true; }
+    return;
+  }
   const hit = tlHit(p.x, p.y, d.touch);
   if (hit){
     if (d.type !== 'none' && !(TL.sel.size === 1 && TL.sel.has(hit.c.id))){ TL.sel.clear(); TL.sel.add(hit.c.id); tlSelChanged(); }
@@ -2586,6 +2705,8 @@ function toggleSnap(){ TL.snap = settings.tlSnap = !TL.snap; saveSettings(); $('
 $('#tlSnap').classList.toggle('on', TL.snap);
 $('#tlFollow').classList.toggle('on', TL.follow);
 $('#tlSnap').onclick = toggleSnap;
+// 範囲選択ボタン（オンの間は、空いている所のドラッグで範囲を囲んで選ぶ。スマホ・タブレット向け。覚えない）
+$('#tlMarquee').onclick = () => { TL.marqueeMode = !TL.marqueeMode; $('#tlMarquee').classList.toggle('on', TL.marqueeMode); tlCursor({}); };
 $('#tlFollow').onclick = () => { TL.follow = settings.tlFollow = !TL.follow; saveSettings(); $('#tlFollow').classList.toggle('on', TL.follow); };
 $('#tlNew').onclick = () => openNewDialog(video.currentTime || 0);
 $('#tlEdit').onclick = () => { const s = tlSelected(); if (s.length === 1) openEditDialog(s[0]); };
@@ -2676,12 +2797,13 @@ function openEditDialog(c){
   editDlg.showModal();
   $('#edText').focus();
 }
-function openNewDialog(t, pos){
+function openNewDialog(t, pos, dur){
   editTarget = null;
   $('#edTitle').textContent = '新しいコメント';
   $('#edText').value = '';
   $('#edTime').value = fmtPrecise(t);
   $('#edCmd').value = pos ? setCmdPos(cmdInput.value, pos) : normCmd(cmdInput.value);
+  if (dur > 0) $('#edCmd').value = setCmdLong($('#edCmd').value, dur); // 表示時間（Shift＋ドラッグで作ったとき）
   $('#edDelete').hidden = true;
   edSync();
   editDlg.showModal();
