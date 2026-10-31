@@ -209,6 +209,10 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .del{background:none;border:none;color:#777;padding:0 4px;font-size:15px;line-height:1;visibility:hidden}
 .row:hover .del{visibility:visible}
 .del:hover{color:var(--danger);background:none}
+/* 見えている行だけ作るとき（settings.listVirtual）：行は1行に収めて高さをそろえ、置く位置を指定する */
+.list.virtual .row{position:absolute;left:0;right:0;align-items:center}
+.list.virtual .rc{white-space:nowrap;text-overflow:ellipsis;word-break:normal;max-height:none}
+.list-spacer{width:1px}
 .list-empty{padding:30px 16px;text-align:center;color:#777;font-size:13px;line-height:1.7}
 /* パネルが低いとき（タイムラインを高くしたときなど）は、開いた設定の中をスクロールする */
 .settings{border-top:1px solid var(--line);padding:8px 12px 10px;font-size:13px;flex:0 1 auto;min-height:40px;overflow-y:auto;overscroll-behavior:contain}
