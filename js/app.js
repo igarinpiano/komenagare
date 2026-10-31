@@ -2100,6 +2100,17 @@ function tlDraw(){
   if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
   tlDrawPeerSel(g, t1);
   const md = TL.drag;
+  // 複製中は、元の場所に点線の枠を描く（元はそこに残る）
+  if (md && md.copy && md.started){
+    g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1; g.setLineDash([4, 3]);
+    for (const [c, o] of md.orig){
+      const pos = TL.laneOf.get(c.id); if (!pos) continue;
+      const sp = spanFromVals(o.t, o.cmd), x0 = tx(sp.s), x1 = tx(sp.e), y = laneTop(pos.g, pos.lane);
+      if (x1 < TL_HEAD || x0 > W || y > H || y + lh < TL_RULER) continue;
+      g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5);
+    }
+    g.setLineDash([]);
+  }
   if (md && md.type === 'create' && md.started && md.lastX != null){
     const s = tlCreateSpan(md), x0 = tx(s.ta), x1 = tx(s.tb), y = laneTop(md.gi, md.lane);
     g.fillStyle = TL.groups[md.gi].color; g.globalAlpha = 0.35; g.fillRect(x0, y + 2, x1 - x0, lh - 4); g.globalAlpha = 1;
@@ -2393,6 +2404,7 @@ function tlDragRestore(d){
   state.comments.sort(cmpComments);
 }
 function tlDragCommit(d){
+  if (d.copy){ tlDragCommitCopy(d); return; }
   const changes = [];
   for (const [c, o] of d.orig) if (c.t !== o.t || c.cmd !== o.cmd) changes.push({ c, t: c.t, cmd: c.cmd });
   tlDragRestore(d);
@@ -2402,6 +2414,20 @@ function tlDragCommit(d){
   if (failed) toast('同じ時刻・内容のコメントがあるため一部を変更できませんでした');
   if (!commitOps(ops)) relayout();
   tlSelChanged();
+}
+// Option＋ドラッグで複製: 動かした先に同じ本文・コマンドのコメントを作り、元は戻す。作ったものを選ぶ
+function tlDragCommitCopy(d){
+  const copies = [];
+  for (const [c, o] of d.orig) if (c.t !== o.t) copies.push(makeComment(c.t, c.cmd, c.text, true));
+  tlDragRestore(d);
+  TL.snapT = null;
+  if (!copies.length){ relayout(); return; }
+  const r = newComments(copies);
+  const ch = r.items.length ? commitOps(r.items.map(addOp)) : null;
+  if (!ch){ relayout(); toast('同じ時刻・内容のコメントがあるため複製できませんでした'); return; }
+  TL.sel = new Set(r.items.map(c => c.id));
+  tlSelChanged();
+  toast(`${r.items.length} 件を複製しました` + (r.dup ? `（同じ時刻・内容のものがある ${r.dup} 件は除きました）` : ''), { action: { label: '元に戻す', fn: () => revertChange(ch) } });
 }
 function tlCancelDrag(){
   const d = TL.drag;
@@ -2483,7 +2509,9 @@ TL.main.addEventListener('pointerdown', (e) => {
     }
     if (!TL.sel.has(c.id)){ TL.sel.clear(); TL.sel.add(c.id); tlSelChanged(); }
     const moving = hit.zone === 'move' ? tlSelected() : [c];
-    TL.drag = { ...base, type: hit.zone, c, orig: new Map(moving.map(x => [x, { t: x.t, cmd: x.cmd }])) };
+    // Option（Alt）＋ドラッグ: 選んでいるコメントを複製して、ドラッグした所に置く（元はそのまま）
+    const copy = e.altKey && hit.zone === 'move';
+    TL.drag = { ...base, type: hit.zone, c, orig: new Map(moving.map(x => [x, { t: x.t, cmd: x.cmd }])), copy };
     return;
   }
   TL.drag = { ...base, type:'pan', t0: TL.t0, sy: TL.scrollY };
@@ -2503,7 +2531,7 @@ TL.main.addEventListener('pointermove', (e) => {
     if (Math.hypot(dx, dy) < (d.touch ? 8 : 3)) return;
     d.started = true;
     if (d.orig) tlDragBegin(d);
-    if (d.type === 'move') TL.main.style.cursor = 'grabbing';
+    if (d.type === 'move') TL.main.style.cursor = d.copy ? 'copy' : 'grabbing';
   }
   if (d.type === 'scrub'){ if (state.videoLoaded) seekTo(Math.max(0, xt(p.x))); }
   else if (d.type === 'marquee'){ d.lastX = p.x; d.lastY = p.y; tlMarqueeUpdate(d); }
@@ -2512,19 +2540,21 @@ TL.main.addEventListener('pointermove', (e) => {
   else if (d.orig){ d.lastX = p.x; tlDragUpdate(p.x); }
   TL.dirty = true;
 });
-// マウスを重ねているときのカーソル（⌘・Ctrl を押していれば複数選択の十字、Shift なら空いている所でコメントを作る印）
+// マウスを重ねているときのカーソル（⌘・Ctrl を押していれば複数選択の十字、Shift なら空いている所でコメントを作る印、
+// Option ならコメントの上で複製の印）
 function tlCursor(mods){
   const p = TL.hover;
   if (!p || TL.drag) return;
   const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
   TL.main.style.cursor = p.y < TL_RULER ? 'col-resize'
+    : mods.altKey && hit && hit.zone === 'move' && !mods.ctrlKey && !mods.metaKey ? 'copy'
     : p.x >= TL_HEAD && (mods.ctrlKey || mods.metaKey || !hit && TL.marqueeMode) ? 'crosshair'
     : p.x >= TL_HEAD && mods.shiftKey && !hit && tlGroupAt(p.y) != null ? 'copy'
     : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
 }
 TL.main.addEventListener('pointerleave', () => { TL.hover = null; });
 // 押しているキーが変わったら、マウスを動かさなくてもカーソルを変える
-for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Shift', 'Control', 'Meta'].includes(e.key)) tlCursor(e); });
+for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) tlCursor(e); });
 window.addEventListener('blur', () => tlCursor({}));
 // Shift＋ドラッグで作るコメント: ドラッグした範囲が見えている間になるように、時刻と表示時間を決めて新規の画面を開く
 // （流れるコメントは 1 秒前から見えるので、始まりを 1 秒後ろにする）
