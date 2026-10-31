@@ -727,6 +727,10 @@ palette.addEventListener('keydown', (e) => { if (e.key === 'Escape'){ setPalette
 let listItems = [], listRows = [], currentRowIdx = -1, lastHL = NaN, listHover = false;
 const listRowOf = new Map(); // コメントの id → リストの行
 let listPeerRows = []; // ほかの人の選択で色を付けた行
+// 手で選んだ行（リストのクリック・「ここ見て」の「見る」・リンク）。{ ids, t: 移った時刻, until: 選んだコメントの時刻, shown }。
+// 再生位置に合う行（代表の行）ではなく、選んだ行に色を付ける。ほかの場所へシークしたり、再生して選んだコメントを
+// 過ぎたりしたら、今まで通り再生位置に合わせる
+let listPick = null;
 list.addEventListener('mouseenter', () => { listHover = true; });
 list.addEventListener('mouseleave', () => { listHover = false; });
 function renderList(){
@@ -759,9 +763,27 @@ function renderList(){
   }
   $('#listCount').textContent = q ? `${listItems.length} / ${state.comments.length}件` : `${state.comments.length}件`;
   currentRowIdx = -1; lastHL = NaN;
+  if (listPick) listPick.shown = false;
   highlightCurrent(video.currentTime || 0);
   listMarkPeers();
 }
+// cs のコメントを選んだ行として色を付ける（t はそのために移った時刻）
+function listPickComments(cs, t, scroll){
+  if (!cs.length) return;
+  listPick = { ids: new Set(cs.map(c => c.id)), t, until: Math.max(...cs.map(c => c.t)), shown: false, scroll };
+  lastHL = NaN;
+  highlightCurrent(t);
+}
+function listUnpick(){
+  if (!listPick) return;
+  listPick = null;
+  for (const r of list.querySelectorAll('.row.current')) r.classList.remove('current');
+  currentRowIdx = -1; lastHL = NaN;
+}
+// 選んだ行のために移ったのではないシーク（シークバー・タイムライン・キー操作など）なら、再生位置に合わせる表示に戻す
+video.addEventListener('seeking', () => {
+  if (listPick && !(Math.abs(video.currentTime - listPick.t) < 0.05)){ listUnpick(); highlightCurrent(video.currentTime || 0); }
+});
 $('#search').addEventListener('input', renderList);
 list.addEventListener('click', (e) => {
   const row = e.target.closest('.row'); if (!row) return;
@@ -769,8 +791,24 @@ list.addEventListener('click', (e) => {
   if (e.target.closest('.del')){ deleteComment(c); return; }
   seekTo(parseCmd(c.cmd).pos === 'naka' ? c.t - NAKA_LEAD : c.t);
   TL.sel = new Set([c.id]); tlSelChanged(); tlEnsureVisible(c);
+  listPickComments([c], video.currentTime, false);
 });
 function highlightCurrent(t){
+  // 再生して選んだコメントを過ぎたら、再生位置に合わせる表示に戻す
+  if (listPick && t > Math.max(listPick.t, listPick.until) + 0.25) listUnpick();
+  if (listPick){
+    if (listPick.shown) return;
+    listPick.shown = true;
+    for (const r of list.querySelectorAll('.row.current')) r.classList.remove('current');
+    currentRowIdx = -1;
+    let first = null;
+    for (const r of listRows) if (listPick.ids.has(listItems[+r.dataset.i]?.id)){ r.classList.add('current'); first = first || r; }
+    // 見えていなければ見えるところへ（「ここ見て」やリンクで移ったとき）
+    if (first && listPick.scroll && (first.offsetTop < list.scrollTop || first.offsetTop + first.offsetHeight > list.scrollTop + list.clientHeight)){
+      list.scrollTop = first.offsetTop - list.clientHeight * 0.35;
+    }
+    return;
+  }
   const k = Math.floor(t * 4);
   if (k === lastHL) return;
   lastHL = k;
@@ -2078,6 +2116,8 @@ function tlFrame(playing, t){
 function tlSelected(){ return state.comments.filter(c => TL.sel.has(c.id)); }
 function tlSelChanged(){
   const n = TL.sel.size;
+  // リストで選んだ行と違うものを選んだら、リストの色は再生位置に合わせる表示に戻す
+  if (listPick && (n !== listPick.ids.size || [...TL.sel].some(id => !listPick.ids.has(id)))){ listUnpick(); highlightCurrent(video.currentTime || 0); }
   $('#tlEdit').disabled = n !== 1;
   $('#tlDelete').disabled = !n;
   TL.dirty = true; state.needsDraw = true;
@@ -3447,6 +3487,8 @@ function collabHandle(m){
     if (collab.follow != null && !ids.has(collab.follow)) followLost();
     followRebind();
     collabUI(); presenceChanged();
+    // 一覧を開いていれば名前も書き換える（表示名を変えた直後など）
+    if ($('#peersDlg').open) peersRender();
   } else if (m.type === 'call'){
     callReceived(m);
   } else if (m.type === 'presence'){
@@ -4617,7 +4659,7 @@ function jumpTo(t, ids = []){
     const vis = (TL.W - TL_HEAD) / TL.pps;
     if (TL.inited && (t < TL.t0 || t > TL.t0 + vis)){ TL.t0 = t - vis * 0.3; tlClampView(); }
   }
-  if (cs.length){ TL.sel = new Set(cs.map(c => c.id)); tlSelChanged(); tlEnsureVisible(cs[0]); }
+  if (cs.length){ TL.sel = new Set(cs.map(c => c.id)); tlSelChanged(); tlEnsureVisible(cs[0]); listPickComments(cs, video.currentTime, true); }
   TL.dirty = true;
 }
 
