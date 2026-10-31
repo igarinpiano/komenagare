@@ -2100,6 +2100,12 @@ function tlDraw(){
   if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
   tlDrawPeerSel(g, t1);
   const md = TL.drag;
+  if (md && md.type === 'create' && md.started && md.lastX != null){
+    const s = tlCreateSpan(md), x0 = tx(s.ta), x1 = tx(s.tb), y = laneTop(md.gi, md.lane);
+    g.fillStyle = TL.groups[md.gi].color; g.globalAlpha = 0.35; g.fillRect(x0, y + 2, x1 - x0, lh - 4); g.globalAlpha = 1;
+    g.strokeStyle = '#fff'; g.lineWidth = 1; g.setLineDash([4, 3]); g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5); g.setLineDash([]);
+    g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(`＋ ${fmtPrecise(s.t)}・${s.dur.toFixed(1)}秒`, Math.max(x0, TL_HEAD) + 6, y + lh / 2);
+  }
   if (md && md.type === 'marquee' && md.started && md.lastX != null){
     const r = tlMarqueeRect(md), x0 = tx(r.ta), x1 = tx(r.tb), y0 = r.ya - TL.scrollY, y1 = r.yb - TL.scrollY;
     g.fillStyle = 'rgba(80,150,255,.14)'; g.fillRect(x0, y0, x1 - x0, y1 - y0);
@@ -2249,6 +2255,10 @@ function tlFrame(playing, t){
     if (v){ TL.t0 += v * 0.25 / TL.pps; tlClampView(); tlDragUpdate(d.lastX); }
   }
   // 範囲選択の途中で端へ寄せたら、横（時間）と縦（段）に自動スクロールして範囲を広げる
+  if (d && d.type === 'create' && d.started && d.lastX != null){
+    const edge = 28, vx = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
+    if (vx){ TL.t0 += vx * 0.25 / TL.pps; tlClampView(); TL.dirty = true; }
+  }
   if (d && d.type === 'marquee' && d.started && d.lastX != null){
     const edge = 28;
     const vx = d.lastX < TL_HEAD + edge ? -(TL_HEAD + edge - d.lastX) : d.lastX > TL.W - edge ? d.lastX - (TL.W - edge) : 0;
@@ -2450,12 +2460,18 @@ TL.main.addEventListener('pointerdown', (e) => {
     return;
   }
   const hit = tlHit(p.x, p.y, touch);
-  // 範囲選択: Option（Alt）＋ドラッグはどこからでも、Shift・Ctrl・⌘＋ドラッグと「範囲選択」ボタンがオンのときは空いている所から。
-  // Shift・Ctrl・⌘ を押していれば今の選択に足す
+  // 範囲選択: Option（Alt）＋ドラッグはどこからでも、Ctrl・⌘＋ドラッグと「範囲選択」ボタンがオンのときは空いている所から。
+  // Shift・Ctrl・⌘ も押していれば今の選択に足す
   const add = e.shiftKey || e.ctrlKey || e.metaKey;
-  if (p.x >= TL_HEAD && (e.altKey || (!hit || touch && !TL.sel.has(hit.c.id)) && (add || TL.marqueeMode))){
+  const empty = !hit || touch && !TL.sel.has(hit.c.id);
+  if (p.x >= TL_HEAD && (e.altKey || empty && (e.ctrlKey || e.metaKey || TL.marqueeMode))){
     TL.drag = { ...base, type:'marquee', at: xt(p.x), ay: p.y + TL.scrollY, base: add ? new Set(TL.sel) : new Set() };
     return;
+  }
+  // Shift＋横にドラッグ（空いている所から）: その長さのコメントを、その段（上・流・下）に作る
+  if (e.shiftKey && !hit && p.x >= TL_HEAD){
+    const gi = tlGroupAt(p.y);
+    if (gi != null){ TL.drag = { ...base, type:'create', ta: xt(p.x), gi, lane: Math.max(0, Math.floor((p.y - laneTop(gi, 0)) / laneH())) }; return; }
   }
   if (hit && (!touch || TL.sel.has(hit.c.id))){
     const c = hit.c;
@@ -2478,10 +2494,7 @@ TL.main.addEventListener('pointermove', (e) => {
   if (TL.pinch){ tlPinchMove(); return; }
   const d = TL.drag;
   if (!d){
-    if (e.pointerType === 'mouse'){
-      const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
-      TL.main.style.cursor = p.y < TL_RULER ? 'col-resize' : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
-    }
+    if (e.pointerType === 'mouse'){ TL.hover = p; tlCursor(e); }
     return;
   }
   if (d.id !== e.pointerId) return;
@@ -2494,10 +2507,36 @@ TL.main.addEventListener('pointermove', (e) => {
   }
   if (d.type === 'scrub'){ if (state.videoLoaded) seekTo(Math.max(0, xt(p.x))); }
   else if (d.type === 'marquee'){ d.lastX = p.x; d.lastY = p.y; tlMarqueeUpdate(d); }
+  else if (d.type === 'create'){ d.lastX = p.x; }
   else if (d.type === 'pan'){ TL.t0 = d.t0 - dx / TL.pps; TL.scrollY = d.sy - dy; tlClampView(); }
   else if (d.orig){ d.lastX = p.x; tlDragUpdate(p.x); }
   TL.dirty = true;
 });
+// マウスを重ねているときのカーソル（Option を押していれば範囲選択の十字、Shift なら空いている所でコメントを作る印）
+function tlCursor(mods){
+  const p = TL.hover;
+  if (!p || TL.drag) return;
+  const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
+  TL.main.style.cursor = p.y < TL_RULER ? 'col-resize'
+    : p.x >= TL_HEAD && (mods.altKey || !hit && (mods.ctrlKey || mods.metaKey || TL.marqueeMode)) ? 'crosshair'
+    : p.x >= TL_HEAD && mods.shiftKey && !hit && tlGroupAt(p.y) != null ? 'copy'
+    : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
+}
+TL.main.addEventListener('pointerleave', () => { TL.hover = null; });
+// 押しているキーが変わったら、マウスを動かさなくてもカーソルを変える
+for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Alt', 'Shift', 'Control', 'Meta'].includes(e.key)) tlCursor(e); });
+window.addEventListener('blur', () => tlCursor({}));
+// Shift＋ドラッグで作るコメント: ドラッグした範囲が見えている間になるように、時刻と表示時間を決めて新規の画面を開く
+// （流れるコメントは 1 秒前から見えるので、始まりを 1 秒後ろにする）
+function tlCreateSpan(d){
+  const t1 = xt(d.lastX ?? d.x0), ta = Math.max(0, Math.min(d.ta, t1)), tb = Math.max(d.ta, t1);
+  const pos = TL_GROUPS[d.gi].pos, lead = pos === 'naka' ? NAKA_LEAD : 0;
+  return { ta, tb, pos, t: ta + lead, dur: Math.max(0.5, tb - ta - lead) };
+}
+function tlCreateCommit(d){
+  const s = tlCreateSpan(d);
+  openNewDialog(s.t, s.pos, s.dur);
+}
 function tlPointerEnd(e, cancel){
   TL.pointers.delete(e.pointerId);
   if (TL.pinch){ if (TL.pointers.size < 2) TL.pinch = null; TL.drag = null; return; }
@@ -2507,6 +2546,7 @@ function tlPointerEnd(e, cancel){
   TL.drag = null;
   if (d.started){
     if (d.orig) tlDragCommit(d);
+    if (d.type === 'create'){ TL.dirty = true; tlCreateCommit(d); return; }
     TL.snapT = null; TL.dirty = true;
     return;
   }
@@ -2631,7 +2671,7 @@ $('#tlSnap').classList.toggle('on', TL.snap);
 $('#tlFollow').classList.toggle('on', TL.follow);
 $('#tlSnap').onclick = toggleSnap;
 // 範囲選択ボタン（オンの間は、空いている所のドラッグで範囲を囲んで選ぶ。スマホ・タブレット向け。覚えない）
-$('#tlMarquee').onclick = () => { TL.marqueeMode = !TL.marqueeMode; $('#tlMarquee').classList.toggle('on', TL.marqueeMode); };
+$('#tlMarquee').onclick = () => { TL.marqueeMode = !TL.marqueeMode; $('#tlMarquee').classList.toggle('on', TL.marqueeMode); tlCursor({}); };
 $('#tlFollow').onclick = () => { TL.follow = settings.tlFollow = !TL.follow; saveSettings(); $('#tlFollow').classList.toggle('on', TL.follow); };
 $('#tlNew').onclick = () => openNewDialog(video.currentTime || 0);
 $('#tlEdit').onclick = () => { const s = tlSelected(); if (s.length === 1) openEditDialog(s[0]); };
@@ -2722,12 +2762,13 @@ function openEditDialog(c){
   editDlg.showModal();
   $('#edText').focus();
 }
-function openNewDialog(t, pos){
+function openNewDialog(t, pos, dur){
   editTarget = null;
   $('#edTitle').textContent = '新しいコメント';
   $('#edText').value = '';
   $('#edTime').value = fmtPrecise(t);
   $('#edCmd').value = pos ? setCmdPos(cmdInput.value, pos) : normCmd(cmdInput.value);
+  if (dur > 0) $('#edCmd').value = setCmdLong($('#edCmd').value, dur); // 表示時間（Shift＋ドラッグで作ったとき）
   $('#edDelete').hidden = true;
   edSync();
   editDlg.showModal();
