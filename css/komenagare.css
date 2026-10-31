@@ -203,15 +203,14 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .row.mine .rc{color:#ffe28a}
 .row.inv .rc{opacity:.45;font-style:italic}
 .rt{font-variant-numeric:tabular-nums;color:#aaa}
-.rc{word-break:break-all;white-space:pre-wrap;max-height:4.2em;overflow:hidden}
+.rc{word-break:break-all;white-space:pre-wrap;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:10;line-clamp:10;overflow:hidden}
 .rm{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:4px}
 .rm .sw{flex:none;width:9px;height:9px;border-radius:2px;border:1px solid rgba(255,255,255,.3)}
 .del{background:none;border:none;color:#777;padding:0 4px;font-size:15px;line-height:1;visibility:hidden}
 .row:hover .del{visibility:visible}
 .del:hover{color:var(--danger);background:none}
-/* 見えている行だけ作るとき（settings.listVirtual）：行は1行に収めて高さをそろえ、置く位置を指定する */
-.list.virtual .row{position:absolute;left:0;right:0;align-items:center}
-.list.virtual .rc{white-space:nowrap;text-overflow:ellipsis;word-break:normal;max-height:none}
+/* 見えている行だけ作るとき（settings.listVirtual）：置く位置を指定する（高さは本文から見積もり、作ったら測って直す） */
+.list.virtual .row{position:absolute;left:0;right:0}
 .list-spacer{width:1px}
 .list-empty{padding:30px 16px;text-align:center;color:#777;font-size:13px;line-height:1.7}
 /* パネルが低いとき（タイムラインを高くしたときなど）は、開いた設定の中をスクロールする */

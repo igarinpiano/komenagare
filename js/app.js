@@ -729,14 +729,20 @@ palette.addEventListener('keydown', (e) => { if (e.key === 'Escape'){ setPalette
 
 /* =====================================================================
    コメントリスト
-   見えている行だけ作る（settings.listVirtual。既定でオン）。オフにすると今まで通り全部の行を作る（長い本文も折り返して出す）。
+   見えている行だけ作る（settings.listVirtual。既定でオン）。オフにすると今まで通り全部の行を作る。どちらも長い本文は折り返して出す。
+   見えている行だけ作るときは、行の高さを本文から見積もって置く位置を決め、作った行は実際の高さを測って直す。
    色を付ける行（再生位置に合う行・手で選んだ行・ほかの人が選んでいる行）は状態から決め、作るときと変わったときに当てる
    ===================================================================== */
 let listItems = [], currentRowIdx = -1, lastHL = NaN, listHover = false;
 const listShown = new Map(); // 行の番号 → 作ってある行
 const listIndex = new Map(); // コメントの id → 行の番号
 let listPeerSel = new Map(); // ほかの人が選んでいるコメントの id → その人の色
-let listRowH = 0; // 見えている行だけ作るときの1行の高さ
+// 見えている行だけ作るとき: 1行だけの行の高さ・本文の1行の高さ・本文の欄の幅・本文の文字の大きさ
+let listRowH = 0, listLineH = 0, listTextW = 0, listFontPx = 12.5;
+const LIST_LINES = 10; // 本文を出す行数の上限（css の .rc の line-clamp と同じ）
+let listHeights = new Float64Array(0), listTops = new Float64Array(1); // 各行の高さと、上端の位置（n+1 個。最後は全体の高さ）
+const listMeasured = new Map(); // コメントの id → 測った高さ（本文が同じで欄の幅も同じ間だけ使う）
+let listMeasuredW = 0;
 const listVirtual = () => settings.listVirtual !== false;
 // 手で選んだ行（リストのクリック・「ここ見て」の「見る」・リンク）。{ ids, t: 移った時刻, until: 選んだコメントの時刻, shown }。
 // 再生位置に合う行（代表の行）ではなく、選んだ行に色を付ける。ほかの場所へシークしたり、再生して選んだコメントを
@@ -754,7 +760,7 @@ function listMakeRow(i){
   row.dataset.i = i;
   const rt = document.createElement('span'); rt.className = 'rt'; rt.textContent = fmtList(c.t);
   const rc = document.createElement('span'); rc.className = 'rc'; rc.textContent = c.text;
-  if (listVirtual()) rc.title = c.text;
+  if (c.text.length > 300 || c.text.split('\n').length > 10) rc.title = c.text; // 10 行を超える分はマウスを重ねると出る
   const rm = document.createElement('span'); rm.className = 'rm'; rm.title = c.cmd;
   if (o.color !== '#FFFFFF'){ const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = o.color; rm.append(sw); }
   rm.append(c.cmd);
@@ -762,7 +768,7 @@ function listMakeRow(i){
   row.append(rt, rc, rm, del);
   const peer = listPeerSel.get(c.id);
   if (peer){ row.classList.add('peer-sel'); row.style.setProperty('--peer', peer); }
-  if (listVirtual()) row.style.top = (i * listRowH) + 'px';
+  if (listVirtual()) row.style.top = listTops[i] + 'px';
   return row;
 }
 function renderList(){
@@ -778,9 +784,12 @@ function renderList(){
   else currentRowIdx = listIdxAt(t);
   list.classList.toggle('virtual', listVirtual());
   if (listVirtual()){
-    if (!listRowH) listMeasureRow();
+    if (!listRowH || list.clientWidth !== listMeasuredW) listMeasureRow();
+    listHeights = new Float64Array(listItems.length);
+    for (let i = 0; i < listItems.length; i++){ const c = listItems[i], m = listMeasured.get(c.id); listHeights[i] = m && m.text === c.text ? m.h : listEstimate(c.text); }
+    listRecalc();
     const spacer = document.createElement('div'); spacer.className = 'list-spacer';
-    spacer.style.height = (listItems.length * listRowH) + 'px';
+    spacer.style.height = listTops[listItems.length] + 'px';
     list.replaceChildren(spacer);
     listPaint();
   } else {
@@ -798,32 +807,84 @@ function renderList(){
   lastHL = Math.floor(t * 4);
   listMarkPeers();
 }
-// 1行の高さを測る（見えている行だけ作るとき。行は1行に収める）
+// 行の高さの見積もりに使う大きさを測る（1行だけの行の高さ・本文の1行の高さ・本文の欄の幅）
 function listMeasureRow(){
   const probe = document.createElement('div'); probe.className = 'row'; probe.style.visibility = 'hidden';
   probe.innerHTML = '<span class="rt">00:00</span><span class="rc">あ</span><span class="rm">ue</span><button class="del">×</button>';
   list.classList.add('virtual'); list.append(probe);
+  const rc = probe.querySelector('.rc');
   listRowH = probe.getBoundingClientRect().height || 25;
+  listLineH = rc.getBoundingClientRect().height || 17;
+  listTextW = rc.clientWidth || 200;
+  listFontPx = parseFloat(getComputedStyle(rc).fontSize) || 12.5;
   probe.remove();
+  // 欄の幅が変わったら、測った高さは使えない
+  if (list.clientWidth !== listMeasuredW){ listMeasured.clear(); listMeasuredW = list.clientWidth; }
 }
-// 見えている範囲（と前後少し）の行だけを作り、外れた行は消す
+// 本文から行の高さを見積もる（折り返しの行数を文字の幅のおおよそで数える。本文は 10 行まで出す: .rc の line-clamp）
+function listEstimate(text){
+  let lines = 0;
+  for (const seg of text.split('\n')){
+    let w = 0;
+    for (let k = 0; k < seg.length; k++) w += seg.charCodeAt(k) < 0x1100 ? 0.55 : 1;
+    lines += Math.max(1, Math.ceil(w * listFontPx / listTextW));
+    if (lines >= LIST_LINES) break;
+  }
+  return listRowH + listLineH * (Math.min(LIST_LINES, lines) - 1);
+}
+// 各行の上端の位置を計算し直す
+function listRecalc(){
+  const n = listHeights.length;
+  listTops = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) listTops[i + 1] = listTops[i] + listHeights[i];
+}
+// 位置 y にある行の番号
+function listIdxAtY(y){
+  let lo = 0, hi = listHeights.length - 1;
+  if (hi < 0) return 0;
+  while (lo < hi){ const mid = (lo + hi + 1) >> 1; if (listTops[mid] <= y) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+// 見えている範囲（と前後少し）の行だけを作り、外れた行は消す。作った行は高さを測り、見積もりと違えば位置を直す
+// （見えている一番上の行が動かないようにスクロールの位置も合わせる）
 function listPaint(){
   if (!listVirtual() || !listRowH) return;
-  const n = listItems.length, over = 10;
-  const first = Math.max(0, Math.floor(list.scrollTop / listRowH) - over);
-  const last = Math.min(n, Math.ceil((list.scrollTop + list.clientHeight) / listRowH) + over);
-  for (const [i, row] of listShown) if (i < first || i >= last){ row.remove(); listShown.delete(i); }
-  const frag = document.createDocumentFragment();
-  for (let i = first; i < last; i++) if (!listShown.has(i)){ const row = listMakeRow(i); listShown.set(i, row); frag.append(row); }
-  list.append(frag);
+  const n = listItems.length, overPx = list.clientHeight * 0.5 + 200;
+  for (let pass = 0; pass < 3; pass++){
+    const first = listIdxAtY(Math.max(0, list.scrollTop - overPx));
+    const last = Math.min(n, listIdxAtY(list.scrollTop + list.clientHeight + overPx) + 1);
+    for (const [i, row] of listShown) if (i < first || i >= last){ row.remove(); listShown.delete(i); }
+    const frag = document.createDocumentFragment(), made = [];
+    for (let i = first; i < last; i++) if (!listShown.has(i)){ const row = listMakeRow(i); listShown.set(i, row); frag.append(row); made.push(i); }
+    list.append(frag);
+    let changed = false;
+    for (const i of made){
+      const h = listShown.get(i).offsetHeight, c = listItems[i];
+      listMeasured.set(c.id, { h, text: c.text });
+      if (Math.abs(h - listHeights[i]) > 0.5){ listHeights[i] = h; changed = true; }
+    }
+    if (!changed) return;
+    const anchor = listIdxAtY(list.scrollTop), offset = listTops[anchor] - list.scrollTop;
+    listRecalc();
+    for (const [i, row] of listShown) row.style.top = listTops[i] + 'px';
+    const spacer = list.querySelector('.list-spacer');
+    if (spacer) spacer.style.height = listTops[n] + 'px';
+    if (list.scrollTop > 0) list.scrollTop = listTops[anchor] - offset;
+  }
 }
 list.addEventListener('scroll', () => { if (listVirtual()) listPaint(); }, { passive: true });
-new ResizeObserver(() => { if (listVirtual() && listItems.length) listPaint(); }).observe(list);
+// 欄の幅が変わったら折り返しが変わるので作り直す。高さだけなら作る行を足すだけ
+let listLastW = 0;
+new ResizeObserver(() => {
+  if (!listVirtual() || !listItems.length) return;
+  if (list.clientWidth !== listLastW){ listLastW = list.clientWidth; listRowH = 0; renderList(); }
+  else listPaint();
+}).observe(list);
 // 行 i が見えるようにスクロールする（at: 見える範囲の上からの位置。0〜1）
 function listScrollTo(i, at, always){
-  const top = listVirtual() ? i * listRowH : listShown.get(i)?.offsetTop;
+  const top = listVirtual() ? listTops[i] : listShown.get(i)?.offsetTop;
   if (top == null) return;
-  const h = listVirtual() ? listRowH : listShown.get(i).offsetHeight;
+  const h = listVirtual() ? listHeights[i] : listShown.get(i).offsetHeight;
   if (!always && top >= list.scrollTop && top + h <= list.scrollTop + list.clientHeight) return;
   list.scrollTop = top - list.clientHeight * at;
   listPaint();
@@ -3318,9 +3379,11 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 7;
+const COLLAB_PROTOCOL = 8;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
+  // ホストから最後に受け取った変更の通し番号と、ホストの起動ごとの id（つなぎ直したとき、それ以降の変更だけを受け取るため）
+  rev: 0, epoch: null,
   conflicts: [], // ほかの人の変更と重なって反映されなかった自分の変更（衝突の解決画面で選ぶ）
   shared: [], // 「あとで」にされてホストに預けられた衝突（全員のもの。author・client 付き）
   me: null, peerList: [], // 自分の接続 id と、参加者（{ id, name, client }）
@@ -3430,7 +3493,10 @@ async function collabResplitOutbox(){
 }
 
 function collabHello(){
-  return { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client_key: collabClientKey(), session: collab.session?.token };
+  const h = { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client_key: collabClientKey(), session: collab.session?.token };
+  // このタブでつながっていたなら、前に受け取ったところからの変更だけを求める（ホストが覚えていなければ全体が来る）
+  if (collab.epoch){ h.since = collab.rev; h.epoch = collab.epoch; }
+  return h;
 }
 function collabConnect(){
   clearTimeout(collab.timer);
@@ -3509,11 +3575,21 @@ async function collabCheckEmailGate(){
 
 function collabHandle(m){
   if (m.type === 'snapshot'){
-    // ホストの内容に、まだ受け取り確認のない自分の変更を重ねてから送り直す
-    const mine = new Set(store.comments.filter(c => c.mine).map(c => c.id));
-    store.reset(m.comments.map(c => ({ ...c, mine: mine.has(c.id) })));
-    for (const e of collab.outbox) store.apply(e.change);
-    commentsChanged();
+    if (Array.isArray(m.changes)){
+      // つなぎ直し: 切れていた間の変更だけが届く（古い順）。手元にはまだ受け取り確認のない自分の変更も入っているが、
+      // 届いた変更を当てるだけでよい（自分の変更が入っていても、当て直すと衝突して何も変わらない）
+      let changed = false;
+      for (const e of m.changes) if (e && e.change && store.apply(e.change).applied) changed = true;
+      if (changed) commentsChanged();
+    } else {
+      // ホストの内容に、まだ受け取り確認のない自分の変更を重ねてから送り直す
+      const mine = new Set(store.comments.filter(c => c.mine).map(c => c.id));
+      store.reset((m.comments || []).map(c => ({ ...c, mine: mine.has(c.id) })));
+      for (const e of collab.outbox) store.apply(e.change);
+      commentsChanged();
+    }
+    collab.rev = typeof m.rev === 'number' ? m.rev : 0;
+    collab.epoch = typeof m.epoch === 'string' ? m.epoch : null;
     collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null; collab.myClient = typeof m.client === 'string' ? m.client : null;
     collab.remote = m.remote || null;
     collab.synced = true; collab.peersReady = false;
@@ -3526,6 +3602,7 @@ function collabHandle(m){
     histChanged();
     linkTry();
   } else if (m.type === 'change'){
+    if (typeof m.rev === 'number' && m.rev > collab.rev) collab.rev = m.rev;
     const r = store.apply(m.change);
     if (r.applied){ commentsChanged(); collabSaveSoon(); }
     if (hist.entries){ hist.entries.unshift({ rev: m.rev, time: m.time, author: m.author, change: m.change }); histRender(); }
@@ -3947,7 +4024,7 @@ function collabClose(){
   ownerRelease();
   const db = collab.db;
   setTimeout(() => db?.close(), 1000); // 書きかけの控えを書き終えてから閉じる
-  Object.assign(collab, { db: null, connected: false, blocked: false, retry: 0, failed: 0, me: null, serverName: null,
+  Object.assign(collab, { db: null, connected: false, blocked: false, retry: 0, failed: 0, me: null, serverName: null, rev: 0, epoch: null,
     outbox: [], conflicts: [], shared: [], peers: [], peerList: [], follow: null, followClient: null, project: null,
     synced: false, pingAt: 0, peersReady: false, lastPeers: [] });
   collab.presence.clear();

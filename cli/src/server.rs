@@ -21,8 +21,11 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":7,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき)}
+//!   {"type":"hello","protocol":8,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき),
+//!    "since":N,"epoch":"…"(つなぎ直しのとき)}
 //!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
+//!     since・epoch は、前の接続で最後に受け取った通し番号と、そのときのホストの起動ごとの id。同じ起動のホストで、
+//!     そこからの変更が最近の記録に全部残っていれば、snapshot に全体ではなくそれ以降の変更だけを入れて返す
 //!   {"type":"change","change":{変更セット}}
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
@@ -33,8 +36,11 @@
 //!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
 //!   {"type":"run_stop","id":"…"}                             動いているコマンドを止める
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
-//!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類）
+//!   {"type":"snapshot","rev":N,"epoch":"…","you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
+//!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類。
+//!                                                            epoch はホストの起動ごとの id）
+//!     つなぎ直しで差分を返すときは comments の代わりに "changes":[{"rev","time","author","change"},...]（古い順）。
+//!     自分の変更も入るが、当て直しても衝突して何も変わらない（同じ内容が二重になることはない）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
 //!   {"type":"call","id":接続id,"name":"名前","state":{...}}   ほかの人の「ここ見て」
 //!   {"type":"pong"}                                          ping への返事
@@ -69,7 +75,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -185,6 +191,8 @@ pub struct Hub {
     conflicts_file: PathBuf,
     /// 作業フォルダ（受け取った変更を .komenagare/log.jsonl に書き足す）
     dir: PathBuf,
+    /// 起動ごとの id（つなぎ直しで差分を返してよいかを見分ける。起動し直したら、記録の外で変わったかもしれないので全体を返す）
+    epoch: String,
 }
 
 struct Inner {
@@ -396,6 +404,7 @@ impl Hub {
             writer,
             conflicts_file,
             dir,
+            epoch: crate::auth::random_hex(8),
         })
     }
 
@@ -1026,16 +1035,25 @@ async fn connection(
                         presence,
                     },
                 );
-                let comments: Vec<&Comment> = inner.store.sorted();
                 let remote = server
                     .remote
                     .as_ref()
                     .filter(|_| can_run)
                     .map(|r| r.mode.label());
-                let _ = out_tx.send(
-                    json!({ "type": "snapshot", "rev": inner.rev, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
-                        .to_string(),
-                );
+                // つなぎ直しなら、前に受け取ったところからの変更だけを返す（記録に全部残っているとき）
+                let since = (v["epoch"].as_str() == Some(hub.epoch.as_str()))
+                    .then(|| v["since"].as_u64())
+                    .flatten();
+                let snapshot = match since.and_then(|n| changes_since(&inner, n)) {
+                    Some(changes) => {
+                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "changes": changes, "remote": remote })
+                    }
+                    None => {
+                        let comments: Vec<&Comment> = inner.store.sorted();
+                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
+                    }
+                };
+                let _ = out_tx.send(snapshot.to_string());
                 let _ = out_tx.send(conflicts_msg(&inner));
                 for (id, p) in &inner.peers {
                     if let (true, Some(state)) = (*id != conn, &p.presence) {
@@ -1275,6 +1293,16 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
     json!({ "type": "ack", "id": change.id, "rev": inner.rev, "dup": false, "conflicts": r.conflicts, "fix": fix }).to_string()
 }
 
+/// 通し番号 since より後の変更（古い順）。最近の記録に全部残っていなければ None（全体を送る）
+fn changes_since(inner: &Inner, since: u64) -> Option<Vec<&LogEntry>> {
+    if since > inner.rev {
+        return None;
+    }
+    let changes: Vec<&LogEntry> = inner.history.iter().filter(|e| e.rev > since).collect();
+    // 通し番号は1つずつ増えるので、数がそろっていれば抜けは無い
+    (changes.len() as u64 == inner.rev - since).then_some(changes)
+}
+
 fn broadcast_peers(hub: &Hub, inner: &Inner) {
     let mut names: Vec<&String> = inner.peers.values().map(|p| &p.name).collect();
     names.sort();
@@ -1444,6 +1472,41 @@ mod tests {
         );
         assert!(m.contains("はなこ: 変更 1"));
         assert_eq!(a, "たろう");
+    }
+
+    #[test]
+    fn sends_only_missed_changes_when_history_has_them() {
+        let entry = |rev| LogEntry {
+            rev,
+            time: 0,
+            author: "たろう".into(),
+            change: crate::store::Change {
+                id: format!("ch{rev}"),
+                ops: vec![],
+            },
+        };
+        let mut inner = Inner {
+            store: Store::default(),
+            rev: 10,
+            seen: HashSet::new(),
+            peers: HashMap::new(),
+            // 記録に残っているのは 6〜10（それより古いものは押し出された）
+            history: (6..=10).map(entry).collect(),
+            conflicts: vec![],
+        };
+        let revs =
+            |v: Option<Vec<&LogEntry>>| v.map(|v| v.iter().map(|e| e.rev).collect::<Vec<_>>());
+        assert_eq!(revs(changes_since(&inner, 10)), Some(vec![]));
+        assert_eq!(revs(changes_since(&inner, 8)), Some(vec![9, 10]));
+        assert_eq!(revs(changes_since(&inner, 5)), Some(vec![6, 7, 8, 9, 10]));
+        // 記録から外れたところからは全体を送る
+        assert_eq!(revs(changes_since(&inner, 4)), None);
+        assert_eq!(revs(changes_since(&inner, 0)), None);
+        // ホストより先の番号（ほかのホストのもの）も全体
+        assert_eq!(revs(changes_since(&inner, 11)), None);
+        // 取り込み（通し番号 0）が混ざっていても数え違えない
+        inner.history.push_front(entry(0));
+        assert_eq!(revs(changes_since(&inner, 7)), Some(vec![8, 9, 10]));
     }
 
     #[test]
