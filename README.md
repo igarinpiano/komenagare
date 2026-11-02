@@ -100,17 +100,28 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
 画面右上の「📁」からプロジェクトの一覧を開き、このタブのまま切り替える（動画・再生位置・タイムラインの表示はプロジェクトごとに覚えていて、戻ってくると元に戻します）か、新しいタブで開けます。
 一覧には、それぞれのプロジェクトに今いる人も出ます。同じプロジェクトや別のプロジェクトを複数のタブで並べて作業しても、変更・衝突はタブごとに正しく扱われます。
 
-いくつものプロジェクトを1つの git リポジトリにまとめることもできます（プロジェクトごとにリポジトリを作らなくてよい）。
-リポジトリの中のフォルダで `komenagare init` すると、そのリポジトリに履歴を残し、自動のコミットにはそのプロジェクトの `comments.jsonl` だけを入れます（ほかのプロジェクトや、自分で `git add` しておいたファイルは入れません）。
+#### まとめフォルダ（いくつものプロジェクトを1つのリポジトリで）
+
+プロジェクトごとにリポジトリを作らなくても、**まとめフォルダ**にすると、いくつものプロジェクトを1つのフォルダ・1つの git リポジトリで扱えます。
+GitHub に push するのも、別のパソコンや GitHub Codespaces で `git clone` して使うのも、リポジトリ1つで済みます。
 
 ```sh
-cd my-komenagare          # 1つのリポジトリ
-komenagare init a b c     # プロジェクトを3つ作る
-komenagare a b c          # まとめて共有する
+komenagare init --collection kome   # まとめフォルダを作る（git のリポジトリになる）
+cd kome
+komenagare init a b c               # プロジェクトを作る（まとめフォルダの一覧 komenagare.json に載る）
+komenagare                          # 一覧のプロジェクトを全部まとめて共有する（komenagare kome でも可）
+komenagare remove c                 # 一覧から外す（フォルダとコメントは残る。komenagare init c で戻る）
 ```
 
-作業用の記録（`.komenagare/`）は git に入れないので、リポジトリを `git clone` した先では、初めに一度 `komenagare init a b c` をし直します（コメントはそのまま。プロジェクトの id は新しくなるので、共有のリンクも変わります）。
-`--remote git` の参加者が打つ git は、リポジトリ全体に効きます（ほかのプロジェクトも含めて）。
+- 一覧（`komenagare.json`）にはプロジェクトのフォルダの名前と id が入っていて、git にも入ります。`git clone` した先でもそのまま `komenagare` で開け、プロジェクトの id も同じなので、共有のリンクも変わりません。
+- 自動のコミットは、プロジェクトごとにそのプロジェクトの `comments.jsonl` だけを入れます（ほかのプロジェクトや、自分で `git add` しておいたファイルは入れません）。
+- **動かしたまま、画面からプロジェクトを作る・外すことができます**（「📁」の一覧の下の「作る」と、各行の「外す」）。`--otp` なら管理者だけ、合言葉や `--no-token` なら入れる人みんなが使えます。
+  外してもフォルダとコメントは残り、一覧の「外したプロジェクト」から「戻す」と、同じ id で戻ります。外したプロジェクトを開いていた人は切断され、プロジェクトを選び直します。作る・外すのも git にコミットします。
+- いまある作業フォルダをまとめフォルダに入れるなら、中に作ってコメントを取り込みます（コメントの id は引き継ぎます。それまでの git の履歴は元のフォルダに残ります）: `komenagare init a --import ~/old/a/comments.jsonl`
+  作業フォルダごとコピーして入れたときは、`komenagare init a` で一覧に載せます（そのフォルダに `.git` があると、まとめフォルダの履歴に入らないので消してください）。
+- `--remote git` の参加者が打つ git は、リポジトリ全体に効きます（ほかのプロジェクトも含めて）。
+
+まとめフォルダにせず、リポジトリの中の作業フォルダを `komenagare a b c` と並べて開くこともできます（この場合は画面から作る・外すことはできず、`git clone` した先では初めに一度 `komenagare init a b c` が要ります）。
 
 ### ワンタイムパスワード（--otp）
 
@@ -283,14 +294,13 @@ Android 12 以降は裏で動く子プロセス（`--tunnel` の cloudflared な
 手元のパソコンを付けておかなくても、GitHub Codespaces（無料のアカウントで月 60 時間ほど）でホストできます。
 操作しないでいるとしばらくして止まり、使わない codespace はいずれ消されるので、数時間の作業会に向いています。コメントは終わったら GitHub に push して残します。
 
-1. プロジェクトを入れるリポジトリ（非公開でよい）を1つ作り、上の「複数のプロジェクト」のようにプロジェクトのフォルダを入れて push する
+1. [まとめフォルダ](#まとめフォルダいくつものプロジェクトを1つのリポジトリで)を作って、GitHub のリポジトリ（非公開でよい）に push する
 2. そのリポジトリの「Code」→「Codespaces」から codespace を作り、ターミナルで:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.sh | sh
 curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i /tmp/cloudflared.deb
-komenagare init a b c                      # 初回だけ（作業用の記録を作る。コメントはそのまま）
-komenagare a b c --otp --tunnel cloudflare
+komenagare --otp --tunnel cloudflare       # まとめフォルダのプロジェクトを全部共有する（画面から作る・外すこともできる）
 ```
 
 3. 終わったら `git push`（自動のコミットが積まれています）

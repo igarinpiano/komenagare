@@ -22,6 +22,7 @@
   - `workspace.rs` — 作業フォルダ（`komenagare init` で作る。`.komenagare/id` があるものだけを `komenagare` で開く）、`comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット。
     届いた変更は `log.jsonl` に書き足してから ack を返し、`comments.jsonl` とコミットは書き込み担当（`server.rs` の `spawn_writer`。変更だけを受け取って自分の控えに当てる。溜まっていればまとめて1回で）が後から行う。
     どこまで書いたかは `.komenagare/saved` に残し、起動時に `recover` でそれより新しい記録を当て直す（途中で止まっても受け取った変更を失わない）
+  - `collection.rs` — まとめフォルダ（`komenagare init --collection`。直下のプロジェクトの一覧を `komenagare.json` に持ち、git に入れる）。`komenagare <まとめフォルダ>` で全部開き、作業用の記録が無い（複製した直後）なら一覧の id で作る。動いているホストの画面から作る・外す・戻す（`/api/projects`。`--otp` なら管理者だけ）。止めている間は `komenagare init 名前`（作る・戻す）と `komenagare remove 名前`（外す）。名前は直下の1つのフォルダだけを指すように確かめ（`name_ok`）、リンクはたどらない
   - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）、HTTP の API、WebSocket の取り決め（ファイル冒頭に記載）。1つのホストで複数のプロジェクト（作業フォルダ）を共有する（`/ws?p=<作業フォルダの id>`）
   - `remote.rs` — `--remote`（許された参加者が画面の「ターミナル」からホストの作業フォルダでコマンドを打つ。`git` は決まったサブコマンドだけで、ほかのプログラムを動かせるオプションや作業フォルダの外を読み書きするオプションは断る。`shell` は何でも。`--otp` のときだけ）
   - `auth.rs` — 参加者ごとのワンタイムパスワード（`--otp`、`komenagare otp`）。1件1ファイルで置き、動いているホストと `komenagare otp` が同時に書いても壊れないようにする
@@ -62,6 +63,7 @@
   ホストで衝突した自分の変更は `collab.conflicts` に控え、衝突の解決画面（`#conflictDlg`）で選ばせる。
   「あとで」にした衝突はホストに預け（`conflict_add`。ホストは `.komenagare/conflicts.json` に残す）、全員の `collab.shared` に出して誰でも解決できるようにする。
 - 1つのホストに複数のプロジェクトがあるときは、ページの `?p=` で選ぶ（`collabOpen` / `collabClose` でタブのまま切り替える。控えの IndexedDB はプロジェクトごと）。
+  まとめフォルダのときは、動いている間にプロジェクトが増えたり外されたりする（`Server` の `projects`。外したら `Hub::close` でつながっている人を切り、書き込み担当は書き終えてから終わる。終わるときは `Server::finish` で全部の書き込みを待つ）。画面は `/api/projects` の `manage` があるときだけ作る・外すを出す（古いホストは送らない）。
   同じプロジェクトを複数のタブで開けるよう、衝突の控えはタブごと（`collab.owner`）に置き、閉じたタブの分は次に開いたタブが引き継ぐ。
 - `--otp` のときは `collab.session`（localStorage の `komenagare.session`）で入り、名前はホストが決める。
   ログインには有効期限がある（`auth.rs`。既定 30 日、`--session-ttl`。期限はホストだけが確かめる。`komenagare otp` は期限を知らないので消さない）。

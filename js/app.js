@@ -3529,7 +3529,7 @@ const collab = {
   // 公開 URL の手前でメールの確認（ホストの --allowed-mail。Cloudflare Access の PIN）をしているか
   emailGate: document.querySelector('meta[name="komenagare-host"]')?.dataset.emailGate === '1',
   session: null, // --otp のときのログイン（{ token, name, admin }。localStorage に控える）
-  project: null, projects: [], // 開いているプロジェクト（{ id, name }）と、ホストにあるプロジェクトの一覧
+  project: null, projects: [], projectsLoaded: false, projectsManage: false, projectsHidden: [], // 開いているプロジェクト（{ id, name }）と、ホストにあるプロジェクトの一覧
   workspace: 'default', // 控え（IndexedDB）の名前に使う。プロジェクトの id
   owner: null, // このタブがこのプロジェクトを開いている間の id（衝突の控えをタブごとに分ける）
   serverName: null, // ホストが使っている自分の名前
@@ -4089,6 +4089,10 @@ async function collabInit(){
 async function projectsFetch(){
   const r = await collabApi('/api/projects');
   collab.projects = r.projects || [];
+  collab.projectsLoaded = true;
+  // プロジェクトを作る・外すことができるか（まとめフォルダで起動したホストだけ。古いホストは送ってこない）
+  collab.projectsManage = r.manage === true;
+  collab.projectsHidden = Array.isArray(r.hidden) ? r.hidden.filter(x => typeof x === 'string').slice(0, 200) : [];
   if (r.me && collab.session) sessionSave({ ...collab.session, ...r.me });
   return collab.projects;
 }
@@ -4190,7 +4194,8 @@ function projectUrl(p){
 }
 function projectsRender(){
   const frag = document.createDocumentFragment();
-  if (!collab.projects.length) frag.append(mkEl('p', 'muted', '読み込んでいます…'));
+  if (!collab.projects.length) frag.append(mkEl('p', 'muted', !collab.projectsLoaded ? '読み込んでいます…'
+    : 'プロジェクトがありません。' + (collab.projectsManage ? '下で名前を入れて「作る」と作れます。' : 'ホストの管理者に作ってもらってください。')));
   for (const p of collab.projects){
     const cur = collab.project?.id === p.id;
     const row = mkEl('div', 'proj-row' + (cur ? ' on' : ''));
@@ -4212,10 +4217,60 @@ function projectsRender(){
     const a = mkEl('a', 'btn', '新しいタブ');
     a.href = projectUrl(p); a.target = '_blank'; a.rel = 'noopener';
     row.append(a);
+    if (collab.projectsManage){
+      const rm = mkEl('button', null, '外す');
+      rm.title = 'このホストでの共有をやめます（フォルダとコメントは残り、あとで戻せます）';
+      rm.onclick = () => projectRemove(p);
+      row.append(rm);
+    }
     frag.append(row);
   }
   $('#projectsList').replaceChildren(frag);
+  $('#projectsManage').hidden = !collab.projectsManage;
+  const hidden = document.createDocumentFragment();
+  if (collab.projectsHidden.length){
+    hidden.append(mkEl('span', null, '外したプロジェクト:'));
+    for (const name of collab.projectsHidden){
+      const b = mkEl('button', null, `${name} を戻す`);
+      b.onclick = () => projectAdd(name, `「${name}」を戻しました`);
+      hidden.append(b);
+    }
+  }
+  $('#projectsHidden').replaceChildren(hidden);
+  $('#projectsHidden').className = collab.projectsHidden.length ? 'proj-hidden' : '';
 }
+// まとめフォルダにプロジェクトを作る（同じ名前の外したフォルダなら戻す）
+async function projectAdd(name, done){
+  name = (name || '').trim();
+  if (!name){ $('#projectsNewName').focus(); return; }
+  $('#projectsNewBtn').disabled = true;
+  try {
+    const r = await collabApi('/api/projects', { name, by: collabName() });
+    toast(done || `「${r.name}」を作りました`);
+    if (!done) $('#projectsNewName').value = '';
+    await projectsFetch();
+    projectsRender();
+  } catch (e) {
+    toast('ホスト: ' + e.message, { type:'error', timeout:6000 });
+  } finally {
+    $('#projectsNewBtn').disabled = false;
+  }
+}
+async function projectRemove(p){
+  if (!confirm(`「${p.name}」を外しますか？\nこのホストでの共有をやめます。フォルダとコメントはホストに残り、あとで「戻す」で戻せます。\n開いている人は切断されます。`)) return;
+  try {
+    await collabApi('/api/projects/remove', { id: p.id, by: collabName() });
+    toast(`「${p.name}」を外しました`);
+    await projectsFetch();
+    projectsRender();
+  } catch (e) {
+    toast('ホスト: ' + e.message, { type:'error', timeout:6000 });
+  }
+}
+$('#projectsNewBtn').onclick = () => projectAdd($('#projectsNewName').value);
+$('#projectsNewName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing){ e.preventDefault(); projectAdd($('#projectsNewName').value); }
+});
 $('#projectsDlg').addEventListener('cancel', (e) => { if ($('#projectsDlg').dataset.required) e.preventDefault(); });
 $('#projectsDlg').addEventListener('close', () => clearInterval(projectsTimer));
 $('#projectsClose').onclick = () => $('#projectsDlg').close();
