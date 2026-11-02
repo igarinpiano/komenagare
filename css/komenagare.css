@@ -460,6 +460,8 @@ body.tm-on .tm-rail{transform:none;box-shadow:-8px 0 24px rgba(0,0,0,.35)}
 body.tm-on .topbar{background:linear-gradient(#1d1708,#0b0b0b);border-bottom-color:#5a4520}
 body.tm-on .tb-edit{display:none}
 .tm-bar{align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:nowrap}
+/* PC ではいつも1段使う（日時の長さで、折り返したり折り返さなかったりしてボタンの位置が変わらないように） */
+@media (min-width: 981px){ .tm-bar{flex-basis:100%;order:10} }
 .tm-title{font-weight:700;color:#ffd28a;white-space:nowrap}
 .tm-at{display:flex;flex-direction:column;min-width:0;line-height:1.25}
 .tm-at b{font-size:13px;white-space:nowrap}

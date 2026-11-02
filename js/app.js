@@ -4222,8 +4222,9 @@ function tmOpen(){
   document.body.classList.add('tm-on');
   $('#tmRail').inert = false;
   $('#tmBar').hidden = false;
-  // スマホではメニューバーが横にスクロールするので、タイムマシンの操作が見えるところまで戻す
-  $('.topbar').scrollLeft = 0;
+  // スマホではメニューバーが横にスクロールするので、タイムマシンの操作が左端に来るまでスクロールする
+  const tb = $('.topbar');
+  tb.scrollLeft += $('#tmBar').getBoundingClientRect().left - tb.getBoundingClientRect().left - 8;
   collab.ws.send(JSON.stringify({ type: 'tm_log' }));
   tmRender();
   tmUI();
