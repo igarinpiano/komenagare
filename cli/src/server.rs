@@ -58,7 +58,8 @@
 //!   {"type":"peers","names":[...],"peers":[{"id","name","client","color"}]} 参加者（color は色の番号。今いる人の中で空いている一番小さい番号）
 //!   {"type":"run_out","id":"…","data":"出力","err":bool}       コマンドの出力（err は標準エラー出力）
 //!   {"type":"run_end","id":"…","code":N|null,"message":"…"|null} コマンドが終わった（message は止めた理由・断った理由）
-//!   {"type":"tm_log","commits":[{"id","time"(ミリ秒),"author","subject"},...]} コミットの一覧（新しい順）
+//!   {"type":"tm_log","commits":[{"id","time"(ミリ秒),"author","subject","changes":[変更セットの id]},...]} コミットの一覧（新しい順）
+//!     changes（コミットの Change-Id）は 0.13.0 から。無ければ画面は時刻で変更履歴と突き合わせる
 //!   {"type":"tm_show","commit":"…","comments":[...],"edits":[{"commit","time","author","ids":[...]},...]}
 //!                                                            そのコミットのときのコメントと、それぞれを最後に変えたコミット（git blame。新しい順）
 //!   {"type":"tm_restore","commit":"…","rev":N|null,"count":N} 戻した（rev は記録した通し番号。変わらなければ null）。変更は change でも届く

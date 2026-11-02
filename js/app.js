@@ -243,8 +243,9 @@ function addComments(items, opts = {}){
 }
 function commentsChanged(){
   state.version++;
-  // タイムマシンで今を見ているときは、届いた変更も「今の変更」として目立たせる
+  // タイムマシンで今を見ているときは、届いた変更も「今の変更」として目立たせる。復元の確認を開いていれば数を直す
   if (tm.on && !tm.view && tm.idx >= 0) tmEdits();
+  if (tm.on) tmRestoreFill();
   if (TL.sel.size) for (const id of [...TL.sel]) if (!shown().has(id)) TL.sel.delete(id);
   relayout();
   renderList();
@@ -4047,7 +4048,8 @@ const tmTrack = () => $('#tmTrack');
 function tmY(i){ const n = tm.list.length, h = tm.h || 0; return n <= 1 ? h - TM_PAD : TM_PAD + i / (n - 1) * (h - TM_PAD * 2); }
 function tmIndexAt(y){ const n = tm.list.length, h = tm.h || 0; return n <= 1 ? 0 : clamp(Math.round((y - TM_PAD) / (h - TM_PAD * 2) * (n - 1)), 0, n - 1); }
 // 目盛りを描く。最初と最後と、各日の最初は長くし、間が空いていれば日付も出す（近すぎるものは間引く。どれも選べる）
-function tmRender(){
+// follow: 見ている位置が見えるところまでスクロールする（'smooth' なら滑らかに。false なら今のスクロールのまま）
+function tmRender(follow = 'jump'){
   const box = $('#tmTicks'), track = tmTrack(), n = tm.list.length, vh = track.clientHeight;
   tm.h = Math.max(vh, (n - 1) * TM_GAP + TM_PAD * 2);
   box.style.height = tm.h + 'px';
@@ -4076,7 +4078,7 @@ function tmRender(){
   }
   box.replaceChildren(frag);
   tmMarks();
-  tmEnsureVisible(false);
+  if (follow) tmEnsureVisible(follow === 'smooth');
 }
 // 見ている位置が目盛りの見えている範囲から出ていれば、見えるところまでスクロールする（smooth なら滑らかに）
 function tmEnsureVisible(smooth){
@@ -4142,6 +4144,7 @@ function tmSelect(i){
   if (got){ tm.want = null; tmShow(got); return; }
   tm.want = p.id;
   tmUI();
+  histRender();
   tmRequest(p.id, false);
 }
 // そのときのコメントを求める（少し待ってから。続けて動かしても最後のものだけ取る）
@@ -4170,6 +4173,8 @@ function tmShow(entry){
   commentsChanged();
   vimReload(true);
   tmUI();
+  histRender();
+  tmRestoreFill();
 }
 // 見ている時点で、それぞれのコメントを最後に変えたコミットから、その時点で変わったものと明るさを決める
 function tmEdits(){
@@ -4205,6 +4210,26 @@ function tmEdits(){
     tm.alpha.set(c.id, k <= 1 ? 0.75 : 0.8 - 0.5 * rank.get(e.commit) / (k - 1));
   }
 }
+// 変更履歴を見ている時点までに切り出す。ホストの記録（変更セット）はコミットの Change-Id で突き合わせ、
+// 無ければ（古いホスト・ホストの外での変更）時刻で比べる。記録より前は、コミットの一覧（説明だけ）で出す
+function tmHistory(items){
+  const i = tm.idx, now = tmIsNow(i), commits = tm.list.slice(0, -1);
+  const at = now ? commits.length - 1 : i;
+  const upto = new Set(), after = new Set();
+  commits.forEach((c, k) => { for (const id of c.changes) (k <= at ? upto : after).add(id); });
+  const p = commits[at], bound = p ? p.time + 999 : Infinity;
+  const hasIds = commits.some(c => c.changes.length);
+  const keep = now ? items : items.filter(e => !e.pending && (upto.has(e.change.id) || (!after.has(e.change.id) && e.time <= bound)));
+  // この時点（今なら最新のコミットと、まだコミットしていない変更）の変更
+  const curIds = new Set(p?.changes || []), prev = commits[at - 1], from = prev ? prev.time + 999 : -Infinity;
+  const cur = new Set(keep.filter(e => curIds.has(e.change.id) || (now && !upto.has(e.change.id) && !after.has(e.change.id) && (e.pending || e.time > bound))
+    || (!hasIds && e.time > from && e.time <= bound)));
+  // ホストの記録より前のコミット
+  const oldest = keep.length ? Math.min(...keep.filter(e => !e.pending).map(e => e.time)) : Infinity;
+  const older = [];
+  for (let k = at; k >= 0; k--) if (commits[k].time + 999 < oldest) older.push({ commit: commits[k], index: k });
+  return { items: keep.concat(older), cur, older: older.length };
+}
 // 見ている時点で変わったコメントへ順に飛ぶ（d: 1 で次、-1 で前）
 function tmJump(d){
   const L = tm.changedList;
@@ -4229,6 +4254,7 @@ function tmOpen(){
   tmRender();
   tmUI();
   tlSelChanged();
+  histChanged();
   // 押し縮めるのが終わってから、目盛りを今の高さで描き直す
   setTimeout(tmRender, 400);
   $('#tmRail').focus({ preventScroll: true });
@@ -4249,6 +4275,7 @@ function tmClose(){
   tlSelChanged();
   if (had) vimReload(true);
   tmUI();
+  histChanged();
 }
 // 入力中の文字や書きかけの Vim は、過去を見ている間は使わないので片付ける
 function tmCancelEdits(){
@@ -4265,9 +4292,10 @@ function tmHandle(m){
   if (m.type === 'tm_log'){
     tm.loading = false;
     if (m.error){ toast('タイムマシン: ' + m.error, { type:'error', timeout:6000 }); tmClose(); return; }
-    const keep = tm.idx >= 0 && !tmIsNow(tm.idx) ? tm.list[tm.idx]?.id : null;
+    const keep = tm.idx >= 0 && !tmIsNow(tm.idx) ? tm.list[tm.idx]?.id : null, first = !tm.list.length;
     const commits = (Array.isArray(m.commits) ? m.commits : []).filter(c => c && typeof c.id === 'string' && /^[0-9a-f]{40,64}$/.test(c.id) && typeof c.time === 'number')
-      .map(c => ({ id: c.id, time: c.time, author: String(c.author ?? ''), subject: String(c.subject ?? '') }));
+      .map(c => ({ id: c.id, time: c.time, author: String(c.author ?? ''), subject: String(c.subject ?? ''),
+        changes: Array.isArray(c.changes) ? c.changes.filter(x => typeof x === 'string') : [] }));
     tm.list = commits.reverse().concat([{ id: null, time: Date.now(), author: '', subject: '' }]);
     const at = keep ? tm.list.findIndex(p => p.id === keep) : -1;
     tm.idx = at >= 0 ? at : tm.list.length - 1;
@@ -4277,8 +4305,11 @@ function tmHandle(m){
       const last = tm.list[tm.idx - 1].id;
       if (tm.cache.has(last)){ tmEdits(); commentsChanged(); } else tmRequest(last, true);
     }
-    tmRender();
+    // 開いたときは見ている位置（今）までスクロールする。新しいコミットが増えたときは、今を見ていれば滑らかに追いかけ、
+    // 過去を見ているなら目盛りを見て回っているところかもしれないので、スクロールはそのまま（目盛りは下に増えるだけ）
+    tmRender(first ? 'jump' : tmIsNow(tm.idx) ? 'smooth' : false);
     tmUI();
+    histRender();
   } else if (m.type === 'tm_show'){
     if (m.error){
       toast('タイムマシン: ' + m.error, { type:'error', timeout:6000 });
@@ -4318,6 +4349,13 @@ function tmDiff(){
 }
 function tmRestoreAsk(){
   if (!tm.on || !tm.view || tmIsNow(tm.idx) || tm.want) return;
+  tmRestoreFill(true);
+  $('#tmRestoreDlg').showModal();
+}
+// 復元の確認の中身（開いている間にほかの人の変更が届いたら、数を直す）
+function tmRestoreFill(force = false){
+  if (!force && !$('#tmRestoreDlg').open) return;
+  if (!tm.on || !tm.view || tmIsNow(tm.idx)) return;
   const p = tm.list[tm.idx], d = tmDiff(), t = tmTitle(tm.idx);
   $('#tmRestoreWhen').textContent = t.date;
   $('#tmRestoreWhat').textContent = `${t.sub}（${p.author}・コミット ${p.id.slice(0, 7)}）`;
@@ -4326,7 +4364,6 @@ function tmRestoreAsk(){
     ? `今のコメント（${store.size} 件）から、${parts.join('・')}をして、このときのコメント（${tm.view.size} 件）に戻します。`
     : '今のコメントと同じ内容です（戻しても何も変わりません）。';
   $('#tmRestoreOk').disabled = !parts.length || !collab.connected;
-  $('#tmRestoreDlg').showModal();
 }
 function tmRestore(){
   const p = tm.list[tm.idx];
@@ -4900,7 +4937,8 @@ function recordChange(ch){
 const histShown = () => !$('#paneHistory').hidden;
 function histChanged(){ if (histShown()){ clearTimeout(hist.timer); hist.timer = setTimeout(histRefresh, 120); } }
 function histRefresh(){
-  if (state.collab && collab.connected) collab.ws.send(JSON.stringify({ type: 'history', limit: 300 }));
+  // タイムマシンでは過去の時点まで切り出すので、ホストが覚えている分（1000 件）を全部もらう
+  if (state.collab && collab.connected) collab.ws.send(JSON.stringify({ type: 'history', limit: tm.on ? 1000 : 300 }));
   histRender();
 }
 const mkEl = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -4936,12 +4974,20 @@ function histOpLine(op){
 function histRender(){
   const list = $('#histList');
   if (!list || !histShown()) return;
-  let items, note;
+  let items, note, cur = null;
   if (state.collab){
     const me = collabName() || 'ゲスト';
     items = [...collab.outbox.slice().reverse().map(e => ({ change: e.change, author: me, time: e.seq, pending: true })), ...(hist.entries || [])];
     note = collab.connected ? 'ホストに記録された全員の変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。'
       : 'ホストにつながっていないため、前回取得した履歴を表示しています。';
+    // タイムマシン: 見ている時点までの変更だけにする（その時点のコミットの変更は印を付ける）
+    if (tm.on && tm.list.length){
+      const r = tmHistory(items);
+      items = r.items; cur = r.cur;
+      note = tmIsNow(tm.idx) ? 'タイムマシン: 今までの変更です（新しい順）。印は最新のコミットとまだコミットしていない変更です。'
+        : `タイムマシン: ${tmDate(tm.list[tm.idx].time)} の時点までの変更です（新しい順）。印はこの時点のコミットの変更です。`
+          + (r.older ? ' それより前はホストの最近の記録に無いので、git のコミットの一覧で出します（「見る」でその時点へ）。' : '');
+    }
   } else {
     items = state.changeLog.slice().reverse();
     note = 'この画面を開いてからの変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。komenagare でホストすると全員の変更が記録されます。';
@@ -4950,20 +4996,35 @@ function histRender(){
   $('#histCount').textContent = items.length ? `${items.length}件` : '';
   const frag = document.createDocumentFragment();
   for (const it of items.slice(0, 300)){
-    const box = mkEl('div', 'hist-item' + (it.pending ? ' pending' : ''));
+    // タイムマシン: ホストの記録より前は git のコミット（説明だけ）で出す
+    if (it.commit){
+      const box = mkEl('div', 'hist-item commit' + (it.index === tm.idx ? ' tm-cur' : ''));
+      const meta = mkEl('div', 'hist-meta');
+      meta.append(mkEl('span', null, histTime(it.commit.time)), mkEl('b', null, it.commit.author), mkEl('span', null, it.commit.id.slice(0, 7)), mkEl('span', 'spacer'));
+      if (it.index !== tm.idx){
+        const go = mkEl('button', null, '見る');
+        go.title = 'タイムマシンでこの時点を見る';
+        go.onclick = () => tmSelect(it.index);
+        meta.append(go);
+      }
+      box.append(meta, mkEl('div', 'hist-op', it.commit.subject));
+      frag.append(box);
+      continue;
+    }
+    const box = mkEl('div', 'hist-item' + (it.pending ? ' pending' : '') + (cur && cur.has(it) ? ' tm-cur' : ''));
     const meta = mkEl('div', 'hist-meta');
     meta.append(mkEl('span', null, histTime(it.time)), mkEl('b', null, it.author || ''));
     if (it.rev) meta.append(mkEl('span', null, '#' + it.rev));
     if (it.pending) meta.append(mkEl('span', null, '未送信'));
     meta.append(mkEl('span', 'spacer'));
-    const target = it.change.ops.map(op => store.get(op.id)).find(Boolean);
+    const target = it.change.ops.map(op => shown().get(op.id)).find(Boolean);
     if (target){
       const go = mkEl('button', null, '移動');
       go.title = 'このコメントの時刻へ移動して選ぶ';
       go.onclick = () => { seekTo(target.t); TL.sel = new Set([target.id]); tlEnsureVisible(target); tlSelChanged(); };
       meta.append(go);
     }
-    if (!it.pending){
+    if (!it.pending && !tm.on){
       const undo = mkEl('button', null, '取り消す');
       undo.title = 'この変更を打ち消す変更を加える';
       undo.onclick = () => { if (revertChange(it.change)) toast('変更を取り消しました'); };

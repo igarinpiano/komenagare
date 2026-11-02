@@ -82,6 +82,8 @@
 - タイムマシン（`tm`・`tmOpen`。`--remote` で許された人だけ。ホストも `can_run` で確かめる）は `tm_log` / `tm_show` / `tm_restore` で git の履歴（`workspace::snapshots` / `comments_at`）を読む。
   過去を見ている間は `tm.view`（そのときのコメントの CommentStore）を画面に出す（`state.comments` と `shown()`。画面に出すものを `store` から直接読まない）。`store` は今のまま、ほかの人の変更も当て続ける。
   `tm_show` には `edits`（`workspace::edits_at`。comments.jsonl の git blame。1行1コメントなので、各コメントを最後に変えたコミット）も付け、`tmEdits` で見ている時点で変わったもの（`tm.changed`。動画・タイムラインで囲い、リストで色を付ける）と、タイムラインの明るさ（`tmAlpha`）を決める。
+  変更履歴は `tmHistory` で見ている時点までに切り出す（`tm_log` の `changes`（コミットの Change-Id）で突き合わせ、無ければ時刻で。ホストの記録より前はコミットの一覧）。
+  開いている間に届いた変更は `store` に当て、`tm_log` を取り直して目盛りを足す（過去を見ているときはスクロールを動かさない）。
   編集は `tmLocked` で止める（`commitOps` など、変更を作るところで）。復元はホストが今の中身からの変更として記録・コミットし（`Hub::restore`。git reset はしない）、全員に `change` で配る。
   目盛りは右から出して `body.tm-on` の `padding-right`（`--tm-w`）で画面を押し縮める。入りきらなければ `#tmTrack` をスクロールする（1本 `TM_GAP` px。スマホはスワイプでスクロール、押して止めてからなぞると選ぶ。見ている位置は `tmEnsureVisible` で滑らかに追う）。メニューバーは `.tb-edit` を隠して `#tmBar` を出す。
 - コメントリストは既定で見えている行だけ作る（`settings.listVirtual`。設定でオフにすると全部の行を作る）。本文は折り返して 10 行まで出す（`.rc` の line-clamp と `LIST_LINES`）。行の高さは本文から見積もって置き、作った行を測って直す（`listPaint`）。行の色（再生位置の行・手で選んだ行 `listPick`・ほかの人の選択）は状態から決めて、作るときと変わったときに当てる（行の要素を直接持ち続けない）。タイムラインも見える範囲のコメントだけ描く（`firstAtOrAfter`）。

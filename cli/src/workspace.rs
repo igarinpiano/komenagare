@@ -497,6 +497,8 @@ pub struct Snapshot {
     pub author: String,
     /// コミットの説明の1行目
     pub subject: String,
+    /// そのコミットで書き込んだ変更セットの id（コミットの Change-Id。画面の変更履歴と突き合わせる）
+    pub changes: Vec<String>,
 }
 
 /// コミットの id として受け取ってよい形か（16進 40 文字か 64 文字。オプションや別の書き方を git に渡さない）
@@ -515,18 +517,27 @@ fn parse_snapshots(text: &str) -> Vec<Snapshot> {
             let id = f.next()?.to_string();
             let time = f.next()?.trim().parse::<u64>().ok()? * 1000;
             let author = f.next()?.to_string();
+            let changes = f
+                .next()?
+                .split(',')
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string)
+                .collect();
             let subject = f.next().unwrap_or("").to_string();
             commit_id_ok(&id).then_some(Snapshot {
                 id,
                 time,
                 author,
                 subject,
+                changes,
             })
         })
         .collect()
 }
 
-const SNAPSHOT_FORMAT: &str = "--format=%H%x1f%ct%x1f%an%x1f%s";
+const SNAPSHOT_FORMAT: &str =
+    "--format=%H%x1f%ct%x1f%an%x1f%(trailers:key=Change-Id,valueonly,separator=%x2C)%x1f%s";
 
 /// タイムマシン: dir の comments.jsonl を変えたコミット（新しい順に最大 limit 件）。
 /// まだコミットが無ければ空。git の管理下でなければ Err
@@ -1285,12 +1296,13 @@ pub(crate) mod tests {
                 &add(&format!("c{i}"), &format!("a{i}"), i as f64, "あ"),
                 false,
             );
+            let cid = format!("c{i}");
             a.save(
                 &store,
                 &format!("たろう: 追加 {i}"),
                 "たろう",
                 "x@komenagare",
-                &[],
+                &[("Change-Id", &cid), ("Change-Id", "z")],
             )
             .unwrap();
             let other = Store::new(vec![]);
@@ -1301,6 +1313,8 @@ pub(crate) mod tests {
         assert_eq!(list.len(), first.len() + 3, "{list:?}");
         assert_eq!(list[0].subject, "たろう: 追加 2");
         assert_eq!(list[0].author, "たろう");
+        assert_eq!(list[0].changes, ["c2", "z"]);
+        assert!(list.last().unwrap().changes.is_empty());
         assert!(list[0].time > 0 && commit_id_ok(&list[0].id));
         assert_eq!(snapshots(&a.dir, 2).unwrap().len(), 2);
         let (info, cs) = comments_at(&a.dir, &list[1].id).unwrap();
