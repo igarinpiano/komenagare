@@ -29,6 +29,7 @@
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `tunnel.rs` — `--tunnel`（cloudflared / tailscale / ngrok を子プロセスで起動し、出力から公開 URL を読む）と `--public-url`。公開 URL は共有・招待のリンクに使い、ページには `<meta>` の `data-public-url` で渡す。`--allowed-mail`（Cloudflare のみ・`--otp` と一緒）は cloudflared に渡してメールの PIN で入る人を絞り、ページには `data-email-gate` で知らせる（確認が切れたら再読み込みを案内する）
   - `awake.rs` — ほかの人と共有している間（`--host` が手元以外・`--tunnel`・`--public-url`）ホストをスリープさせない（macOS は `caffeinate -w`、Linux は `systemd-inhibit`、Windows は `SetThreadExecutionState`、Android は `termux-wake-lock`。`--allow-sleep` で止める）
+  - `output.rs` — 画面への出力の行き先（`--log` でファイルに書き足す。端末が閉じられた（SIGHUP・Windows のウィンドウを閉じた）ら端末への出力を捨てて、保存してから終わる）
   - `firewall.rs` — macOS のファイアウォールの検出と許可（LAN で待ち受けたら自分の LAN のアドレスにつないでみて、切られたら許可するコマンドを y/N で実行する。socketfilterfw の出力の文言には頼らない）
   - `web.rs` — 配信する Web アプリの用意（GitHub Pages から最新版を取って ~/.cache/komenagare/web（Windows は %LOCALAPPDATA%\komenagare\web）に控える。取れなければ前回の控えか内蔵版）。署名（`web.sums` と `web.sums.minisig`）が合い、手元の控えより新しいものだけを使う
   - `sign.rs` — 署名（minisign）を確かめる。公開鍵は `cli/minisign.pub`（CLI に埋め込む）。リリースは `SHA256SUMS` に `komenagare-release tag:vX.Y.Z`、Web アプリは `web.sums` に `komenagare-web protocol:N time:T` の署名
@@ -55,6 +56,8 @@
 - ほかの参加者から届くもの（presence・共有された衝突・「ここ見て」）は、使う前に `cleanPresence` / `cleanConflict` / `cleanCall`（`js/app.js`）で型を確かめて取り出す。項目を足したらそこにも足す。
 - ブラウザの id（client）はホストが `client_key`（ブラウザだけが知る秘密。localStorage の `komenagare.clientKey`）のハッシュから作る。自分のものかは snapshot の `client` と比べて見分ける（client_key は配らない）。
 - CLI から git を動かすときは、フックを動かさない（`core.hooksPath` を `workspace::no_hooks_path()` にする）。
+  1つのリポジトリに複数のプロジェクト（作業フォルダ）を入れられるよう、自動のコミットは自分のファイルだけを指定して行い（`commit` の paths）、git はプロセスの中で1つずつ動かす（`git_lock`）。
+- ホストは Ctrl+C・SIGTERM・SIGHUP（nohup で無視されていればそのまま）・Windows の閉じる／ログオフ／シャットダウンで、保存してから終わる（`main.rs` の `shutdown_signal`）。Windows では `--tunnel` の子プロセスをジョブに入れ、強制終了されても残らないようにする。
 - 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
   ホストで衝突した自分の変更は `collab.conflicts` に控え、衝突の解決画面（`#conflictDlg`）で選ばせる。
   「あとで」にした衝突はホストに預け（`conflict_add`。ホストは `.komenagare/conflicts.json` に残す）、全員の `collab.shared` に出して誰でも解決できるようにする。

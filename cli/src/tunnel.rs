@@ -133,6 +133,83 @@ impl Tunnel {
     }
 }
 
+/// Windows のジョブ（プロセスのまとまり）。終わると中のプロセスも終わる設定にして子プロセスを入れ、
+/// ハンドルは閉じずに持つ（komenagare が終わると OS が閉じ、そのときに子プロセスも止まる）
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimit {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io_counters: [u64; 6],
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> *mut c_void;
+        fn SetInformationJobObject(
+            job: *mut c_void,
+            class: i32,
+            info: *const c_void,
+            len: u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
+        fn CloseHandle(h: *mut c_void) -> i32;
+    }
+
+    pub fn end_with_us(process: std::os::windows::io::RawHandle) -> bool {
+        let info = ExtendedLimit {
+            basic: BasicLimit {
+                limit_flags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // SAFETY: 作ったジョブのハンドルと、動いている子プロセスのハンドルを渡すだけ。
+        // ジョブのハンドルは継承させない（子プロセスが持つと、komenagare が終わっても閉じなくなる）
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if job.is_null() {
+                return false;
+            }
+            let ok = SetInformationJobObject(
+                job,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                &info as *const ExtendedLimit as *const c_void,
+                std::mem::size_of::<ExtendedLimit>() as u32,
+            ) != 0
+                && AssignProcessToJobObject(job, process) != 0;
+            if !ok {
+                CloseHandle(job);
+            }
+            ok
+        }
+    }
+}
+
 /// --allowed-mail を使える cloudflared の版
 pub const ALLOWED_MAIL_SINCE: (u32, u32, u32) = (2026, 9, 3);
 
@@ -229,6 +306,11 @@ pub async fn start(kind: Kind, port: u16, allowed_mail: &[String]) -> Result<(Tu
                 anyhow::anyhow!("{program} を起動できません: {e}")
             }
         })?;
+    // komenagare が強制終了されても（タスクマネージャーや taskkill /F）トンネルが残らないようにする
+    #[cfg(windows)]
+    if let Some(h) = child.raw_handle() {
+        job::end_with_us(h);
+    }
     // 標準出力と標準エラーの行を1つにまとめて読む
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     for out in [
