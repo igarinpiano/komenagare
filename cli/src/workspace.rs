@@ -487,6 +487,206 @@ fn git_result(args: &[&str], out: std::process::Output) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// タイムマシン（画面で comments.jsonl の履歴をさかのぼる）の1コミット
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Snapshot {
+    /// コミットの id（16進）
+    pub id: String,
+    /// コミットした時刻（ミリ秒）
+    pub time: u64,
+    pub author: String,
+    /// コミットの説明の1行目
+    pub subject: String,
+}
+
+/// コミットの id として受け取ってよい形か（16進 40 文字か 64 文字。オプションや別の書き方を git に渡さない）
+pub fn commit_id_ok(id: &str) -> bool {
+    (id.len() == 40 || id.len() == 64)
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// git log の出力（1コミット1行、項目は \x1f 区切り）を読む
+fn parse_snapshots(text: &str) -> Vec<Snapshot> {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split('\x1f');
+            let id = f.next()?.to_string();
+            let time = f.next()?.trim().parse::<u64>().ok()? * 1000;
+            let author = f.next()?.to_string();
+            let subject = f.next().unwrap_or("").to_string();
+            commit_id_ok(&id).then_some(Snapshot {
+                id,
+                time,
+                author,
+                subject,
+            })
+        })
+        .collect()
+}
+
+const SNAPSHOT_FORMAT: &str = "--format=%H%x1f%ct%x1f%an%x1f%s";
+
+/// タイムマシン: dir の comments.jsonl を変えたコミット（新しい順に最大 limit 件）。
+/// まだコミットが無ければ空。git の管理下でなければ Err
+pub fn snapshots(dir: &Path, limit: usize) -> Result<Vec<Snapshot>> {
+    if !in_git(dir) {
+        bail!("このプロジェクトは git で記録していないため、さかのぼれません");
+    }
+    if git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() {
+        return Ok(vec![]);
+    }
+    let n = format!("-n{limit}");
+    // 署名の確かめ（gpg など）や色は使わない。パスは作業フォルダからの相対（まとめフォルダの中でも、そのプロジェクトの分だけ）
+    let out = git_with(
+        dir,
+        false,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--no-color",
+            "--no-show-signature",
+            &n,
+            SNAPSHOT_FORMAT,
+            "--",
+            COMMENTS_FILE,
+        ],
+        &[],
+        None,
+    )?;
+    Ok(parse_snapshots(&out))
+}
+
+/// タイムマシン: コミット commit のときの dir の comments.jsonl（そのコミットの説明も返す）。
+/// そのときファイルが無ければコメントなし
+pub fn comments_at(dir: &Path, commit: &str) -> Result<(Snapshot, Vec<Comment>)> {
+    if !commit_id_ok(commit) {
+        bail!("コミットの指定が正しくありません");
+    }
+    if !in_git(dir) {
+        bail!("このプロジェクトは git で記録していないため、さかのぼれません");
+    }
+    let info = git_with(
+        dir,
+        false,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--no-color",
+            "--no-show-signature",
+            "-n1",
+            SNAPSHOT_FORMAT,
+            commit,
+            "--",
+        ],
+        &[],
+        None,
+    )
+    .context("そのコミットが見つかりません")?;
+    let Some(info) = parse_snapshots(&info).into_iter().next() else {
+        bail!("そのコミットが見つかりません");
+    };
+    // 「./」で作業フォルダからの相対にする（まとめフォルダなら、そのプロジェクトのフォルダの中）
+    let path = format!("{commit}:./{COMMENTS_FILE}");
+    if git_with(dir, false, &["cat-file", "-e", &path], &[], None).is_err() {
+        return Ok((info, vec![]));
+    }
+    let text = git_with(dir, false, &["cat-file", "blob", &path], &[], None)?;
+    let mut out = vec![];
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        out.push(serde_json::from_str(line).with_context(|| {
+            format!(
+                "{} の {} 行目を読めません（コミット {}）",
+                COMMENTS_FILE,
+                i + 1,
+                &commit[..7]
+            )
+        })?);
+    }
+    Ok((info, out))
+}
+
+/// タイムマシン: あるコミットで最後に変えたコメント（git blame。comments.jsonl は1行1コメントなので、行を最後に変えたコミット）
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Edit {
+    pub commit: String,
+    /// コミットした時刻（ミリ秒）
+    pub time: u64,
+    pub author: String,
+    /// そのコミットで最後に変えたコメントの id
+    pub ids: Vec<String>,
+}
+
+/// git blame --porcelain の出力を、コミットごとにまとめる（新しい順）
+fn parse_blame(text: &str) -> Vec<Edit> {
+    let mut by: Vec<Edit> = vec![];
+    let mut cur: Option<usize> = None;
+    for line in text.lines() {
+        if let Some(content) = line.strip_prefix('\t') {
+            let id = serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| v["id"].as_str().map(str::to_string));
+            if let (Some(i), Some(id)) = (cur, id) {
+                by[i].ids.push(id);
+            }
+            continue;
+        }
+        let mut words = line.split(' ');
+        let first = words.next().unwrap_or("");
+        if commit_id_ok(first) && words.next().is_some() {
+            cur = Some(match by.iter().position(|e| e.commit == first) {
+                Some(i) => i,
+                None => {
+                    by.push(Edit {
+                        commit: first.to_string(),
+                        time: 0,
+                        author: String::new(),
+                        ids: vec![],
+                    });
+                    by.len() - 1
+                }
+            });
+        } else if let (Some(i), Some(t)) = (cur, line.strip_prefix("committer-time ")) {
+            by[i].time = t.trim().parse::<u64>().unwrap_or(0) * 1000;
+        } else if let (Some(i), Some(a)) = (cur, line.strip_prefix("author ")) {
+            by[i].author = a.to_string();
+        }
+    }
+    by.retain(|e| !e.ids.is_empty());
+    by.sort_by_key(|e| std::cmp::Reverse(e.time));
+    by
+}
+
+/// タイムマシン: コミット commit のときの各コメントを、最後に変えたコミット（git blame）
+pub fn edits_at(dir: &Path, commit: &str) -> Result<Vec<Edit>> {
+    if !commit_id_ok(commit) {
+        bail!("コミットの指定が正しくありません");
+    }
+    let out = git_with(
+        dir,
+        false,
+        &[
+            // リポジトリの設定で、ほかのファイルを読ませない
+            "-c",
+            "blame.ignoreRevsFile=",
+            "blame",
+            "--porcelain",
+            commit,
+            "--",
+            COMMENTS_FILE,
+        ],
+        &[],
+        None,
+    )?;
+    Ok(parse_blame(&out))
+}
+
 /// 名前とメールを補う必要があるか（git の user.email が未設定）
 pub fn git_needs_identity(dir: &Path) -> bool {
     needs_identity(dir)
@@ -1064,6 +1264,94 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(co.trim().is_empty(), "{co}");
+    }
+
+    #[test]
+    fn time_machine_reads_past_comments() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_out(&repo, &["init", "-q"]).unwrap();
+        // 同じリポジトリのほかのプロジェクトのコミットは出さない
+        let a = Workspace::init(&repo.join("a"), GitMode::Require).unwrap();
+        let b = Workspace::init(&repo.join("b"), GitMode::Require).unwrap();
+        let first = snapshots(&a.dir, 100).unwrap();
+        let mut store = Store::new(vec![]);
+        for i in 0..3 {
+            store.apply(
+                &add(&format!("c{i}"), &format!("a{i}"), i as f64, "あ"),
+                false,
+            );
+            a.save(
+                &store,
+                &format!("たろう: 追加 {i}"),
+                "たろう",
+                "x@komenagare",
+                &[],
+            )
+            .unwrap();
+            let other = Store::new(vec![]);
+            b.save(&other, "はなこ: なし", "はなこ", "y@komenagare", &[])
+                .unwrap();
+        }
+        let list = snapshots(&a.dir, 100).unwrap();
+        assert_eq!(list.len(), first.len() + 3, "{list:?}");
+        assert_eq!(list[0].subject, "たろう: 追加 2");
+        assert_eq!(list[0].author, "たろう");
+        assert!(list[0].time > 0 && commit_id_ok(&list[0].id));
+        assert_eq!(snapshots(&a.dir, 2).unwrap().len(), 2);
+        let (info, cs) = comments_at(&a.dir, &list[1].id).unwrap();
+        assert_eq!(info, list[1]);
+        let ids: Vec<&str> = cs.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["a0", "a1"]);
+        // それぞれのコメントを最後に変えたコミット（新しい順）
+        let edits = edits_at(&a.dir, &list[0].id).unwrap();
+        // 同じ秒のコミットは順が決まらないので、一覧の順に並べて比べる
+        let pos = |id: &str| list.iter().position(|c| c.id == id).unwrap();
+        let mut got: Vec<(&str, Vec<&str>)> = edits
+            .iter()
+            .map(|e| {
+                (
+                    e.commit.as_str(),
+                    e.ids.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        got.sort_by_key(|(c, _)| pos(c));
+        assert_eq!(
+            got,
+            [
+                (list[0].id.as_str(), vec!["a2"]),
+                (list[1].id.as_str(), vec!["a1"]),
+                (list[2].id.as_str(), vec!["a0"])
+            ]
+        );
+        assert!(edits.iter().all(|e| e.author == "たろう"));
+        assert_eq!(
+            edits.iter().find(|e| e.commit == list[0].id).unwrap().time,
+            list[0].time
+        );
+        assert!(edits_at(&a.dir, "HEAD").is_err());
+        // 最初（コメントの無いとき）
+        let (_, cs) = comments_at(&a.dir, &list.last().unwrap().id).unwrap();
+        assert!(cs.is_empty());
+        // 形の違う指定は git に渡さない
+        for bad in [
+            "HEAD",
+            "--output=x",
+            &list[0].id[..7],
+            &list[0].id.to_uppercase(),
+        ] {
+            assert!(comments_at(&a.dir, bad).is_err(), "{bad}");
+        }
+        assert!(comments_at(&a.dir, &"0".repeat(40)).is_err());
+        // git でなければ使えない
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(snapshots(&plain, 10).is_err());
     }
 
     fn add(change: &str, id: &str, t: f64, text: &str) -> Change {
