@@ -131,9 +131,13 @@ enum Cmd {
         /// まとめフォルダの中に作ると、その一覧（komenagare.json）にも載せる
         #[arg(default_value = ".")]
         dirs: Vec<PathBuf>,
-        /// プロジェクトではなく、まとめフォルダ（いくつものプロジェクトを1つのフォルダ・1つの git リポジトリで持つ）を作る
+        /// プロジェクトではなく、まとめフォルダ（いくつものプロジェクトを1つのフォルダ・1つの git リポジトリで持つ）を作る。
+        /// 中のプロジェクトが自分の .git を持っていれば、その履歴をまとめフォルダのリポジトリに取り込む
         #[arg(long, conflicts_with = "import")]
         collection: bool,
+        /// git の履歴を取り込むときに確かめない
+        #[arg(short, long)]
+        yes: bool,
         /// git を使わない（履歴を残さない）
         #[arg(long, conflicts_with = "require_git")]
         no_git: bool,
@@ -143,6 +147,16 @@ enum Cmd {
         /// コメナガレで保存したファイル（.json / .jsonl / .csv）のコメントを取り込む
         #[arg(long, value_name = "FILE")]
         import: Option<PathBuf>,
+    },
+    /// まとめフォルダを解除して、プロジェクトごとの git リポジトリに分ける（履歴はプロジェクトごとに切り出す。
+    /// コメントとプロジェクトの id はそのまま）
+    Split {
+        /// まとめフォルダ
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// 確かめずに分ける
+        #[arg(short, long)]
+        yes: bool,
     },
     /// まとめフォルダの一覧からプロジェクトを外す（フォルダとコメントは残す。komenagare init 名前 で戻せる）。
     /// 動いているホストには次の起動から効く（動いている間は画面の「外す」を使う）
@@ -365,6 +379,7 @@ async fn run(args: Args) -> Result<()> {
         require_git,
         import: file,
         collection,
+        yes,
     }) = &args.cmd
     {
         let mode = git_mode(*no_git, *require_git);
@@ -372,7 +387,20 @@ async fn run(args: Args) -> Result<()> {
             if dirs.len() > 1 {
                 bail!("まとめフォルダは1つずつ作ってください");
             }
-            let c = collection::Collection::create(&dirs[0], mode)?;
+            let nested = collection::own_git_projects(&dirs[0]);
+            let absorb = !nested.is_empty() && mode != GitMode::Off && workspace::git_available();
+            if absorb {
+                println!(
+                    "{} は、それぞれ自分の git リポジトリ（.git）を持っています。",
+                    nested.join("・")
+                );
+                println!("その履歴をまとめフォルダのリポジトリに取り込みます（コメントとプロジェクトの id はそのまま。元の .git は .komenagare/git-backup/ に控えます）。");
+                if !confirm("取り込みますか？", *yes)? {
+                    println!("やめました（何も変えていません）");
+                    return Ok(());
+                }
+            }
+            let c = collection::Collection::create(&dirs[0], mode, absorb)?;
             let n = c.entries()?.len();
             println!(
                 "まとめフォルダを作りました: {}（{}）",
@@ -405,7 +433,35 @@ async fn run(args: Args) -> Result<()> {
         if file.is_some() && dirs.len() > 1 {
             bail!("--import は作業フォルダを1つだけ指定したときに使えます");
         }
-        return run_init(dirs, mode, file.as_deref());
+        return run_init(dirs, mode, file.as_deref(), *yes);
+    }
+    if let Some(Cmd::Split { dir, yes }) = &args.cmd {
+        let c = collection::Collection::open(dir, GitMode::Auto)?;
+        let targets = c.split_targets()?;
+        println!(
+            "まとめフォルダ {} を解除して、{} をそれぞれの git リポジトリに分けます。",
+            c.dir.display(),
+            targets.join("・")
+        );
+        println!("履歴はプロジェクトごとに切り出します（コメントとプロジェクトの id はそのまま。今のリポジトリ（.git）と komenagare.json は .komenagare/git-backup/ に控えます）。");
+        if !confirm("分けますか？", *yes)? {
+            println!("やめました（何も変えていません）");
+            return Ok(());
+        }
+        let done = c.split()?;
+        for (name, n) in &done {
+            println!("  {name}: 分けました（コミット {n} 件）");
+        }
+        println!(
+            "控え: {}（うまくいったら消して構いません）",
+            c.dir.join(".komenagare").join("git-backup").display()
+        );
+        let names: Vec<String> = done.iter().map(|(n, _)| format!(" {n}")).collect();
+        println!(
+            "まとめて始めるには（まとめフォルダだった場所で）: komenagare{}",
+            names.concat()
+        );
+        return Ok(());
     }
     if let Some(Cmd::Remove { names, no_git }) = &args.cmd {
         let mode = git_mode(*no_git, false);
@@ -875,6 +931,24 @@ fn hangup_ignored() -> bool {
     }
 }
 
+/// y/N で確かめる（yes なら聞かない）。端末でなければ、聞けないので止める
+fn confirm(question: &str, yes: bool) -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+    if yes {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "確かめられないので止めました（端末から実行するか、-y を付けると確かめずに進めます）"
+        );
+    }
+    print!("{question} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
 /// komenagare otp
 fn run_otp(cmd: &OtpCmd, dir: Option<&Path>) -> Result<()> {
     let dir = match dir {
@@ -975,7 +1049,7 @@ fn git_mode(no_git: bool, require_git: bool) -> GitMode {
 }
 
 /// komenagare init
-fn run_init(dirs: &[PathBuf], git_mode: GitMode, file: Option<&Path>) -> Result<()> {
+fn run_init(dirs: &[PathBuf], git_mode: GitMode, file: Option<&Path>, yes: bool) -> Result<()> {
     let mut in_collection = None;
     for dir in dirs {
         if collection::Collection::is_collection(dir) {
@@ -1004,6 +1078,16 @@ fn run_init(dirs: &[PathBuf], git_mode: GitMode, file: Option<&Path>) -> Result<
             Some((p, name)) => {
                 let c = collection::Collection::open(p, git_mode)?;
                 in_collection = Some(c.dir.clone());
+                let d = c.dir.join(name);
+                if collection::has_own_git(&d) && workspace::in_git(&c.dir) {
+                    println!("{name} は自分の git リポジトリ（.git）を持っています。");
+                    println!("その履歴をまとめフォルダのリポジトリに取り込みます（コメントとプロジェクトの id はそのまま。元の .git は .komenagare/git-backup/ に控えます）。");
+                    if !confirm("取り込みますか？", yes)? {
+                        println!("やめました（{name} は変えていません）");
+                        continue;
+                    }
+                    c.absorb(name)?;
+                }
                 c.add(name, "komenagare")?
             }
             None => Workspace::init(dir, git_mode)?,

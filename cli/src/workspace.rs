@@ -432,6 +432,66 @@ fn run_git(dir: &Path, identity: bool, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// git を動かして標準出力を返す（フックは動かさない）。identity なら名前とメールを補う。env と標準入力も渡せる。
+/// まとめフォルダの取り込み・分けるときに使う
+pub fn git_with(
+    dir: &Path,
+    identity: bool,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: Option<&[u8]>,
+) -> Result<String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    cmd.arg("-c")
+        .arg(format!("core.hooksPath={}", no_hooks_path().display()));
+    if identity {
+        cmd.args([
+            "-c",
+            "user.name=komenagare",
+            "-c",
+            "user.email=komenagare@localhost",
+        ]);
+    }
+    cmd.args(args).envs(env.iter().copied());
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("git を実行できません")?;
+    if let Some(data) = input {
+        let mut stdin = child.stdin.take().context("git に渡せません")?;
+        // 大きな入力でも詰まらないよう、書き込みは別の thread で行う
+        let data = data.to_vec();
+        let writer = std::thread::spawn(move || stdin.write_all(&data));
+        let out = child.wait_with_output()?;
+        let _ = writer.join();
+        return git_result(args, out);
+    }
+    git_result(args, child.wait_with_output()?)
+}
+
+fn git_result(args: &[&str], out: std::process::Output) -> Result<String> {
+    if !out.status.success() {
+        bail!(
+            "git {} に失敗しました: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// 名前とメールを補う必要があるか（git の user.email が未設定）
+pub fn git_needs_identity(dir: &Path) -> bool {
+    needs_identity(dir)
+}
+
 /// dir が git の管理下か
 pub fn in_git(dir: &Path) -> bool {
     git_available() && git_out(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok()
