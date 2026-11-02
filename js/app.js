@@ -39,7 +39,7 @@ const state = {
 const tm = {
   on: false, list: [], idx: -1, // list: 古い順のコミット（{ id, time, author, subject }）。最後は「今」（id: null）。idx: 見ている位置
   view: null, cache: new Map(), want: null, timer: 0, refresh: 0, loading: false, restoring: false,
-  hover: -1, scrub: null,
+  hover: -1, scrub: null, h: 0, // h: 目盛りの並びの高さ（px）
   // 見ている時点のコミット（今なら最新のコミット）で変わったコメントの id（時刻順。画面で目立たせて、順に飛べる）と、
   // 各コメントを最後に変えたコミット（id → { commit, time, author }）と明るさ（タイムラインで、最近変えたものほど明るい）
   changed: new Set(), changedList: [], chgPos: -1, edit: new Map(), alpha: new Map(), wantEdits: null,
@@ -4040,17 +4040,23 @@ function tmUI(){
   $('#tmChgBtn').title = tmIsNow(i) ? '最新のコミット（と、まだコミットしていない変更）で変わったコメントへ順に飛ぶ' : 'このコミットで追加・変更したコメントへ順に飛ぶ（枠で囲っています）';
   tmMarks();
 }
-// 目盛りの位置（上端からの px。上が古く、下が今）
-function tmY(i, h){ const n = tm.list.length; return n <= 1 ? h : i / (n - 1) * h; }
-function tmIndexAt(y, h){ const n = tm.list.length; return n <= 1 ? 0 : clamp(Math.round(y / h * (n - 1)), 0, n - 1); }
+// 目盛りの並べ方。全部が高さに入りきらなければ、1本ごとに TM_GAP px 空けてスクロールする（入りきるなら高さいっぱいに並べる）
+const TM_GAP = 6, TM_PAD = 10;
+const tmTrack = () => $('#tmTrack');
+// 目盛りの位置（並びの上端からの px。上が古く、下が今）
+function tmY(i){ const n = tm.list.length, h = tm.h || 0; return n <= 1 ? h - TM_PAD : TM_PAD + i / (n - 1) * (h - TM_PAD * 2); }
+function tmIndexAt(y){ const n = tm.list.length, h = tm.h || 0; return n <= 1 ? 0 : clamp(Math.round((y - TM_PAD) / (h - TM_PAD * 2) * (n - 1)), 0, n - 1); }
 // 目盛りを描く。最初と最後と、各日の最初は長くし、間が空いていれば日付も出す（近すぎるものは間引く。どれも選べる）
 function tmRender(){
-  const box = $('#tmTicks'), h = box.clientHeight, n = tm.list.length;
+  const box = $('#tmTicks'), track = tmTrack(), n = tm.list.length, vh = track.clientHeight;
+  tm.h = Math.max(vh, (n - 1) * TM_GAP + TM_PAD * 2);
+  box.style.height = tm.h + 'px';
+  track.classList.toggle('scroll', tm.h > vh + 1);
   const frag = document.createDocumentFragment();
   let lastY = -1e9, lastLong = -1e9, lastLabel = -1e9, prevDay = null;
-  const endY = tmY(n - 1, h);
+  const endY = tmY(n - 1);
   for (let i = 0; i < n; i++){
-    const p = tm.list[i], y = tmY(i, h), day = tmIsNow(i) ? null : tmDayKey(p.time);
+    const p = tm.list[i], y = tmY(i), day = tmIsNow(i) ? null : tmDayKey(p.time);
     const dayFirst = day != null && day !== prevDay;
     prevDay = day ?? prevDay;
     const edge = i === 0 || i === n - 1, long = edge || dayFirst;
@@ -4070,34 +4076,48 @@ function tmRender(){
   }
   box.replaceChildren(frag);
   tmMarks();
+  tmEnsureVisible(false);
+}
+// 見ている位置が目盛りの見えている範囲から出ていれば、見えるところまでスクロールする（smooth なら滑らかに）
+function tmEnsureVisible(smooth){
+  const track = tmTrack(), vh = track.clientHeight;
+  if (tm.idx < 0 || tm.h <= vh + 1) return;
+  const y = tmY(tm.idx), m = Math.min(48, vh / 4), top = track.scrollTop;
+  let to = null;
+  if (y < top + m) to = y - m;
+  else if (y > top + vh - m) to = y - vh + m;
+  if (to == null) return;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  track.scrollTo({ top: clamp(to, 0, tm.h - vh), behavior: smooth && !reduce ? 'smooth' : 'auto' });
 }
 // 見ている位置・指している位置の印
 function tmMarks(){
-  const h = $('#tmTicks').clientHeight, n = tm.list.length;
+  const n = tm.list.length;
   const cur = $('#tmCur'), hov = $('#tmHov');
   cur.hidden = !n || tm.idx < 0;
-  if (!cur.hidden) cur.style.top = tmY(tm.idx, h) + 'px';
+  if (!cur.hidden) cur.style.top = tmY(tm.idx) + 'px';
   hov.hidden = !n || tm.hover < 0 || tm.hover === tm.idx;
-  if (!hov.hidden) hov.style.top = tmY(tm.hover, h) + 'px';
+  if (!hov.hidden) hov.style.top = tmY(tm.hover) + 'px';
 }
 // マウスを重ねた目盛りの日付（PC）と、指でなぞっている間の大きな日付（スマホ。右から左へ薄くなるぼかしの上に出す）
-function tmTip(i, y, touch){
+function tmTip(i, touch){
   const tip = $('#tmTip'), sc = $('#tmScrub');
   if (i < 0){ tip.hidden = true; sc.classList.remove('on'); return; }
-  const t = tmTitle(i);
+  const t = tmTitle(i), track = tmTrack(), r = track.getBoundingClientRect();
+  // 画面の上からの位置（目盛りの見えている範囲に収める）
+  const vy = clamp(r.top + tmY(i) - track.scrollTop, r.top, r.bottom);
   if (touch){
     tip.hidden = true;
     sc.classList.add('on');
     $('#tmScrubDate').textContent = t.date;
     $('#tmScrubSub').textContent = t.sub;
     // 指で隠れないよう、指より少し上に出す
-    const box = $('#tmTicks').getBoundingClientRect();
-    $('#tmScrubText').style.top = clamp(box.top + y - 64, 8, window.innerHeight - 90) + 'px';
+    $('#tmScrubText').style.top = clamp(vy - 64, 8, window.innerHeight - 90) + 'px';
     return;
   }
   tip.hidden = false;
   tip.replaceChildren(mkEl('b', null, t.date), mkEl('span', null, t.sub));
-  tip.style.top = y + 'px';
+  tip.style.top = (vy - $('#tmRail').getBoundingClientRect().top) + 'px';
 }
 // 位置を選ぶ（そのときのコメントを出す。読み込みは少し待ってから。続けて動かしても最後のものだけ取る）
 function tmSelect(i){
@@ -4107,6 +4127,8 @@ function tmSelect(i){
   if (i === tm.idx && !tm.want) return;
   tm.idx = i;
   clearTimeout(tm.timer);
+  // 矢印などで動かしたら、見えるところまで滑らかにスクロールする（なぞっている間は、指やマウスのある所なので動かさない）
+  if (!tm.scrub){ tmMarks(); tmEnsureVisible(true); }
   const p = tm.list[i];
   if (tmIsNow(i)){
     tm.want = null;
@@ -4322,51 +4344,110 @@ $('#tmChgBtn').onclick = $('#tmNextChg').onclick = () => tmJump(1);
 $('#tmPrevChg').onclick = () => tmJump(-1);
 $('#tmRestoreCancel').onclick = () => $('#tmRestoreDlg').close();
 $('#tmRestoreOk').onclick = tmRestore;
-// 目盛り：マウスを重ねると日付、押すかなぞって選ぶ（指でなぞっている間は大きな日付を出す）
+// 目盛り：マウスを重ねると日付、押すかなぞって選ぶ（指でなぞっている間は大きな日付を出す）。
+// 入りきらないときはスクロールする。PC はホイール、スマホは素早くスワイプでスクロールし、押して少し止めてからなぞると選ぶ
 (() => {
-  const box = $('#tmTicks'), rail = $('#tmRail');
-  const at = (e) => { const r = box.getBoundingClientRect(); const y = clamp(e.clientY - r.top, 0, r.height); return { y, i: tmIndexAt(y, r.height) }; };
-  const point = (e, touch) => {
+  const box = $('#tmTicks'), rail = $('#tmRail'), track = tmTrack();
+  const HOLD_MS = 280, SLOP = 8, EDGE = 32;
+  const scrollable = () => tm.h > track.clientHeight + 1;
+  // 画面の y から目盛りの番号
+  const indexAt = (clientY) => tmIndexAt(clientY - box.getBoundingClientRect().top);
+  let mouseY = null; // マウスが目盛りの上にあるときの y（ホイールでスクロールしたら指している目盛りを直す）
+  let pending = null; // 指で押してから、スクロールか選ぶかが決まるまで（{ id, x, y, timer }）
+  let lastY = 0, edgeRaf = 0;
+  const point = (clientY, touch) => {
     if (!tm.list.length) return -1;
-    const p = at(e);
-    tm.hover = p.i;
-    tmTip(p.i, tmY(p.i, box.clientHeight), touch);
+    const i = indexAt(clientY);
+    tm.hover = i;
+    tmTip(i, touch);
     tmMarks();
-    return p.i;
+    return i;
+  };
+  const hideSoon = (ms) => setTimeout(() => { if (!tm.scrub && !pending && mouseY == null){ tm.hover = -1; tmTip(-1); tmMarks(); } }, ms);
+  // なぞっている指やマウスが目盛りの上端・下端に近づいたら、その方向へスクロールし続ける
+  const edgeScroll = () => {
+    edgeRaf = 0;
+    if (!tm.scrub || !scrollable()) return;
+    const r = track.getBoundingClientRect();
+    const v = lastY < r.top + EDGE ? -(r.top + EDGE - lastY) / EDGE : lastY > r.bottom - EDGE ? (lastY - (r.bottom - EDGE)) / EDGE : 0;
+    if (!v) return;
+    track.scrollTop += clamp(v, -1, 1) * 14;
+    const i = point(lastY, tm.scrub.touch);
+    if (!tm.scrub.touch) tmSelect(i);
+    edgeRaf = requestAnimationFrame(edgeScroll);
+  };
+  const startScrub = (id, touch, clientY) => {
+    tm.scrub = { id, touch };
+    try { box.setPointerCapture(id); } catch {}
+    lastY = clientY;
+    const i = point(clientY, touch);
+    if (!touch) tmSelect(i);
+    if (touch && navigator.vibrate) try { navigator.vibrate(8); } catch {}
   };
   box.addEventListener('pointerdown', (e) => {
     if (e.button > 0 || !tm.list.length) return;
-    e.preventDefault();
     const touch = e.pointerType !== 'mouse';
-    tm.scrub = { id: e.pointerId, touch };
-    try { box.setPointerCapture(e.pointerId); } catch {}
-    const i = point(e, touch);
-    if (!touch) tmSelect(i);
+    // 入りきっていれば、指でもすぐになぞって選ぶ。スクロールするときは、少し止めてから
+    if (!touch || !scrollable()){ e.preventDefault(); startScrub(e.pointerId, touch, e.clientY); return; }
+    clearTimeout(pending?.timer);
+    pending = { id: e.pointerId, x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+      const p = pending;
+      pending = null;
+      if (p) startScrub(p.id, true, p.y);
+    }, HOLD_MS) };
   });
   box.addEventListener('pointermove', (e) => {
+    if (pending && pending.id === e.pointerId){
+      // 止まらずに動かしたら、スクロール（ブラウザに任せる）
+      if (Math.hypot(e.clientX - pending.x, e.clientY - pending.y) > SLOP){ clearTimeout(pending.timer); pending = null; }
+      else pending.y = e.clientY;
+      return;
+    }
     if (tm.scrub && tm.scrub.id !== e.pointerId) return;
-    if (!tm.scrub && e.pointerType !== 'mouse') return;
-    const i = point(e, !!tm.scrub?.touch);
+    if (!tm.scrub){
+      if (e.pointerType === 'mouse'){ mouseY = e.clientY; point(e.clientY, false); }
+      return;
+    }
+    lastY = e.clientY;
+    const i = point(e.clientY, tm.scrub.touch);
     // マウスで押したままなぞると、そのまま見ていく（指は離したときに選ぶ。なぞっている間に読み込みを重ねない）
-    if (tm.scrub && !tm.scrub.touch) tmSelect(i);
+    if (!tm.scrub.touch) tmSelect(i);
+    if (!edgeRaf) edgeRaf = requestAnimationFrame(edgeScroll);
   });
   const end = (e, cancel) => {
+    if (pending && pending.id === e.pointerId){
+      // 動かさずにすぐ離した（タップ）: その目盛りを選んで、日付を少しだけ見せる
+      clearTimeout(pending.timer);
+      pending = null;
+      if (!cancel){ const i = point(e.clientY, true); tmSelect(i); hideSoon(700); }
+      return;
+    }
     if (!tm.scrub || tm.scrub.id !== e.pointerId) return;
     const s = tm.scrub;
     tm.scrub = null;
+    cancelAnimationFrame(edgeRaf); edgeRaf = 0;
     if (s.touch){
       if (!cancel && tm.hover >= 0) tmSelect(tm.hover);
       // 選んだ日付を少しだけ見せてから消す
-      setTimeout(() => { if (!tm.scrub){ tm.hover = -1; tmTip(-1); tmMarks(); } }, cancel ? 0 : 700);
+      hideSoon(cancel ? 0 : 700);
     }
+    tmEnsureVisible(true);
   };
   box.addEventListener('pointerup', (e) => end(e, false));
   box.addEventListener('pointercancel', (e) => end(e, true));
-  box.addEventListener('pointerleave', (e) => { if (!tm.scrub && e.pointerType === 'mouse'){ tm.hover = -1; tmTip(-1); tmMarks(); } });
-  // ホイールで1つずつ動く
+  box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse'){ mouseY = null; if (!tm.scrub){ tm.hover = -1; tmTip(-1); tmMarks(); } } });
+  // 選んでいる間（指で少し止めてからなぞっている間）は、ページや目盛りをスクロールさせない
+  track.addEventListener('touchmove', (e) => { if (tm.scrub?.touch && e.cancelable) e.preventDefault(); }, { passive: false });
+  // スクロールしたら、指している目盛りを直す
+  track.addEventListener('scroll', () => {
+    if (tm.scrub) point(lastY, tm.scrub.touch);
+    else if (mouseY != null) point(mouseY, false);
+  }, { passive: true });
+  // ホイール: スクロールできるならスクロール（ブラウザに任せる）、入りきっていれば1つずつ動く
   let acc = 0;
   rail.addEventListener('wheel', (e) => {
     if (!tm.on) return;
+    if (scrollable() && track.contains(e.target)) return;
     e.preventDefault();
     acc += e.deltaY;
     if (Math.abs(acc) >= 40){ tmSelect(tm.idx + Math.sign(acc)); acc = 0; }
@@ -4378,7 +4459,7 @@ $('#tmRestoreOk').onclick = tmRestore;
     e.preventDefault(); e.stopPropagation();
     tmSelect(tm.idx + k);
   });
-  new ResizeObserver(() => { if (tm.on) tmRender(); }).observe(box);
+  new ResizeObserver(() => { if (tm.on) tmRender(); }).observe(track);
 })();
 
 /* ---------- ホストへの問い合わせ（合言葉・ログインを付ける） ---------- */
