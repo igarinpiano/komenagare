@@ -377,8 +377,8 @@ impl Collection {
                     "komenagare: まとめフォルダを用意",
                 ])?;
             }
-            let src = backup.to_str().context("控えの場所の名前を読めません")?;
-            g(&["fetch", "-q", src, "HEAD"])?;
+            let src = git_path(&backup)?;
+            g(&["fetch", "-q", &src, "HEAD"])?;
             let theirs = g(&["rev-parse", "FETCH_HEAD"])?.trim().to_string();
             // name/ に元の中身を入れ、元の履歴を2つ目の親にしたマージを作る（git merge -s ours と同じ形。
             // 元の履歴が既に祖先にある（同じ時刻に作った中身の同じプロジェクト）ときも、親として残す）
@@ -494,11 +494,7 @@ impl Collection {
         // プロジェクトごとにリポジトリを作る（失敗したら作ったものを消して、元のままにする）
         let mut created: Vec<PathBuf> = vec![];
         let mut refs: Vec<String> = vec![];
-        let src = self.dir.join(".git");
-        let src = src
-            .to_str()
-            .context("リポジトリの場所の名前を読めません")?
-            .to_string();
+        let src = git_path(&self.dir.join(".git"))?;
         let r = (|| -> Result<()> {
             for (i, (t, new, _)) in heads.iter().enumerate() {
                 let d = self.dir.join(t);
@@ -552,7 +548,7 @@ impl Collection {
         }
         // まとめフォルダを解除する（リポジトリと一覧は控えに移す）
         let backup = self.backup_path("collection.git")?;
-        std::fs::rename(&src, &backup)?;
+        std::fs::rename(self.dir.join(".git"), &backup)?;
         let list = self.backup_path(LIST_FILE)?;
         std::fs::rename(self.dir.join(LIST_FILE), list)?;
         Ok(heads.into_iter().map(|(t, _, n)| (t, n)).collect())
@@ -759,6 +755,16 @@ impl History {
     }
 }
 
+/// git に取り込み元として渡す場所。Windows の \\?\ で始まる形（canonicalize の結果）は、git が URL と取り違えるので外す
+fn git_path(p: &Path) -> Result<String> {
+    let s = p.to_str().context("場所の名前を読めません")?;
+    Ok(if let Some(r) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{r}")
+    } else {
+        s.strip_prefix(r"\\?\").unwrap_or(s).to_string()
+    })
+}
+
 /// 自分の .git を持つか（まとめフォルダの履歴に取り込む前のプロジェクト）
 pub fn has_own_git(d: &Path) -> bool {
     std::fs::symlink_metadata(d.join(".git")).is_ok()
@@ -826,6 +832,19 @@ pub fn name_ok(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_paths_drop_verbatim_prefix() {
+        assert_eq!(
+            git_path(Path::new(r"\\?\D:\a\b.git")).unwrap(),
+            r"D:\a\b.git"
+        );
+        assert_eq!(
+            git_path(Path::new(r"\\?\UNC\srv\share\x")).unwrap(),
+            r"\\srv\share\x"
+        );
+        assert_eq!(git_path(Path::new("/home/a/.git")).unwrap(), "/home/a/.git");
+    }
 
     #[test]
     fn names() {
