@@ -144,6 +144,16 @@ enum Cmd {
         #[arg(long, value_name = "FILE")]
         import: Option<PathBuf>,
     },
+    /// まとめフォルダの一覧からプロジェクトを外す（フォルダとコメントは残す。komenagare init 名前 で戻せる）。
+    /// 動いているホストには次の起動から効く（動いている間は画面の「外す」を使う）
+    Remove {
+        /// プロジェクトの名前（まとめフォルダの中のフォルダの名前。まとめフォルダ/名前 でも）
+        #[arg(required = true)]
+        names: Vec<PathBuf>,
+        /// git を使わない（一覧の変更をコミットしない）
+        #[arg(long)]
+        no_git: bool,
+    },
     /// komenagare を最新版に更新する
     Update {
         /// 更新があるかを確かめるだけ
@@ -396,6 +406,31 @@ async fn run(args: Args) -> Result<()> {
             bail!("--import は作業フォルダを1つだけ指定したときに使えます");
         }
         return run_init(dirs, mode, file.as_deref());
+    }
+    if let Some(Cmd::Remove { names, no_git }) = &args.cmd {
+        let mode = git_mode(*no_git, false);
+        for path in names {
+            let (dir, name) = match (path.parent(), path.file_name().and_then(|n| n.to_str())) {
+                (Some(p), Some(n)) if !p.as_os_str().is_empty() => (p.to_path_buf(), n),
+                (_, Some(n)) => (PathBuf::from("."), n),
+                _ => bail!("{} を読めません", path.display()),
+            };
+            if !collection::Collection::is_collection(&dir) {
+                bail!(
+                    "{} はまとめフォルダではありません（まとめフォルダの中で komenagare remove 名前 とします）",
+                    dir.canonicalize().unwrap_or(dir.clone()).display()
+                );
+            }
+            let c = collection::Collection::open(&dir, mode)?;
+            let Some(e) = c.entries()?.into_iter().find(|e| e.dir == name) else {
+                bail!("「{name}」はまとめフォルダの一覧にありません");
+            };
+            c.remove(&e.id, "komenagare")?;
+            println!(
+                "「{name}」を一覧から外しました（フォルダとコメントは残っています。戻すには komenagare init {name}）"
+            );
+        }
+        return Ok(());
     }
     if let Some(Cmd::Update { check, version }) = &args.cmd {
         let (check, version) = (*check, version.clone());

@@ -110,6 +110,7 @@ komenagare init --collection kome   # まとめフォルダを作る（git の�
 cd kome
 komenagare init a b c               # プロジェクトを作る（まとめフォルダの一覧 komenagare.json に載る）
 komenagare                          # 一覧のプロジェクトを全部まとめて共有する（komenagare kome でも可）
+komenagare remove c                 # 一覧から外す（フォルダとコメントは残る。komenagare init c で戻る）
 ```
 
 - 一覧（`komenagare.json`）にはプロジェクトのフォルダの名前と id が入っていて、git にも入ります。`git clone` した先でもそのまま `komenagare` で開け、プロジェクトの id も同じなので、共有のリンクも変わりません。
