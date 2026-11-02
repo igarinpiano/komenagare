@@ -28,10 +28,11 @@
   </div>
   <div class="tb-group tm-bar" id="tmBar" hidden>
     <span class="tm-title">🕰 タイムマシン</span>
+    <!-- 上下のボタンは日時の前に置く（日時の長さで横に動かないように） -->
+    <span class="tm-step"><button id="tmUp" title="ひとつ前（古い方）へ">▲</button><button id="tmDown" title="ひとつ後（新しい方）へ">▼</button></span>
     <span class="tm-at"><b id="tmWhen"></b><span id="tmWhat"></span></span>
     <span class="tm-pos" id="tmPos"></span>
     <span class="tm-chg" id="tmChg" hidden><button id="tmPrevChg" title="前の変わったコメントへ">◀</button><button id="tmChgBtn"></button><button id="tmNextChg" title="次の変わったコメントへ">▶</button></span>
-    <span class="tm-step"><button id="tmUp" title="ひとつ前（古い方）へ">▲</button><button id="tmDown" title="ひとつ後（新しい方）へ">▼</button></span>
     <button id="tmRestore" class="primary" title="今のコメントを、このときのコメントに戻す（新しいコミットとして記録します）">この時点に復元…</button>
     <button id="tmExit" title="タイムマシンを終わって、今に戻る">終了</button>
   </div>
