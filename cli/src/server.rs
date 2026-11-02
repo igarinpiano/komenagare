@@ -59,7 +59,8 @@
 //!   {"type":"run_out","id":"…","data":"出力","err":bool}       コマンドの出力（err は標準エラー出力）
 //!   {"type":"run_end","id":"…","code":N|null,"message":"…"|null} コマンドが終わった（message は止めた理由・断った理由）
 //!   {"type":"tm_log","commits":[{"id","time"(ミリ秒),"author","subject"},...]} コミットの一覧（新しい順）
-//!   {"type":"tm_show","commit":"…","comments":[...]}          そのコミットのときのコメント
+//!   {"type":"tm_show","commit":"…","comments":[...],"edits":[{"commit","time","author","ids":[...]},...]}
+//!                                                            そのコミットのときのコメントと、それぞれを最後に変えたコミット（git blame。新しい順）
 //!   {"type":"tm_restore","commit":"…","rev":N|null,"count":N} 戻した（rev は記録した通し番号。変わらなければ null）。変更は change でも届く
 //!     tm_* が失敗したときは "error":"理由" が付く
 //!   {"type":"error","code":"protocol"|"auth"|"project","message":…} code があるものは送ったあと切る
@@ -1911,19 +1912,29 @@ fn time_machine(
             }
             _ => {
                 let c = commit.clone();
-                let read =
-                    tokio::task::spawn_blocking(move || crate::workspace::comments_at(&dir, &c))
-                        .await
-                        .map_err(|_| anyhow::anyhow!("履歴を読めませんでした"))
-                        .and_then(|r| r);
+                let show = kind == "tm_show";
+                let read = tokio::task::spawn_blocking(move || {
+                    crate::workspace::comments_at(&dir, &c).map(|(snap, comments)| {
+                        // 見るときは、それぞれのコメントを最後に変えたコミットも付ける（読めなければ付けない）
+                        let edits = if show {
+                            crate::workspace::edits_at(&dir, &c).unwrap_or_default()
+                        } else {
+                            vec![]
+                        };
+                        (snap, comments, edits)
+                    })
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("履歴を読めませんでした"))
+                .and_then(|r| r);
                 match (kind.as_str(), read) {
                     (_, Err(e)) => {
                         json!({ "type": kind, "commit": commit, "error": format!("{e:#}") })
                     }
-                    ("tm_show", Ok((_, comments))) => {
-                        json!({ "type": "tm_show", "commit": commit, "comments": comments })
+                    ("tm_show", Ok((_, comments, edits))) => {
+                        json!({ "type": "tm_show", "commit": commit, "comments": comments, "edits": edits })
                     }
-                    (_, Ok((snap, comments))) => {
+                    (_, Ok((snap, comments, _))) => {
                         let done = hub.restore(comments, &snap, &name, &email).await;
                         println!(
                             "[タイムマシン] {} が {} の状態に復元しました（{} 件）",

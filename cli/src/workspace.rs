@@ -612,6 +612,81 @@ pub fn comments_at(dir: &Path, commit: &str) -> Result<(Snapshot, Vec<Comment>)>
     Ok((info, out))
 }
 
+/// タイムマシン: あるコミットで最後に変えたコメント（git blame。comments.jsonl は1行1コメントなので、行を最後に変えたコミット）
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Edit {
+    pub commit: String,
+    /// コミットした時刻（ミリ秒）
+    pub time: u64,
+    pub author: String,
+    /// そのコミットで最後に変えたコメントの id
+    pub ids: Vec<String>,
+}
+
+/// git blame --porcelain の出力を、コミットごとにまとめる（新しい順）
+fn parse_blame(text: &str) -> Vec<Edit> {
+    let mut by: Vec<Edit> = vec![];
+    let mut cur: Option<usize> = None;
+    for line in text.lines() {
+        if let Some(content) = line.strip_prefix('\t') {
+            let id = serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| v["id"].as_str().map(str::to_string));
+            if let (Some(i), Some(id)) = (cur, id) {
+                by[i].ids.push(id);
+            }
+            continue;
+        }
+        let mut words = line.split(' ');
+        let first = words.next().unwrap_or("");
+        if commit_id_ok(first) && words.next().is_some() {
+            cur = Some(match by.iter().position(|e| e.commit == first) {
+                Some(i) => i,
+                None => {
+                    by.push(Edit {
+                        commit: first.to_string(),
+                        time: 0,
+                        author: String::new(),
+                        ids: vec![],
+                    });
+                    by.len() - 1
+                }
+            });
+        } else if let (Some(i), Some(t)) = (cur, line.strip_prefix("committer-time ")) {
+            by[i].time = t.trim().parse::<u64>().unwrap_or(0) * 1000;
+        } else if let (Some(i), Some(a)) = (cur, line.strip_prefix("author ")) {
+            by[i].author = a.to_string();
+        }
+    }
+    by.retain(|e| !e.ids.is_empty());
+    by.sort_by_key(|e| std::cmp::Reverse(e.time));
+    by
+}
+
+/// タイムマシン: コミット commit のときの各コメントを、最後に変えたコミット（git blame）
+pub fn edits_at(dir: &Path, commit: &str) -> Result<Vec<Edit>> {
+    if !commit_id_ok(commit) {
+        bail!("コミットの指定が正しくありません");
+    }
+    let out = git_with(
+        dir,
+        false,
+        &[
+            // リポジトリの設定で、ほかのファイルを読ませない
+            "-c",
+            "blame.ignoreRevsFile=",
+            "blame",
+            "--porcelain",
+            commit,
+            "--",
+            COMMENTS_FILE,
+        ],
+        &[],
+        None,
+    )?;
+    Ok(parse_blame(&out))
+}
+
 /// 名前とメールを補う必要があるか（git の user.email が未設定）
 pub fn git_needs_identity(dir: &Path) -> bool {
     needs_identity(dir)
@@ -1232,6 +1307,34 @@ pub(crate) mod tests {
         assert_eq!(info, list[1]);
         let ids: Vec<&str> = cs.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["a0", "a1"]);
+        // それぞれのコメントを最後に変えたコミット（新しい順）
+        let edits = edits_at(&a.dir, &list[0].id).unwrap();
+        // 同じ秒のコミットは順が決まらないので、一覧の順に並べて比べる
+        let pos = |id: &str| list.iter().position(|c| c.id == id).unwrap();
+        let mut got: Vec<(&str, Vec<&str>)> = edits
+            .iter()
+            .map(|e| {
+                (
+                    e.commit.as_str(),
+                    e.ids.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        got.sort_by_key(|(c, _)| pos(c));
+        assert_eq!(
+            got,
+            [
+                (list[0].id.as_str(), vec!["a2"]),
+                (list[1].id.as_str(), vec!["a1"]),
+                (list[2].id.as_str(), vec!["a0"])
+            ]
+        );
+        assert!(edits.iter().all(|e| e.author == "たろう"));
+        assert_eq!(
+            edits.iter().find(|e| e.commit == list[0].id).unwrap().time,
+            list[0].time
+        );
+        assert!(edits_at(&a.dir, "HEAD").is_err());
         // 最初（コメントの無いとき）
         let (_, cs) = comments_at(&a.dir, &list.last().unwrap().id).unwrap();
         assert!(cs.is_empty());

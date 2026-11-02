@@ -40,7 +40,12 @@ const tm = {
   on: false, list: [], idx: -1, // list: 古い順のコミット（{ id, time, author, subject }）。最後は「今」（id: null）。idx: 見ている位置
   view: null, cache: new Map(), want: null, timer: 0, refresh: 0, loading: false, restoring: false,
   hover: -1, scrub: null,
+  // 見ている時点のコミット（今なら最新のコミット）で変わったコメントの id（時刻順。画面で目立たせて、順に飛べる）と、
+  // 各コメントを最後に変えたコミット（id → { commit, time, author }）と明るさ（タイムラインで、最近変えたものほど明るい）
+  changed: new Set(), changedList: [], chgPos: -1, edit: new Map(), alpha: new Map(), wantEdits: null,
 };
+// タイムマシンで見ている間のタイムラインの明るさ（最近変えたものほど明るい）
+const tmAlpha = (id) => tm.on ? (tm.alpha.get(id) ?? 1) : 1;
 // 画面に出しているコメント（タイムマシンで過去を見ているときはそのときのもの）
 const shown = () => tm.view || store;
 // タイムマシンで見ている間は編集させない（true なら止める）
@@ -238,6 +243,8 @@ function addComments(items, opts = {}){
 }
 function commentsChanged(){
   state.version++;
+  // タイムマシンで今を見ているときは、届いた変更も「今の変更」として目立たせる
+  if (tm.on && !tm.view && tm.idx >= 0) tmEdits();
   if (TL.sel.size) for (const id of [...TL.sel]) if (!shown().has(id)) TL.sel.delete(id);
   relayout();
   renderList();
@@ -374,7 +381,7 @@ function loop(){
     cctx.clearRect(0, 0, canvas.width, canvas.height);
     if (settings.show){
       displayRenderer.draw(cctx, canvas.width, canvas.height, t, state.layouts,
-        { stage: state.stage, opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel });
+        { stage: state.stage, opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel, highlight: tm.on ? tm.changed : null });
     }
     updateTimeUI(t);
   }
@@ -774,7 +781,7 @@ function listMakeRow(i){
   const c = listItems[i];
   const o = parseCmd(c.cmd);
   const row = document.createElement('div');
-  row.className = 'row' + (c.mine ? ' mine' : '') + (o.invisible ? ' inv' : '') + (listIsCurrent(i) ? ' current' : '');
+  row.className = 'row' + (c.mine ? ' mine' : '') + (o.invisible ? ' inv' : '') + (listIsCurrent(i) ? ' current' : '') + (tm.on && tm.changed.has(c.id) ? ' tm-new' : '');
   row.dataset.i = i;
   const rt = document.createElement('span'); rt.className = 'rt'; rt.textContent = fmtList(c.t);
   const rc = document.createElement('span'); rc.className = 'rc'; rc.textContent = c.text;
@@ -2057,7 +2064,8 @@ function tlDrawClip(g, c, sp, y, lh, gi){
   const sel = TL.sel.has(c.id);
   const x0 = tx(sp.s), w = Math.max(3, tx(sp.e) - x0);
   const top = y + 2, h = lh - 4, colored = sp.o.color !== '#FFFFFF';
-  g.globalAlpha = sp.o.invisible ? 0.4 : 1;
+  const dim = tmAlpha(c.id), fresh = tm.on && tm.changed.has(c.id);
+  g.globalAlpha = (sp.o.invisible ? 0.4 : 1) * dim;
   g.fillStyle = sel ? shade(TL_GROUPS[gi].color, 1.3) : TL_GROUPS[gi].color;
   rr(g, x0 + 0.5, top, w - 1, h, 4); g.fill();
   if (colored && w > 6){ g.fillStyle = sp.o.color; g.fillRect(x0 + 2, top + 2, 3, h - 4); }
@@ -2071,7 +2079,13 @@ function tlDrawClip(g, c, sp, y, lh, gi){
     g.fillText(c.text.replace(/\n/g, ' ⏎ '), Math.max(x0, TL_HEAD) + (colored ? 9 : 6), top + h / 2 + 0.5);
     g.restore();
   }
+  // タイムマシン: 見ている時点のコミットで変わったものを囲う
+  if (fresh && !sel){
+    g.globalAlpha = 1; g.lineWidth = 2; g.strokeStyle = '#ffc233';
+    rr(g, x0 + 1, top + 0.5, w - 2, h - 1, 4); g.stroke();
+  }
   if (sel){
+    g.globalAlpha = 1;
     g.lineWidth = 2; g.strokeStyle = '#fff';
     rr(g, x0 + 1, top + 0.5, w - 2, h - 1, 4); g.stroke();
     const hz = coarse.matches ? 10 : 6;
@@ -2316,13 +2330,16 @@ function tlSelChanged(){
   TL.dirty = true; state.needsDraw = true;
   presenceDirty();
   if (n === 1) tlShowInfo(tlSelected()[0]);
-  else $('#tlInfo').textContent = n ? `${n} 件選択中` : 'ダブルクリックで作成・編集';
+  else $('#tlInfo').textContent = n ? `${n} 件選択中` : (tm.on ? '' : 'ダブルクリックで作成・編集');
 }
 function tlShowInfo(c){
   if (!c){ $('#tlInfo').textContent = ''; return; }
   const sp = spanOf(c);
   const speed = sp.lead ? `　速さ <b>×${((DEFAULT_DURATION + NAKA_LEAD) / (sp.dur + NAKA_LEAD)).toFixed(2)}</b>` : '';
   $('#tlInfo').innerHTML = `開始 <b>${fmtPrecise(c.t)}</b>　表示 <b>${sp.dur.toFixed(2)}秒</b>${speed}`;
+  // タイムマシンでは、最後に変えた日時と人も出す
+  const e = tm.on && tm.edit.get(c.id);
+  if (e) $('#tlInfo').append('　', e.commit === 'now' ? '最後の変更: 今（まだコミット前）' : `最後の変更: ${tmDate(e.time)}・${e.author}`);
 }
 function deleteSelected(){
   const list = tlSelected();
@@ -4017,6 +4034,10 @@ function tmUI(){
   $('#tmWhen').title = $('#tmWhat').title = n && !tmIsNow(i) ? `${t.date}\n${t.sub}\nコミット ${tm.list[i].id.slice(0, 7)}（${tm.list[i].author}）` : '';
   $('#tmPos').textContent = n ? (tmIsNow(i) ? '' : `${n - 1 - i} 個前`) : '';
   $('#tmRestore').disabled = !n || tmIsNow(i) || !!tm.want || !tm.view || tm.restoring || !collab.connected;
+  const nc = tm.changedList.length;
+  $('#tmChg').hidden = !n || !!tm.want || !nc;
+  $('#tmChgBtn').textContent = tm.chgPos >= 0 ? `変更 ${tm.chgPos + 1} / ${nc}` : `変更 ${nc} 件`;
+  $('#tmChgBtn').title = tmIsNow(i) ? '最新のコミット（と、まだコミットしていない変更）で変わったコメントへ順に飛ぶ' : 'このコミットで追加・変更したコメントへ順に飛ぶ（枠で囲っています）';
   tmMarks();
 }
 // 目盛りの位置（上端からの px。上が古く、下が今）
@@ -4087,22 +4108,35 @@ function tmSelect(i){
   tm.idx = i;
   clearTimeout(tm.timer);
   const p = tm.list[i];
-  if (tmIsNow(i)){ tm.want = null; tmShow(null); return; }
+  if (tmIsNow(i)){
+    tm.want = null;
+    tmShow(null);
+    // 今のときは、最新のコミットの「最後に変えたコミット」を使う（まだコミットしていない変更は、今の変更として扱う）
+    const last = tm.list[i - 1];
+    if (last && !tm.cache.has(last.id)) tmRequest(last.id, true);
+    return;
+  }
   const got = tm.cache.get(p.id);
   if (got){ tm.want = null; tmShow(got); return; }
   tm.want = p.id;
   tmUI();
+  tmRequest(p.id, false);
+}
+// そのときのコメントを求める（少し待ってから。続けて動かしても最後のものだけ取る）
+function tmRequest(id, edits){
+  clearTimeout(tm.timer);
+  if (edits) tm.wantEdits = id;
   tm.timer = setTimeout(() => {
-    if (tm.want === p.id && collab.connected) collab.ws.send(JSON.stringify({ type: 'tm_show', commit: p.id }));
+    if ((tm.want === id || tm.wantEdits === id) && collab.connected) collab.ws.send(JSON.stringify({ type: 'tm_show', commit: id }));
   }, 150);
 }
-// そのときのコメントを画面に出す（raw はホストから届いたもの。null なら今）
-function tmShow(raw){
+// そのときのコメントを画面に出す（entry はホストから届いたもの { comments, edits }。null なら今）
+function tmShow(entry){
   if (!tm.on) return;
-  if (raw == null) tm.view = null;
+  if (entry == null) tm.view = null;
   else {
     const v = new CommentStore(), ids = new Set(), items = [];
-    for (const c of raw){
+    for (const c of entry.comments){
       if (!c || typeof c !== 'object' || !isUuid(c.id) || ids.has(c.id)) continue;
       ids.add(c.id);
       items.push(makeComment(c.t, c.cmd, c.text, !!store.get(c.id)?.mine, c.id));
@@ -4110,8 +4144,51 @@ function tmShow(raw){
     v.reset(items);
     tm.view = v;
   }
+  tmEdits();
   commentsChanged();
   vimReload(true);
+  tmUI();
+}
+// 見ている時点で、それぞれのコメントを最後に変えたコミットから、その時点で変わったものと明るさを決める
+function tmEdits(){
+  const i = tm.idx, now = tmIsNow(i);
+  const commit = now ? tm.list[i - 1]?.id : tm.list[i]?.id;
+  const entry = commit ? tm.cache.get(commit) : null;
+  tm.edit = new Map(); tm.alpha = new Map(); tm.changed = new Set(); tm.changedList = []; tm.chgPos = -1;
+  // 最新のコミットの分がまだ届いていない（今を見ているとき）・履歴が無いときは、何も目立たせない
+  if (!entry) return;
+  for (const e of entry?.edits || []) for (const id of e.ids) tm.edit.set(id, e);
+  if (now){
+    // 最新のコミットと中身が違う（まだコミットしていない）ものは、今の変更
+    const base = new Map((entry?.comments || []).map(c => [c.id, c]));
+    const NOW = { commit: 'now', time: Infinity, author: '' };
+    for (const c of store.comments){
+      const b = base.get(c.id);
+      if (!b || b.t !== c.t || b.cmd !== c.cmd || b.text !== c.text) tm.edit.set(c.id, NOW);
+    }
+  }
+  const cs = state.comments, others = new Map();
+  for (const c of cs){
+    const e = tm.edit.get(c.id);
+    if (!e) continue;
+    if (e.commit === commit || e.commit === 'now'){ tm.changed.add(c.id); tm.changedList.push(c); }
+    else others.set(e.commit, e.time);
+  }
+  // それより前に変えたものは、最近のものほど明るく（変えたコミットの新しい順に、0.8 から 0.3 まで）
+  const order = [...others].sort((a, b) => b[1] - a[1]).map(x => x[0]), rank = new Map(order.map((c, k) => [c, k]));
+  const k = order.length;
+  for (const c of cs){
+    const e = tm.edit.get(c.id);
+    if (!e || tm.changed.has(c.id)) continue;
+    tm.alpha.set(c.id, k <= 1 ? 0.75 : 0.8 - 0.5 * rank.get(e.commit) / (k - 1));
+  }
+}
+// 見ている時点で変わったコメントへ順に飛ぶ（d: 1 で次、-1 で前）
+function tmJump(d){
+  const L = tm.changedList;
+  if (!L.length) return;
+  tm.chgPos = tm.chgPos < 0 ? (d > 0 ? 0 : L.length - 1) : (tm.chgPos + d + L.length) % L.length;
+  jumpTo(null, [L[tm.chgPos].id]);
   tmUI();
 }
 function tmOpen(){
@@ -4128,6 +4205,7 @@ function tmOpen(){
   collab.ws.send(JSON.stringify({ type: 'tm_log' }));
   tmRender();
   tmUI();
+  tlSelChanged();
   // 押し縮めるのが終わってから、目盛りを今の高さで描き直す
   setTimeout(tmRender, 400);
   $('#tmRail').focus({ preventScroll: true });
@@ -4136,14 +4214,17 @@ function tmClose(){
   if (!tm.on) return;
   clearTimeout(tm.timer); clearTimeout(tm.refresh);
   const had = !!tm.view;
-  Object.assign(tm, { on: false, list: [], idx: -1, view: null, want: null, loading: false, restoring: false, hover: -1, scrub: null });
+  Object.assign(tm, { on: false, list: [], idx: -1, view: null, want: null, loading: false, restoring: false, hover: -1, scrub: null,
+    changed: new Set(), changedList: [], chgPos: -1, edit: new Map(), alpha: new Map(), wantEdits: null });
   tm.cache.clear();
   document.body.classList.remove('tm-on');
   $('#tmRail').inert = true;
   $('#tmBar').hidden = true;
   tmTip(-1);
   if ($('#tmRestoreDlg').open) $('#tmRestoreDlg').close();
-  if (had){ commentsChanged(); vimReload(true); }
+  commentsChanged();
+  tlSelChanged();
+  if (had) vimReload(true);
   tmUI();
 }
 // 入力中の文字や書きかけの Vim は、過去を見ている間は使わないので片付ける
@@ -4168,6 +4249,11 @@ function tmHandle(m){
     const at = keep ? tm.list.findIndex(p => p.id === keep) : -1;
     tm.idx = at >= 0 ? at : tm.list.length - 1;
     if (tm.list.length === 1) toast('このプロジェクトには、まださかのぼれる履歴がありません', { timeout:5000 });
+    // 今を見ているなら、最新のコミットで変わったものを目立たせる
+    if (tmIsNow(tm.idx) && tm.list.length > 1){
+      const last = tm.list[tm.idx - 1].id;
+      if (tm.cache.has(last)){ tmEdits(); commentsChanged(); } else tmRequest(last, true);
+    }
     tmRender();
     tmUI();
   } else if (m.type === 'tm_show'){
@@ -4177,10 +4263,17 @@ function tmHandle(m){
       return;
     }
     if (typeof m.commit !== 'string' || !Array.isArray(m.comments)) return;
-    tm.cache.set(m.commit, m.comments);
+    const edits = (Array.isArray(m.edits) ? m.edits : []).filter(e => e && typeof e.commit === 'string' && typeof e.time === 'number' && Array.isArray(e.ids))
+      .map(e => ({ commit: e.commit, time: e.time, author: String(e.author ?? ''), ids: e.ids.filter(id => typeof id === 'string') }));
+    const entry = { comments: m.comments, edits };
+    tm.cache.set(m.commit, entry);
     // 覚えておくのは最近の 12 個まで
     while (tm.cache.size > 12) tm.cache.delete(tm.cache.keys().next().value);
-    if (m.commit === tm.want){ tm.want = null; tmShow(m.comments); }
+    if (m.commit === tm.want){ tm.want = null; tmShow(entry); }
+    else if (m.commit === tm.wantEdits){
+      tm.wantEdits = null;
+      if (tmIsNow(tm.idx) && tm.list[tm.idx - 1]?.id === m.commit){ tmEdits(); commentsChanged(); tmUI(); }
+    }
   } else if (m.type === 'tm_restore'){
     tm.restoring = false;
     if (m.error){ toast('復元できませんでした: ' + m.error, { type:'error', timeout:8000 }); tmUI(); return; }
@@ -4225,6 +4318,8 @@ $('#tmExit').onclick = tmClose;
 $('#tmUp').onclick = $('#tmRailUp').onclick = () => tmSelect(tm.idx - 1);
 $('#tmDown').onclick = $('#tmRailDown').onclick = () => tmSelect(tm.idx + 1);
 $('#tmRestore').onclick = tmRestoreAsk;
+$('#tmChgBtn').onclick = $('#tmNextChg').onclick = () => tmJump(1);
+$('#tmPrevChg').onclick = () => tmJump(-1);
 $('#tmRestoreCancel').onclick = () => $('#tmRestoreDlg').close();
 $('#tmRestoreOk').onclick = tmRestore;
 // 目盛り：マウスを重ねると日付、押すかなぞって選ぶ（指でなぞっている間は大きな日付を出す）

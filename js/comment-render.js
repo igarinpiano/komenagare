@@ -94,7 +94,8 @@ class CommentRenderer {
     return e;
   }
   // stage はレイアウトしたときのステージの大きさ。W×H の中央に収めて描く
-  draw(g, W, H, time, layouts, { stage = STAGE, opacity = 1, mineBorder = false, selected = null } = {}){
+  // highlight を渡すと、自分のコメントの代わりにその id のコメントを枠で囲む（タイムマシンで、見ている時点で変わったもの）
+  draw(g, W, H, time, layouts, { stage = STAGE, opacity = 1, mineBorder = false, selected = null, highlight = null } = {}){
     const s = Math.min(W / stage.w, H / stage.h);
     const ox = (W - stage.w * s) / 2, oy = (H - stage.h * s) / 2;
     if (Math.abs(s - this.scale) > 1e-6){ this.cache.clear(); this.scale = s; }
@@ -102,7 +103,7 @@ class CommentRenderer {
     for (const L of layouts){
       if (L.invisible || time < L.start || time >= L.end) continue;
       const x = L.o.pos === 'naka' ? nakaX(L, time, stage.w) : (stage.w - L.w) / 2;
-      const border = selected && selected.has(L.c.id) ? 2 : (mineBorder && L.c.mine ? 1 : 0);
+      const border = selected && selected.has(L.c.id) ? 2 : (highlight ? (highlight.has(L.c.id) ? 1 : 0) : (mineBorder && L.c.mine ? 1 : 0));
       const e = this.bitmap(L, s, border);
       g.globalAlpha = opacity * L.alpha;
       const y = Math.round(oy + L.y * s);
