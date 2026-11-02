@@ -4227,18 +4227,53 @@ function projectsRender(){
   }
   $('#projectsList').replaceChildren(frag);
   $('#projectsManage').hidden = !collab.projectsManage;
-  const hidden = document.createDocumentFragment();
-  if (collab.projectsHidden.length){
-    hidden.append(mkEl('span', null, '外したプロジェクト:'));
-    for (const name of collab.projectsHidden){
-      const b = mkEl('button', null, `${name} を戻す`);
-      b.onclick = () => projectAdd(name, `「${name}」を戻しました`);
-      hidden.append(b);
+  const n = collab.projectsHidden.length;
+  $('#projectsRestoreBtn').disabled = !n;
+  $('#projectsRestoreBtn').textContent = n ? `プロジェクトを復元…（${n}）` : 'プロジェクトを復元…（外したものはありません）';
+  if ($('#restoreDlg').open) restoreRender();
+}
+/* ---------- 外したプロジェクトを復元する ---------- */
+const restorePicked = new Set();
+function restoreOpen(){
+  restorePicked.clear();
+  restoreRender();
+  if (!$('#restoreDlg').open) $('#restoreDlg').showModal();
+}
+function restoreRender(){
+  for (const name of [...restorePicked]) if (!collab.projectsHidden.includes(name)) restorePicked.delete(name);
+  const frag = document.createDocumentFragment();
+  if (!collab.projectsHidden.length) frag.append(mkEl('p', 'muted', '外したプロジェクトはありません。'));
+  for (const name of collab.projectsHidden){
+    const row = mkEl('label', 'restore-row');
+    const cb = mkEl('input');
+    cb.type = 'checkbox'; cb.checked = restorePicked.has(name);
+    cb.onchange = () => { if (cb.checked) restorePicked.add(name); else restorePicked.delete(name); $('#restoreOk').disabled = !restorePicked.size; };
+    row.append(cb, mkEl('span', null, name));
+    frag.append(row);
+  }
+  $('#restoreList').replaceChildren(frag);
+  $('#restoreOk').disabled = !restorePicked.size;
+}
+$('#projectsRestoreBtn').onclick = restoreOpen;
+$('#restoreCancel').onclick = () => $('#restoreDlg').close();
+$('#restoreOk').onclick = async () => {
+  const names = collab.projectsHidden.filter(n => restorePicked.has(n));
+  if (!names.length) return;
+  $('#restoreOk').disabled = true;
+  const done = [];
+  for (const name of names){
+    try {
+      await collabApi('/api/projects', { name, by: collabName() });
+      done.push(name);
+    } catch (e) {
+      toast(`ホスト:「${name}」を復元できませんでした: ${e.message}`, { type:'error', timeout:6000 });
     }
   }
-  $('#projectsHidden').replaceChildren(hidden);
-  $('#projectsHidden').className = collab.projectsHidden.length ? 'proj-hidden' : '';
-}
+  if (done.length) toast(`${done.map(n => `「${n}」`).join('')}を復元しました`);
+  $('#restoreDlg').close();
+  try { await projectsFetch(); } catch {}
+  projectsRender();
+};
 // まとめフォルダにプロジェクトを作る（同じ名前の外したフォルダなら戻す）
 async function projectAdd(name, done){
   name = (name || '').trim();
@@ -4257,7 +4292,7 @@ async function projectAdd(name, done){
   }
 }
 async function projectRemove(p){
-  if (!confirm(`「${p.name}」を外しますか？\nこのホストでの共有をやめます。フォルダとコメントはホストに残り、あとで「戻す」で戻せます。\n開いている人は切断されます。`)) return;
+  if (!confirm(`「${p.name}」を外しますか？\nこのホストでの共有をやめて、まとめフォルダのリポジトリからも外します（それまでの履歴には残ります）。\nホストのフォルダとコメントはそのままで、「プロジェクトを復元」で戻せます。開いている人は切断されます。`)) return;
   try {
     await collabApi('/api/projects/remove', { id: p.id, by: collabName() });
     toast(`「${p.name}」を外しました`);

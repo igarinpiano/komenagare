@@ -37,6 +37,8 @@ pub struct Collection {
     git_mode: GitMode,
     /// 一覧の読み書きを1つずつ行う（画面から同時に作る・外すことがあるので）
     lock: std::sync::Mutex<()>,
+    /// 履歴にだけ残っている（外した）プロジェクト。先頭のコミットが変わるまで覚えておく
+    history_cache: std::sync::Mutex<Option<(String, Vec<String>)>>,
 }
 
 impl Collection {
@@ -66,6 +68,7 @@ impl Collection {
             dir,
             git_mode,
             lock: std::sync::Mutex::new(()),
+            history_cache: std::sync::Mutex::new(None),
         };
         let use_git = git_mode != GitMode::Off && workspace::git_available();
         let nested = own_git_projects(&c.dir);
@@ -117,6 +120,7 @@ impl Collection {
             dir,
             git_mode,
             lock: std::sync::Mutex::new(()),
+            history_cache: std::sync::Mutex::new(None),
         };
         c.entries()?;
         Ok(c)
@@ -188,8 +192,13 @@ impl Collection {
         if has_own_git(&d) {
             bail!("「{name}」は自分の git リポジトリ（.git）を持っています。komenagare init {name} で、確かめてから取り込めます");
         }
+        // 外したとき git に入れないようにしていたので、また入れるようにする
+        self.set_ignored(name, false)?;
         let ws = if Workspace::is_workspace(&d) {
             Workspace::open(&d, self.git_mode)?
+        } else if let Some(id) = self.restore_from_history(name)? {
+            // 手元に無い（別の場所で複製した）ときは、外す前のコミットから取り出す。id も外す前のもの
+            Workspace::adopt(&d, self.git_mode, &id)?
         } else {
             Workspace::init(&d, self.git_mode)?
         };
@@ -200,17 +209,20 @@ impl Collection {
             dir: name.to_string(),
             id: ws.id.clone(),
         });
-        // コピーして入れたフォルダなら、そのコメントもここでコミットする
+        // コピーして入れたフォルダ・戻したフォルダなら、そのコメントもここでコミットする
+        let mut files = project_files(&self.dir, name);
+        files.push(".gitignore".to_string());
         self.save(
             &entries,
             &format!("komenagare: プロジェクト「{name}」を追加"),
             author,
-            &project_files(&self.dir, name),
+            &files,
         )?;
         Ok(ws)
     }
 
-    /// 一覧から外す（フォルダとコメントは残す）
+    /// 一覧から外し、リポジトリからも外す（git rm --cached。手元のフォルダとコメントは残し、.gitignore で
+    /// git に入れないようにする。それまでの履歴には残るので、別の場所からでも戻せる）
     pub fn remove(&self, id: &str, author: &str) -> Result<String> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut entries = self.entries()?;
@@ -218,16 +230,79 @@ impl Collection {
             bail!("そのプロジェクトはまとめフォルダの一覧にありません");
         };
         let e = entries.remove(i);
-        self.save(
-            &entries,
-            &format!("komenagare: プロジェクト「{}」を外す", e.dir),
-            author,
-            &[],
-        )?;
+        self.write_list(&entries)?;
+        self.set_ignored(&e.dir, true)?;
+        if self.git_mode != GitMode::Off {
+            workspace::commit_removal(
+                &self.dir,
+                &e.dir,
+                &[LIST_FILE, ".gitignore"],
+                &format!("komenagare: プロジェクト「{}」を外す", e.dir),
+                author,
+                "komenagare@localhost",
+            )?;
+        }
         Ok(e.dir)
     }
 
-    /// 一覧に無いプロジェクトのフォルダ（外したもの・コピーして入れたもの）
+    /// 名前のフォルダを git に入れない（.gitignore の /名前/）・入れる
+    fn set_ignored(&self, name: &str, ignored: bool) -> Result<()> {
+        let path = self.dir.join(".gitignore");
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+            bail!("{} がファイルではありません", path.display());
+        }
+        let cur = std::fs::read_to_string(&path).unwrap_or_default();
+        let line = format!("/{name}/");
+        let has = cur.lines().any(|l| l.trim() == line);
+        if has == ignored {
+            return Ok(());
+        }
+        let next = if ignored {
+            let sep = if cur.is_empty() || cur.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            format!("{cur}{sep}{line}\n")
+        } else {
+            cur.lines()
+                .filter(|l| l.trim() != line)
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
+        std::fs::write(&path, next)?;
+        Ok(())
+    }
+
+    /// 外す前のコミットから、プロジェクトのファイルを取り出す。取り出せたら外す前の id を返す
+    fn restore_from_history(&self, name: &str) -> Result<Option<String>> {
+        if self.git_mode == GitMode::Off || !workspace::in_git(&self.dir) {
+            return Ok(None);
+        }
+        let g = |args: &[&str]| workspace::git_with(&self.dir, false, args, &[], None);
+        let file = format!("{name}/{}", workspace::COMMENTS_FILE);
+        let Ok(gone) = g(&["log", "-1", "--format=%H", "--diff-filter=D", "--", &file]) else {
+            return Ok(None);
+        };
+        let gone = gone.trim();
+        if gone.is_empty() {
+            return Ok(None);
+        }
+        let before = format!("{gone}^");
+        g(&["checkout", &before, "--", name])?;
+        // 外す前の一覧から id を探す（無ければ新しく作る）
+        let rel = g(&["rev-parse", "--show-prefix"])?.trim().to_string();
+        let id = g(&["show", &format!("{before}:{rel}{LIST_FILE}")])
+            .ok()
+            .and_then(|t| serde_json::from_str::<List>(&t).ok())
+            .and_then(|l| l.projects.into_iter().find(|e| e.dir == name))
+            .map(|e| e.id.to_lowercase())
+            .filter(|id| crate::is_uuid(id))
+            .unwrap_or_else(crate::store::uuid_v7);
+        Ok(Some(id))
+    }
+
+    /// 一覧に無いプロジェクト（外したもの・コピーして入れたもの。手元に無くても、履歴に残っているもの）
     pub fn hidden(&self) -> Vec<String> {
         let listed: Vec<String> = self
             .entries()
@@ -235,14 +310,66 @@ impl Collection {
             .into_iter()
             .map(|e| e.dir)
             .collect();
-        self.child_dirs()
+        let mut out: Vec<String> = self
+            .child_dirs()
             .into_iter()
             .filter(|n| !listed.contains(n))
             .filter(|n| {
                 let d = self.dir.join(n);
                 Workspace::is_workspace(&d) || d.join(workspace::COMMENTS_FILE).is_file()
             })
-            .collect()
+            .collect();
+        for n in self.removed_in_history() {
+            if !listed.contains(&n) && !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// 履歴の中で外されたプロジェクト（comments.jsonl が消えたフォルダ）。先頭のコミットごとに覚えておく
+    fn removed_in_history(&self) -> Vec<String> {
+        if self.git_mode == GitMode::Off || !workspace::git_available() {
+            return vec![];
+        }
+        let g = |args: &[&str]| workspace::git_with(&self.dir, false, args, &[], None);
+        let Ok(head) = g(&["rev-parse", "--verify", "-q", "HEAD"]) else {
+            return vec![];
+        };
+        let head = head.trim().to_string();
+        let mut cache = self.history_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((h, v)) = &*cache {
+            if *h == head {
+                return v.clone();
+            }
+        }
+        let pattern = format!("*/{}", workspace::COMMENTS_FILE);
+        let out = g(&[
+            "log",
+            "--relative",
+            "--diff-filter=D",
+            "--name-only",
+            "--format=",
+            "--",
+            &pattern,
+        ])
+        .unwrap_or_default();
+        let mut names: Vec<String> = vec![];
+        for line in out.lines() {
+            let mut parts = line.split('/');
+            if let (Some(n), Some(f), None) = (parts.next(), parts.next(), parts.next()) {
+                if f == workspace::COMMENTS_FILE
+                    && name_ok(n)
+                    && !names.iter().any(|x| x == n)
+                    && !self.dir.join(n).exists()
+                {
+                    names.push(n.to_string());
+                }
+            }
+        }
+        *cache = Some((head, names.clone()));
+        names
     }
 
     /// 直下のフォルダ（名前に使えるもの・リンクでないもの）
@@ -252,6 +379,21 @@ impl Collection {
 
     /// extra（まとめフォルダからの相対）も一緒にコミットする
     fn save(&self, entries: &[Entry], message: &str, author: &str, extra: &[String]) -> Result<()> {
+        self.write_list(entries)?;
+        if self.git_mode != GitMode::Off {
+            let mut files: Vec<&str> = vec![LIST_FILE];
+            files.extend(
+                extra
+                    .iter()
+                    .filter(|f| self.dir.join(f).is_file())
+                    .map(String::as_str),
+            );
+            workspace::commit_files(&self.dir, &files, message, author, "komenagare@localhost")?;
+        }
+        Ok(())
+    }
+
+    fn write_list(&self, entries: &[Entry]) -> Result<()> {
         let list = List {
             projects: entries.to_vec(),
         };
@@ -264,16 +406,6 @@ impl Collection {
         let tmp = self.dir.join(format!(".{LIST_FILE}.tmp"));
         workspace::write_new(&tmp, text.as_bytes())?;
         std::fs::rename(&tmp, &path)?;
-        if self.git_mode != GitMode::Off {
-            let mut files: Vec<&str> = vec![LIST_FILE];
-            files.extend(
-                extra
-                    .iter()
-                    .filter(|f| self.dir.join(f).is_file())
-                    .map(String::as_str),
-            );
-            workspace::commit_files(&self.dir, &files, message, author, "komenagare@localhost")?;
-        }
         Ok(())
     }
 
@@ -409,16 +541,14 @@ impl Collection {
         Ok(())
     }
 
-    /// 分けるプロジェクト（一覧にあるものと、外したもの）
+    /// 分けるプロジェクト（一覧にあるもの。外したものは git に入っていないので分けない）
     pub fn split_targets(&self) -> Result<Vec<String>> {
-        let mut out: Vec<String> = self
+        Ok(self
             .entries()?
             .into_iter()
             .map(|e| e.dir)
             .filter(|d| plain_dir(&self.dir.join(d)))
-            .collect();
-        out.extend(self.hidden());
-        Ok(out)
+            .collect())
     }
 
     /// まとめフォルダを解除して、プロジェクトごとの git リポジトリに分ける。それぞれの履歴は、まとめフォルダの
@@ -888,9 +1018,39 @@ mod tests {
             ]
         );
         // 外してもフォルダは残り、戻すと同じ id
+        add_comment(&b, "bのコメント");
+        // ほかに git add してあるものは、外すコミットに入れない
+        std::fs::write(root.join("memo.txt"), "メモ").unwrap();
+        git(&root, &["add", "memo.txt"]);
         assert_eq!(c.remove(&b.id, "はなこ").unwrap(), "b");
         assert!(root.join("b/comments.jsonl").exists());
         assert_eq!(c.hidden(), vec!["b".to_string()]);
+        // リポジトリからは外れる（履歴には残る）
+        assert_eq!(git(&root, &["ls-files", "b"]), "");
+        assert!(git(&root, &["show", "--stat", "--format=%s", "HEAD"]).contains("b/comments.jsonl"));
+        assert!(!git(&root, &["show", "--stat", "--format=", "HEAD"]).contains("memo.txt"));
+        assert_eq!(git(&root, &["status", "--porcelain"]), "A  memo.txt\n");
+        git(&root, &["reset", "-q", "memo.txt"]);
+        std::fs::remove_file(root.join("memo.txt")).unwrap();
+        // 外したまま複製した先では、手元に無くても履歴から同じ id で戻せる
+        let cl = tmp.path().join("clone-removed");
+        git(
+            tmp.path(),
+            &["clone", "-q", root.to_str().unwrap(), cl.to_str().unwrap()],
+        );
+        assert!(!cl.join("b").exists());
+        let cc = Collection::open(&cl, GitMode::Auto).unwrap();
+        assert_eq!(cc.open_projects().unwrap().len(), 1);
+        assert_eq!(cc.hidden(), vec!["b".to_string()]);
+        let rb = cc.add("b", "じろう").unwrap();
+        assert_eq!(rb.id, b.id);
+        assert!(rb
+            .load_comments()
+            .unwrap()
+            .iter()
+            .any(|x| x.text == "bのコメント"));
+        assert_eq!(git(&cl, &["status", "--porcelain"]), "");
+        assert!(cc.hidden().is_empty());
         let b2 = c.add("b", "はなこ").unwrap();
         assert_eq!(b2.id, b.id);
         assert!(c.hidden().is_empty());

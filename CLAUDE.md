@@ -22,7 +22,7 @@
   - `workspace.rs` — 作業フォルダ（`komenagare init` で作る。`.komenagare/id` があるものだけを `komenagare` で開く）、`comments.jsonl`（1行1コメント）、`.komenagare/`（作業用の記録。git には入れない）、git へのコミット。
     届いた変更は `log.jsonl` に書き足してから ack を返し、`comments.jsonl` とコミットは書き込み担当（`server.rs` の `spawn_writer`。変更だけを受け取って自分の控えに当てる。溜まっていればまとめて1回で）が後から行う。
     どこまで書いたかは `.komenagare/saved` に残し、起動時に `recover` でそれより新しい記録を当て直す（途中で止まっても受け取った変更を失わない）
-  - `collection.rs` — まとめフォルダ（`komenagare init --collection`。直下のプロジェクトの一覧を `komenagare.json` に持ち、git に入れる）。`komenagare <まとめフォルダ>` で全部開き、作業用の記録が無い（複製した直後）なら一覧の id で作る。動いているホストの画面から作る・外す・戻す（`/api/projects`。`--otp` なら管理者だけ）。止めている間は `komenagare init 名前`（作る・戻す）と `komenagare remove 名前`（外す）。名前は直下の1つのフォルダだけを指すように確かめ（`name_ok`）、リンクはたどらない。
+  - `collection.rs` — まとめフォルダ（`komenagare init --collection`。直下のプロジェクトの一覧を `komenagare.json` に持ち、git に入れる）。`komenagare <まとめフォルダ>` で全部開き、作業用の記録が無い（複製した直後）なら一覧の id で作る。動いているホストの画面から作る・外す・復元する（`/api/projects`。`--otp` なら管理者だけ、合言葉・`--no-token` ならこのパソコンから開いたときだけ（`server.rs` の `local_request`。トンネルもこのパソコンの中からつないでくるので、Host と転送のヘッダーも見る））。外すと一覧とリポジトリから外し（`git rm --cached` を一時の index で。`.gitignore` に `/名前/`）、復元は手元に無ければ外す前のコミットから取り出す（id は外す前の `komenagare.json` から）。止めている間は `komenagare init 名前`（作る・戻す）と `komenagare remove 名前`（外す）。名前は直下の1つのフォルダだけを指すように確かめ（`name_ok`）、リンクはたどらない。
     プロジェクトが自分の `.git` を持っていれば、まとめフォルダにするとき（`init --collection`・`init 名前`）にその履歴を取り込む（`absorb`。`-s ours` のマージと `read-tree --prefix`。元の `.git` は `.komenagare/git-backup/` に控える）。`komenagare split` は逆に、プロジェクトごとの履歴を切り出して（`History::split`。git subtree split と同じ考え方で、取り込む前のコミットは元のまま使う）それぞれの `.git` を作り、まとめフォルダを解除する。どちらも git の履歴に手を入れるので y/N で確かめる（`-y` で確かめない。端末でなければ止める）。画面から作るときは、自分の `.git` を持つフォルダを断る
   - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）、HTTP の API、WebSocket の取り決め（ファイル冒頭に記載）。1つのホストで複数のプロジェクト（作業フォルダ）を共有する（`/ws?p=<作業フォルダの id>`）
   - `remote.rs` — `--remote`（許された参加者が画面の「ターミナル」からホストの作業フォルダでコマンドを打つ。`git` は決まったサブコマンドだけで、ほかのプログラムを動かせるオプションや作業フォルダの外を読み書きするオプションは断る。`shell` は何でも。`--otp` のときだけ）
@@ -60,6 +60,7 @@
 - CLI から git を動かすときは、フックを動かさない（`core.hooksPath` を `workspace::no_hooks_path()` にする）。
   1つのリポジトリに複数のプロジェクト（作業フォルダ）を入れられるよう、自動のコミットは自分のファイルだけを指定して行い（`commit` の paths）、git はプロセスの中で1つずつ動かす（`git_lock`）。
 - ホストは Ctrl+C・SIGTERM・SIGHUP（nohup で無視されていればそのまま）・Windows の閉じる／ログオフ／シャットダウンで、保存してから終わる（`main.rs` の `shutdown_signal`）。Windows では `--tunnel` の子プロセスをジョブに入れ、強制終了されても残らないようにする。
+- ホストの外で `comments.jsonl` が変わったら（git checkout・reset など）、書き込み担当が気づいて（2 秒ごとと `--remote` のコマンドのあと。`spawn_writer` の `external_change`）、最後に書いた中身からの差分を Hub に渡し（`Hub::apply_external`）、全員に配る。返ってくるまで・読めない間は書き込まない（外での変更を上書きしない）。
 - 共同編集（`state.collab`）中は、`commitOps` などで適用した変更を `collabSend` でホストへ送る。送信待ちは IndexedDB に控える。
   ホストで衝突した自分の変更は `collab.conflicts` に控え、衝突の解決画面（`#conflictDlg`）で選ばせる。
   「あとで」にした衝突はホストに預け（`conflict_add`。ホストは `.komenagare/conflicts.json` に残す）、全員の `collab.shared` に出して誰でも解決できるようにする。
