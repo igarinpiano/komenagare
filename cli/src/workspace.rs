@@ -497,6 +497,83 @@ pub fn in_git(dir: &Path) -> bool {
     git_available() && git_out(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok()
 }
 
+/// gone（dir からの相対のフォルダ）を git から外し（ファイルはそのまま）、files を足したコミットを作る。
+/// ほかに git add してあるものは巻き込まない（一時の index でコミットを作り、今の index にも同じ変更だけを当てる）。
+/// git の管理下でなければ何もしない
+pub fn commit_removal(
+    dir: &Path,
+    gone: &str,
+    files: &[&str],
+    message: &str,
+    author: &str,
+    email: &str,
+) -> Result<()> {
+    if !in_git(dir) {
+        return Ok(());
+    }
+    let identity = needs_identity(dir);
+    let _git = git_lock();
+    if git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() {
+        bail!("まだコミットがありません");
+    }
+    let tmp = git_out(dir, &["rev-parse", "--git-path", "komenagare-index.tmp"])?;
+    let tmp = {
+        let p = PathBuf::from(tmp.trim());
+        if p.is_absolute() {
+            p
+        } else {
+            dir.join(p)
+        }
+    };
+    let tmp_s = tmp.to_string_lossy().into_owned();
+    let env = [("GIT_INDEX_FILE", tmp_s.as_str())];
+    let r = (|| -> Result<()> {
+        git_with(dir, false, &["read-tree", "HEAD"], &env, None)?;
+        git_with(
+            dir,
+            false,
+            &["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", gone],
+            &env,
+            None,
+        )?;
+        let mut add = vec!["add", "-f", "--"];
+        add.extend_from_slice(files);
+        git_with(dir, false, &add, &env, None)?;
+        let tree = git_with(dir, false, &["write-tree"], &env, None)?;
+        let a_name = clean(author);
+        let a_mail = clean(email);
+        let new = git_with(
+            dir,
+            identity,
+            &["commit-tree", tree.trim(), "-p", "HEAD", "-m", message],
+            &[
+                ("GIT_AUTHOR_NAME", a_name.as_str()),
+                ("GIT_AUTHOR_EMAIL", a_mail.as_str()),
+            ],
+            None,
+        )?;
+        git_with(
+            dir,
+            false,
+            &["update-ref", "-m", message, "HEAD", new.trim()],
+            &[],
+            None,
+        )?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    r?;
+    // 今の index にも同じ変更を当てる（git status をきれいにする）
+    run_git(
+        dir,
+        false,
+        &["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", gone],
+    )?;
+    let mut add = vec!["add", "-f", "--"];
+    add.extend_from_slice(files);
+    run_git(dir, false, &add)
+}
+
 /// dir にリポジトリを作る（git init）
 pub fn git_init(dir: &Path) -> Result<()> {
     run_git(dir, false, &["init", "-q"])

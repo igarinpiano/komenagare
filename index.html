@@ -314,12 +314,21 @@
     <div id="projectsList" class="projects"></div>
     <div id="projectsManage" class="proj-manage" hidden>
       <div class="proj-new"><input id="projectsNewName" maxlength="60" placeholder="新しいプロジェクトの名前（フォルダの名前になります）" autocomplete="off"><button id="projectsNewBtn">作る</button></div>
-      <div id="projectsHidden"></div>
-      <p class="muted" style="margin:6px 0 0">まとめフォルダに新しいフォルダを作ります。「外す」としてもフォルダとコメントはホストに残り、あとで「戻す」で戻せます（外したプロジェクトを開いている人は切断されます）。</p>
+      <div class="proj-restore"><button id="projectsRestoreBtn">プロジェクトを復元…</button></div>
+      <p class="muted" style="margin:6px 0 0">「作る」はまとめフォルダに新しいフォルダを作ります。「外す」はこのホストでの共有をやめて、まとめフォルダのリポジトリからも外します（それまでの履歴には残り、ホストのフォルダとコメントもそのまま。「プロジェクトを復元」で戻せます。開いている人は切断されます）。</p>
     </div>
     <p class="muted" style="margin:10px 0 0">「開く」はこのタブのまま切り替えます（動画・再生位置・タイムラインの表示はプロジェクトごとに覚えていて、戻ってくると元に戻します）。「新しいタブ」なら、ほかのプロジェクトや同じプロジェクトを並べて作業できます。</p>
   </div>
   <div class="dlg-foot"><button id="projectsAuth" hidden>招待・ログインの管理</button><button id="projectsLogout" hidden>ログアウト</button><span class="spacer"></span><button id="projectsClose" class="primary">閉じる</button></div>
+</dialog>
+
+<dialog id="restoreDlg">
+  <div class="dlg-head">プロジェクトを復元</div>
+  <div class="dlg-body">
+    <p class="muted" style="margin:0 0 8px">外したプロジェクトです。選んで「復元」すると、同じ id（共有のリンクもそのまま）で戻り、まとめフォルダのリポジトリにも戻ります。ホストに無いもの（別の場所で外したもの）は、外す前の履歴から取り出します。</p>
+    <div id="restoreList" class="projects"></div>
+  </div>
+  <div class="dlg-foot"><span class="spacer"></span><button id="restoreCancel">やめる</button><button id="restoreOk" class="primary" disabled>復元</button></div>
 </dialog>
 
 <dialog id="loginDlg">

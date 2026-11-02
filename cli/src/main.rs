@@ -819,13 +819,16 @@ async fn run(args: Args) -> Result<()> {
         server::Access::Otp(a) => Some(a.dir().to_path_buf()),
         _ => None,
     };
-    axum::serve(listener, server::router(server))
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            // つながっている WebSocket を閉じないと終われない
-            let _ = stop.send(true);
-        })
-        .await?;
+    axum::serve(
+        listener,
+        server::router(server).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // つながっている WebSocket を閉じないと終われない
+        let _ = stop.send(true);
+    })
+    .await?;
     println!("終了しています（書き込み中の変更を保存します）…");
     if let Some(t) = tunnel {
         t.stop().await;

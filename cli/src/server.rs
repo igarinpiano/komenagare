@@ -64,7 +64,7 @@ use crate::remote::{self, Remote};
 use crate::store::{Change, Comment, Store};
 use crate::workspace::{LogEntry, Workspace};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -121,7 +121,7 @@ pub struct Server {
     /// まとめフォルダ（komenagare <まとめフォルダ> で起動したとき）
     collection: Option<Arc<Collection>>,
     /// 書き込み担当の thread（終わるときに、書き込み終わるのを待つ）
-    writers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
+    writers: std::sync::Mutex<Vec<(String, std::thread::JoinHandle<()>)>>,
     pub access: Access,
     /// リモートのコマンド（--remote。--otp のときだけ）
     pub remote: Option<Remote>,
@@ -155,8 +155,13 @@ impl Server {
         remote: Option<Remote>,
         web_dir: Option<PathBuf>,
     ) -> Arc<Server> {
-        let (projects, writers): (Vec<_>, Vec<_>) =
-            projects.into_iter().map(|(p, w)| (Arc::new(p), w)).unzip();
+        let (projects, writers): (Vec<_>, Vec<_>) = projects
+            .into_iter()
+            .map(|(p, w)| {
+                let id = p.id.clone();
+                (Arc::new(p), (id, w))
+            })
+            .unzip();
         Arc::new(Server {
             projects: std::sync::RwLock::new(projects),
             collection: collection.map(Arc::new),
@@ -204,14 +209,18 @@ impl Server {
         }
         drop(projects);
         std::mem::take(&mut *self.writers.lock().unwrap())
+            .into_iter()
+            .map(|(_, w)| w)
+            .collect()
     }
 
-    /// この人がプロジェクトを作る・外すことができるか
-    fn can_manage(&self, me: &Option<SessionRec>) -> bool {
+    /// この人がプロジェクトを作る・外すことができるか。--otp なら管理者。合言葉・--no-token なら、
+    /// このパソコンから（127.0.0.1 などで）開いた人だけ（合言葉を知っている人みんなが変えられないように）
+    fn can_manage(&self, me: &Option<SessionRec>, local: bool) -> bool {
         self.collection.is_some()
             && match &self.access {
                 Access::Otp(_) => me.as_ref().is_some_and(|s| s.admin),
-                _ => true,
+                _ => local,
             }
     }
 
@@ -226,7 +235,7 @@ impl Server {
 pub struct Hub {
     inner: Mutex<Inner>,
     tx: broadcast::Sender<(u64, Arc<str>)>,
-    writer: std::sync::mpsc::Sender<Job>,
+    writer: std::sync::mpsc::Sender<WriterMsg>,
     conflicts_file: PathBuf,
     /// 作業フォルダ（受け取った変更を .komenagare/log.jsonl に書き足す）
     dir: PathBuf,
@@ -354,39 +363,166 @@ pub struct Job {
 /// 一度にまとめて書き込む変更の数の上限
 const WRITE_BATCH_MAX: usize = 1000;
 
+/// 書き込み担当への知らせ
+pub enum WriterMsg {
+    /// 届いた変更（書き込んでコミットする）
+    Job(Job),
+    /// ホストの外で comments.jsonl が変わっていないか確かめる（リモートのコマンドが終わったとき）
+    Check,
+    /// ホストの外での変更を Hub が当て終えた（当てた分。何も当てられなかったら None）
+    External(Option<LogEntry>),
+}
+
+/// これだけ何も届かなければ、ホストの外で comments.jsonl が変わっていないか確かめる
+const EXTERNAL_CHECK: Duration = Duration::from_secs(2);
+
+/// ホストの外での変更（git checkout・reset、手で直したなど）の作者
+const EXTERNAL_AUTHOR: &str = "ホストの外での変更（git など）";
+
+/// comments.jsonl の大きさと更新日時（変わったかを安く見分ける）
+fn stamp(ws: &Workspace) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(ws.dir.join(crate::workspace::COMMENTS_FILE)).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// ホストの外で comments.jsonl が変わっていたら、最後に書いた中身（written）からの変更を返す。
+/// 読めない（git の衝突の印が入っているなど）ときは Err
+fn external_change(
+    ws: &Workspace,
+    written: &Store,
+    last: &mut Option<(u64, std::time::SystemTime)>,
+) -> anyhow::Result<Option<(Store, Change)>> {
+    let now = stamp(ws);
+    if now == *last {
+        return Ok(None);
+    }
+    let disk = Store::new(ws.load_comments()?);
+    *last = now;
+    if disk.same(written) {
+        return Ok(None);
+    }
+    let ops = written.ops_to(&disk);
+    Ok(Some((
+        disk,
+        Change {
+            id: crate::store::uuid_v7(),
+            ops,
+        },
+    )))
+}
+
 /// 書き込み担当を始める。store は今のコメント（ホストの Hub と同じ内容から始め、届いた変更を順に当てる）。
-/// 待ちが溜まっていたら、まとめて1回で書き込んでコミットする（変更が速く届いても追いつけるように）
+/// 待ちが溜まっていたら、まとめて1回で書き込んでコミットする（変更が速く届いても追いつけるように）。
+/// external を渡すと、ホストの外で comments.jsonl が変わったとき（ブランチの切り替え・git reset など）に、その差分を
+/// 送る（Hub が当てて全員に配り、External で返してくる）。返ってくるまでは書き込まない（外での変更を上書きしないように）
 pub fn spawn_writer(
     ws: Workspace,
     mut store: Store,
-) -> (std::sync::mpsc::Sender<Job>, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    external: Option<tokio::sync::mpsc::UnboundedSender<Change>>,
+) -> (
+    std::sync::mpsc::Sender<WriterMsg>,
+    std::thread::JoinHandle<()>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel::<WriterMsg>();
     let handle = std::thread::spawn(move || {
-        while let Ok(first) = rx.recv() {
-            let mut jobs = vec![first];
-            while jobs.len() < WRITE_BATCH_MAX {
+        // 最後に書いた（読んだ）comments.jsonl の中身
+        let mut written = store.clone();
+        let mut last = stamp(&ws);
+        let mut jobs: Vec<Job> = vec![];
+        let mut saved_rev: Option<u64> = None;
+        let mut waiting = false;
+        let mut unreadable = false;
+        loop {
+            let first = match rx.recv_timeout(EXTERNAL_CHECK) {
+                Ok(m) => Some(m),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            let mut msgs: Vec<WriterMsg> = first.into_iter().collect();
+            while msgs.len() < WRITE_BATCH_MAX {
                 match rx.try_recv() {
-                    Ok(j) => jobs.push(j),
+                    Ok(m) => msgs.push(m),
                     Err(_) => break,
                 }
             }
-            for j in &jobs {
-                store.apply(&j.log.change, false);
+            for m in msgs {
+                match m {
+                    WriterMsg::Job(j) => {
+                        store.apply(&j.log.change, false);
+                        saved_rev = Some(j.log.rev);
+                        jobs.push(j);
+                    }
+                    WriterMsg::Check => {}
+                    WriterMsg::External(e) => {
+                        if let Some(e) = e {
+                            store.apply(&e.change, false);
+                            saved_rev = Some(e.rev);
+                        }
+                        waiting = false;
+                    }
+                }
             }
-            let (message, author, email) = batch_message(&jobs);
+            if let (Some(ext), false) = (&external, waiting) {
+                match external_change(&ws, &written, &mut last) {
+                    Ok(Some((disk, change))) => {
+                        written = disk;
+                        unreadable = false;
+                        if ext.send(change).is_ok() {
+                            waiting = true;
+                        }
+                    }
+                    Ok(None) => unreadable = false,
+                    Err(e) => {
+                        if !unreadable {
+                            eprintln!(
+                                "{}: comments.jsonl を読めないため、直るまで書き込みを止めます（git の衝突などで）: {e:#}",
+                                ws.dir.display()
+                            );
+                        }
+                        unreadable = true;
+                    }
+                }
+            }
+            // 外での変更が戻ってくるまで・読めない間は書き込まない（変更は記録にあり、あとで書く）
+            if waiting || unreadable {
+                continue;
+            }
+            let Some(rev) = saved_rev.take() else {
+                continue;
+            };
+            if store.same(&written) {
+                // 書く中身が変わらない（外での変更を当てただけ）
+                if let Err(e) = ws.set_saved_rev(rev) {
+                    eprintln!("書き込んだ位置を残せませんでした: {e:#}");
+                }
+                jobs.clear();
+                continue;
+            }
+            let (message, author, email) = if jobs.is_empty() {
+                (
+                    format!("{EXTERNAL_AUTHOR}に合わせる"),
+                    "komenagare".to_string(),
+                    "komenagare@localhost".to_string(),
+                )
+            } else {
+                batch_message(&jobs)
+            };
             let ids: Vec<(&str, &str)> = jobs
                 .iter()
                 .map(|j| ("Change-Id", j.log.change.id.as_str()))
                 .collect();
             match ws.save(&store, &message, &author, &email, &ids) {
                 Ok(()) => {
-                    if let Err(e) = ws.set_saved_rev(jobs.last().map_or(0, |j| j.log.rev)) {
+                    if let Err(e) = ws.set_saved_rev(rev) {
                         eprintln!("書き込んだ位置を残せませんでした: {e:#}");
                     }
                 }
                 // 書き込めなかった変更は記録（log.jsonl）に残っているので、次に起動したときに当て直す
                 Err(e) => eprintln!("保存に失敗しました: {e:#}"),
             }
+            written = store.clone();
+            last = stamp(&ws);
+            jobs.clear();
         }
     });
     (tx, handle)
@@ -426,7 +562,7 @@ impl Hub {
         rev: u64,
         seen: HashSet<String>,
         history: VecDeque<LogEntry>,
-        writer: std::sync::mpsc::Sender<Job>,
+        writer: std::sync::mpsc::Sender<WriterMsg>,
         conflicts: Vec<Value>,
         conflicts_file: PathBuf,
         dir: PathBuf,
@@ -453,6 +589,46 @@ impl Hub {
     /// 外したので、つながっている人を切る
     pub fn close(&self) {
         let _ = self.closed.send(true);
+    }
+
+    /// ホストの外で comments.jsonl が変わった（ブランチの切り替え・git reset など）ので、それに合わせる。
+    /// 当てられた分を記録して全員に配り、書き込み担当に返す（まだ書いていない参加者の変更と重なったところは、
+    /// 参加者の変更を残す）
+    async fn apply_external(&self, change: Change) {
+        let mut inner = self.inner.lock().await;
+        let r = inner.store.apply(&change, false);
+        inner.seen.insert(change.id.clone());
+        let log = r.applied.map(|applied| {
+            inner.rev += 1;
+            let log = LogEntry {
+                rev: inner.rev,
+                time: now_ms(),
+                author: EXTERNAL_AUTHOR.to_string(),
+                change: applied,
+            };
+            inner.history.push_back(log.clone());
+            if inner.history.len() > HISTORY_KEEP {
+                inner.history.pop_front();
+            }
+            if let Err(e) = crate::workspace::append_log_in(&self.dir, &log) {
+                eprintln!("変更の記録に失敗しました: {e:#}");
+            }
+            let msg = json!({ "type": "change", "rev": log.rev, "time": log.time, "author": log.author, "change": log.change })
+                .to_string();
+            let _ = self.tx.send((0, msg.into()));
+            println!(
+                "{}: ホストの外で comments.jsonl が変わったので合わせました（{} 件）",
+                self.dir.display(),
+                log.change.ops.len()
+            );
+            log
+        });
+        let _ = self.writer.send(WriterMsg::External(log));
+    }
+
+    /// ホストの外で comments.jsonl が変わっていないか、書き込み担当に確かめさせる
+    pub fn check_external(&self) {
+        let _ = self.writer.send(WriterMsg::Check);
     }
 
     async fn peer_names(&self) -> Vec<String> {
@@ -630,6 +806,32 @@ fn local_host(headers: &HeaderMap, public_url: Option<&str>) -> bool {
             .any(|s| name.ends_with(s))
 }
 
+/// このパソコンから直接開いたか（つないできた先が 127.0.0.1 などで、Host もこのパソコンの名前で、
+/// トンネルやリバースプロキシを通った印のヘッダーが無い）。トンネル（cloudflared など）はこのパソコンの
+/// 中からつないでくるので、つないできた先だけでは見分けられない
+fn local_request(peer: &std::net::SocketAddr, headers: &HeaderMap) -> bool {
+    const PROXIED: [&str; 7] = [
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-real-ip",
+        "cf-connecting-ip",
+        "cf-ray",
+        "tailscale-user-login",
+    ];
+    let host_local = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(host_name)
+        .is_some_and(|n| {
+            n == "localhost"
+                || n.ends_with(".localhost")
+                || n.parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+    peer.ip().is_loopback() && host_local && !PROXIED.iter().any(|h| headers.contains_key(*h))
+}
+
 /// Host の名前の部分（ポートを除き、小文字。IPv6 の [..] は外す。末尾の「.」も除く）
 fn host_name(host: &str) -> String {
     let host = host.trim().to_ascii_lowercase();
@@ -713,6 +915,7 @@ fn authorize_admin<'a>(
 
 async fn projects_handler(
     State(server): State<Arc<Server>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Query(q): Query<KeyQuery>,
     headers: HeaderMap,
 ) -> Response {
@@ -724,7 +927,7 @@ async fn projects_handler(
     for p in server.projects() {
         projects.push(json!({ "id": p.id, "name": p.name, "peers": p.hub.peer_names().await }));
     }
-    let manage = server.can_manage(&me);
+    let manage = server.can_manage(&me, local_request(&peer, &headers));
     let hidden = match (&server.collection, manage) {
         (Some(c), true) => {
             let c = c.clone();
@@ -759,6 +962,7 @@ struct ProjectBody {
 #[allow(clippy::result_large_err)]
 fn authorize_manage(
     server: &Server,
+    peer: &std::net::SocketAddr,
     headers: &HeaderMap,
     k: Option<&str>,
     by: &str,
@@ -770,8 +974,15 @@ fn authorize_manage(
             "プロジェクトを作る・外すのは、まとめフォルダで起動したときだけです（komenagare init --collection）",
         ));
     };
-    if !server.can_manage(&me) {
-        return Err(api_error(StatusCode::FORBIDDEN, "管理者だけが使えます"));
+    if !server.can_manage(&me, local_request(peer, headers)) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            if server.auth().is_some() {
+                "管理者だけが使えます"
+            } else {
+                "このパソコンから（127.0.0.1 で）開いたときだけ使えます"
+            },
+        ));
     }
     let name = match me {
         Some(s) => s.name,
@@ -789,11 +1000,12 @@ fn authorize_manage(
 
 async fn project_add_handler(
     State(server): State<Arc<Server>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Query(q): Query<KeyQuery>,
     headers: HeaderMap,
     Json(body): Json<ProjectBody>,
 ) -> Response {
-    let (c, by) = match authorize_manage(&server, &headers, q.k.as_deref(), &body.by) {
+    let (c, by) = match authorize_manage(&server, &peer, &headers, q.k.as_deref(), &body.by) {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -808,7 +1020,10 @@ async fn project_add_handler(
         let (project, writer) = start(loaded, unique_name(&name, &names));
         let project = Arc::new(project);
         projects.push(project.clone());
-        srv.writers.lock().unwrap().push(writer);
+        srv.writers
+            .lock()
+            .unwrap()
+            .push((project.id.clone(), writer));
         println!("プロジェクトを追加しました: {}（{by}）", project.name);
         Ok((project, recovered))
     })
@@ -822,11 +1037,12 @@ async fn project_add_handler(
 
 async fn project_remove_handler(
     State(server): State<Arc<Server>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Query(q): Query<KeyQuery>,
     headers: HeaderMap,
     Json(body): Json<ProjectBody>,
 ) -> Response {
-    let (c, by) = match authorize_manage(&server, &headers, q.k.as_deref(), &body.by) {
+    let (c, by) = match authorize_manage(&server, &peer, &headers, q.k.as_deref(), &body.by) {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -843,6 +1059,29 @@ async fn project_remove_handler(
             .and_then(|r| r.ok())
             .unwrap_or(false)
     };
+    // 先に共有をやめて、書き込み担当が書き終えるのを待つ（リポジトリから外したあとに書き込まないように）
+    server.projects.write().unwrap().retain(|p| p.id != id);
+    project.hub.close();
+    let name = project.name.clone();
+    drop(project);
+    let writer = {
+        let mut w = server.writers.lock().unwrap();
+        w.iter().position(|(i, _)| *i == id).map(|i| w.remove(i).1)
+    };
+    if let Some(w) = writer {
+        // つながっている人が切れると書き込み担当も終わる。終わらなければ待たずに進む（変更は記録にある）
+        for _ in 0..100 {
+            if w.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if w.is_finished() {
+            let _ = w.join();
+        } else {
+            server.writers.lock().unwrap().push((id.clone(), w));
+        }
+    }
     if listed {
         let (c, id, by) = (c.clone(), id.clone(), by.clone());
         match tokio::task::spawn_blocking(move || c.remove(&id, &by)).await {
@@ -851,9 +1090,7 @@ async fn project_remove_handler(
             Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         }
     }
-    server.projects.write().unwrap().retain(|p| p.id != id);
-    project.hub.close();
-    println!("プロジェクトを外しました: {}（{by}）", project.name);
+    println!("プロジェクトを外しました: {name}（{by}）");
     Json(json!({})).into_response()
 }
 
@@ -897,7 +1134,8 @@ pub fn start(l: Loaded, name: String) -> (Project, std::thread::JoinHandle<()>) 
     let dir = ws.dir.clone();
     // 書き込み担当は自分の控え（今のコメントの写し）に届いた変更を当てていく
     let copy = Store::new(store.sorted().into_iter().cloned().collect());
-    let (writer, writer_thread) = spawn_writer(ws, copy);
+    let (ext_tx, mut ext_rx) = tokio::sync::mpsc::unbounded_channel::<Change>();
+    let (writer, writer_thread) = spawn_writer(ws, copy, Some(ext_tx));
     let hub = Hub::new(
         store,
         rev,
@@ -908,6 +1146,14 @@ pub fn start(l: Loaded, name: String) -> (Project, std::thread::JoinHandle<()>) 
         conflicts_file,
         dir.clone(),
     );
+    // ホストの外での変更は Hub に当てる（Hub が無くなったら終わる。書き込み担当が終われば送り口も閉じる）
+    let weak = Arc::downgrade(&hub);
+    tokio::spawn(async move {
+        while let Some(change) = ext_rx.recv().await {
+            let Some(hub) = weak.upgrade() else { break };
+            hub.apply_external(change).await;
+        }
+    });
     (Project { id, name, dir, hub }, writer_thread)
 }
 
@@ -1423,8 +1669,11 @@ async fn connection(
                 });
                 let (stop, stop_rx) = tokio::sync::oneshot::channel();
                 let (dir, who, rid) = (dir.clone(), name.clone(), id.clone());
+                let after = hub.clone();
                 let task = tokio::spawn(async move {
                     let code = remote::run(cmd, rid, send, stop_rx).await;
+                    // git checkout・reset などで comments.jsonl が変わっていれば、すぐに合わせる
+                    after.check_external();
                     let _ = tokio::task::spawn_blocking(move || {
                         remote::log(&dir, &who, &line, code, now_ms())
                     })
@@ -1536,7 +1785,7 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
             email: email.to_string(),
             log,
         };
-        let _ = hub.writer.send(job);
+        let _ = hub.writer.send(WriterMsg::Job(job));
         let msg =
             json!({ "type": "change", "rev": rev, "time": job_time, "author": name, "change": applied }).to_string();
         let _ = hub.tx.send((conn, msg.into()));
@@ -1660,7 +1909,7 @@ mod tests {
         let ws = Workspace::init(tmp.path(), GitMode::Off).unwrap();
         let dir = ws.dir.clone();
         let check = Workspace::open(tmp.path(), GitMode::Off).unwrap();
-        let (tx, handle) = spawn_writer(ws, Store::default());
+        let (tx, handle) = spawn_writer(ws, Store::default(), None);
         // 書き込み担当が処理するより先に、まとめて送る
         for i in 1..=5u64 {
             let change = Change {
@@ -1674,7 +1923,7 @@ mod tests {
                     },
                 }],
             };
-            tx.send(Job {
+            tx.send(WriterMsg::Job(Job {
                 message: format!("たろう: 追加 1 ({i})"),
                 author: "たろう".into(),
                 email: "t@komenagare".into(),
@@ -1684,7 +1933,7 @@ mod tests {
                     author: "たろう".into(),
                     change,
                 },
-            })
+            }))
             .unwrap();
         }
         drop(tx);
@@ -1692,6 +1941,81 @@ mod tests {
         assert_eq!(Store::new(check.load_comments().unwrap()).len(), 5);
         assert_eq!(check.saved_rev(), Some(5));
         assert!(dir.join("comments.jsonl").exists());
+    }
+
+    /// ホストの外で comments.jsonl が変わったら（ブランチの切り替えなど）その差分を送り、返ってくるまでは書かない。
+    /// 返ってきたら、まだ書いていなかった参加者の変更と合わせて書く
+    #[test]
+    fn writer_follows_changes_outside_the_host() {
+        use crate::store::{Fields, Op};
+        use crate::workspace::GitMode;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(tmp.path(), GitMode::Off).unwrap();
+        let check = Workspace::open(tmp.path(), GitMode::Off).unwrap();
+        let line = |id: &str, text: &str| {
+            format!("{{\"id\":\"{id}\",\"t\":1.0,\"cmd\":\"\",\"text\":\"{text}\"}}\n")
+        };
+        let file = tmp.path().join("comments.jsonl");
+        std::fs::write(&file, line("c1", "前")).unwrap();
+        let store = Store::new(ws.load_comments().unwrap());
+        let (ext_tx, mut ext_rx) = tokio::sync::mpsc::unbounded_channel::<Change>();
+        let (tx, handle) = spawn_writer(ws, store, Some(ext_tx));
+        // git checkout などで書き換わった
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            &file,
+            format!("{}{}", line("c1", "後"), line("c2", "新しい")),
+        )
+        .unwrap();
+        tx.send(WriterMsg::Check).unwrap();
+        let change = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(50));
+                ext_rx.try_recv().ok()
+            })
+            .expect("外での変更が届かない");
+        assert_eq!(change.ops.len(), 2, "{:?}", change.ops);
+        // 返ってくる前に届いた参加者の変更は、まだ書かない（外での変更を上書きしない）
+        tx.send(WriterMsg::Job(Job {
+            message: "たろう: 追加 1".into(),
+            author: "たろう".into(),
+            email: "t@komenagare".into(),
+            log: crate::workspace::LogEntry {
+                rev: 1,
+                time: 0,
+                author: "たろう".into(),
+                change: Change {
+                    id: "ch3".into(),
+                    ops: vec![Op::Add {
+                        id: "c3".into(),
+                        after: Fields {
+                            t: Some(2.0),
+                            cmd: Some("".into()),
+                            text: Some("参加者".into()),
+                        },
+                    }],
+                },
+            },
+        }))
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("後") && !text.contains("参加者"), "{text}");
+        // Hub が当てて返す → 両方を合わせて書く
+        tx.send(WriterMsg::External(Some(crate::workspace::LogEntry {
+            rev: 2,
+            time: 0,
+            author: EXTERNAL_AUTHOR.into(),
+            change,
+        })))
+        .unwrap();
+        drop(tx);
+        handle.join().unwrap();
+        let got = Store::new(check.load_comments().unwrap());
+        assert_eq!(got.len(), 3);
+        assert_eq!(got.get("c1").unwrap().text, "後");
+        assert_eq!(got.get("c3").unwrap().text, "参加者");
+        assert_eq!(check.saved_rev(), Some(2));
     }
 
     #[test]
@@ -1820,6 +2144,44 @@ mod tests {
             assert_ne!(a, other);
             assert_ne!(a, client_id(bad));
         }
+    }
+
+    #[test]
+    fn manage_only_from_this_computer() {
+        let h = |host: &str, extra: &[(&str, &str)]| {
+            let mut m = HeaderMap::new();
+            m.insert(header::HOST, host.parse().unwrap());
+            for (k, v) in extra {
+                m.insert(
+                    axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                    v.parse().unwrap(),
+                );
+            }
+            m
+        };
+        let local: std::net::SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let v6: std::net::SocketAddr = "[::1]:50000".parse().unwrap();
+        let lan: std::net::SocketAddr = "192.168.1.20:50000".parse().unwrap();
+        assert!(local_request(&local, &h("127.0.0.1:8764", &[])));
+        assert!(local_request(&local, &h("localhost:8764", &[])));
+        assert!(local_request(&v6, &h("[::1]:8764", &[])));
+        // 同じ LAN のほかのパソコン
+        assert!(!local_request(&lan, &h("192.168.1.10:8764", &[])));
+        assert!(!local_request(&lan, &h("127.0.0.1:8764", &[])));
+        // トンネル（このパソコンの中からつないでくる）: Host が公開 URL、または転送の印のヘッダーがある
+        assert!(!local_request(&local, &h("abc.trycloudflare.com", &[])));
+        assert!(!local_request(
+            &local,
+            &h("localhost:8764", &[("cf-connecting-ip", "1.2.3.4")])
+        ));
+        assert!(!local_request(
+            &local,
+            &h("127.0.0.1:8764", &[("x-forwarded-for", "1.2.3.4")])
+        ));
+        assert!(!local_request(
+            &local,
+            &h("127.0.0.1:8764", &[("forwarded", "for=1.2.3.4")])
+        ));
     }
 
     #[test]

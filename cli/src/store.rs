@@ -93,7 +93,7 @@ pub struct Conflict {
     pub fields: Vec<&'static str>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Store {
     by_id: HashMap<String, Comment>,
 }
@@ -116,6 +116,55 @@ impl Store {
     }
     pub fn get(&self, id: &str) -> Option<&Comment> {
         self.by_id.get(id)
+    }
+
+    /// 中身がまったく同じか
+    pub fn same(&self, other: &Store) -> bool {
+        self.len() == other.len() && self.sorted() == other.sorted()
+    }
+
+    /// この中身を other にする op（before はこちらの値。変わった項目だけ）
+    pub fn ops_to(&self, other: &Store) -> Vec<Op> {
+        let mut ops = vec![];
+        for c in self.sorted() {
+            match other.get(&c.id) {
+                None => ops.push(Op::Delete {
+                    id: c.id.clone(),
+                    before: Fields::of(c),
+                }),
+                Some(o) if o != c => {
+                    let mut before = Fields::default();
+                    let mut after = Fields::default();
+                    if o.t != c.t {
+                        before.t = Some(c.t);
+                        after.t = Some(o.t);
+                    }
+                    if o.cmd != c.cmd {
+                        before.cmd = Some(c.cmd.clone());
+                        after.cmd = Some(o.cmd.clone());
+                    }
+                    if o.text != c.text {
+                        before.text = Some(c.text.clone());
+                        after.text = Some(o.text.clone());
+                    }
+                    ops.push(Op::Update {
+                        id: c.id.clone(),
+                        before,
+                        after,
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        for o in other.sorted() {
+            if self.get(&o.id).is_none() {
+                ops.push(Op::Add {
+                    id: o.id.clone(),
+                    after: Fields::of(o),
+                });
+            }
+        }
+        ops
     }
 
     /// 時刻順（同じ時刻なら id 順）に並べたコメント
