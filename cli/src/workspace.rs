@@ -516,16 +516,18 @@ pub fn commit_removal(
     if git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() {
         bail!("まだコミットがありません");
     }
-    let tmp = git_out(dir, &["rev-parse", "--git-path", "komenagare-index.tmp"])?;
+    // git には git が返した形のまま（ふつうは dir からの相対）渡す。Windows の \\?\ で始まる形にすると読めないため
+    let tmp_s = git_out(dir, &["rev-parse", "--git-path", "komenagare-index.tmp"])?
+        .trim()
+        .to_string();
     let tmp = {
-        let p = PathBuf::from(tmp.trim());
+        let p = PathBuf::from(&tmp_s);
         if p.is_absolute() {
             p
         } else {
             dir.join(p)
         }
     };
-    let tmp_s = tmp.to_string_lossy().into_owned();
     let env = [("GIT_INDEX_FILE", tmp_s.as_str())];
     let r = (|| -> Result<()> {
         git_with(dir, false, &["read-tree", "HEAD"], &env, None)?;
