@@ -1304,10 +1304,10 @@ async function expProbeSource(){
 }
 const roundMbps = (bps) => { const m = bps / 1e6; return (m < 10 ? Math.round(m * 10) / 10 : Math.round(m)) * 1e6; };
 const fmtMbps = (bps) => roundMbps(bps) / 1e6 + ' Mbps';
-// 解像度とフレームレートに合ったビットレート（1080p 30fps で 8 Mbps。画素の数に合わせて増やし、30fps を超えるなら 1.5 倍）
+// 解像度とフレームレートに合ったビットレート（1080p 30fps で 8 Mbps。画素の数に合わせて増やし、30fps を超えるなら 1.5 倍、60fps を超えるなら 2 倍）
 function expRecommendBps(W, H, fps){
   const r = W * H / (1920 * 1080);
-  return roundMbps((r >= 1 ? 8 * r : 8 * r ** 0.75) * ((fps || 30) > 30 ? 1.5 : 1) * 1e6);
+  return roundMbps((r >= 1 ? 8 * r : 8 * r ** 0.75) * ((fps || 30) > 60 ? 2 : (fps || 30) > 30 ? 1.5 : 1) * 1e6);
 }
 const expFpsOf = () => +$('#expFps').value || expSrc.fps || 30;
 function expFillBitrate(){
@@ -1372,6 +1372,7 @@ function expSyncForm(){
     ok = !!(mime && canCapture);
     out = ok ? mime : 'このブラウザはこの形式での録画に対応していません';
     notes.push('動画を実際に等倍で再生しながら録画するため、動画の長さと同じ時間がかかります。録画中はこのタブを前面に表示したままにしてください。パソコンの処理が追いつかないと、指定したフレームレートより粗くなることがあります。高速書き出しが使えない動画や環境向けです。');
+    if (o.fps > 60) notes.push('等倍の録画は画面の描き換え（多くの画面で 1 秒に 60 回）に合わせて描くため、60 fps を超えるフレームレートにしても同じコマが続くことがあります。滑らかな 120 fps には高速書き出しを使ってください。');
   }
   const nodes = notes.map(t => document.createTextNode(t));
   if (fast && !canSaveStream() && est > EXP_MEM_MAX * 0.9)
@@ -1400,6 +1401,9 @@ async function expCheckCodec(o, est){
   if (codec){
     $('#expFormat').textContent = `${CONTAINERS[o.container].label}・${CODEC[codec] || codec}${size}`
       + ((o.container === 'mp4' || o.container === 'mkv') && codec !== 'avc' ? `（この大きさ・環境では H.264 が使えないため ${CODEC[codec] || codec}。古いプレーヤーでは再生できないことがあります）` : '');
+    // H.264 のソフトウェアエンコーダー（OpenH264）は 60fps までしか見込まないので、それより上ではビットレートが指定より大きくなる
+    if (codec === 'avc' && (o.fps || expSrc.fps) > 60.5)
+      $('#expNote').append(expWarn('60 fps を超える H.264 は、パソコンによっては（ソフトウェアで変換するとき）指定したビットレートの 2 倍ほどになり、見込みより大きくなることがあります。大きさを抑えたいときは、ビットレートを下げるか WebM（VP9）を選んでください。'));
     $('#expStartBtn').disabled = false;
     return;
   }
@@ -1551,7 +1555,8 @@ async function exportViaPlayerWith(MB, d, ctl, { input, format, output, vcodec, 
   };
 
   const src = new MB.VideoSampleSource({ codec: vcodec, quality: new MB.Quality({ bitrate: d.vbps }) });
-  output.addVideoTrack(src, d.fps > 0 ? { frameRate: d.fps } : {});
+  const rate = d.fps > 0 ? d.fps : exportRateOf(times);
+  output.addVideoTrack(src, rate ? { frameRate: rate } : {});
   let conv = null, audioDropped = false;
   if (d.audio){
     conv = await MB.Conversion.init({ input, output, composable: true, tracks: 'primary',

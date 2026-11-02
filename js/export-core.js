@@ -42,6 +42,31 @@ async function exportCommit(d, sink){
   return (await d.handle.getFile()).size;
 }
 function exportAbort(sink){ return sink ? sink.abort().catch(() => {}) : Promise.resolve(); }
+// 書き出しのフレームレート（エンコーダーに伝える。伝えないと 30fps と見なしてビットレートを配るため、60fps や 120fps では指定より大きくなる）。
+// 指定が無ければ元動画のコマの間隔を見て、一定（CFR）ならその値、ばらばら（VFR）なら null（コマはそのまま）
+function exportRateOf(times){
+  // times はデコード順の先頭から。B フレームがあると、後ろの方には表示順でまだ来ていないコマがあるので除く
+  const t = [...times].sort((a, b) => a - b).slice(0, times.length >= 32 ? -16 : undefined), gaps = [];
+  for (let i = 1; i < t.length; i++) if (t[i] > t[i - 1]) gaps.push(t[i] - t[i - 1]);
+  if (gaps.length < 10) return null;
+  const m = (t[t.length - 1] - t[0]) / gaps.length;
+  // 時刻がミリ秒単位に丸められている形式（WebM など）でも一定と見なせるよう、少し余裕を持たせる
+  if (!(m > 0) || gaps.some(g => Math.abs(g - m) > Math.max(0.0011, m * 0.05))) return null;
+  const r = 1 / m;
+  for (const n of [24, 30, 60, 120, 240]) if (Math.abs(r - n * 1000 / 1001) < 0.02) return n * 1000 / 1001;
+  return Math.abs(r - Math.round(r)) < 0.05 ? Math.round(r) : r;
+}
+async function exportRate(MB, d, track){
+  if (d.fps > 0) return d.fps;
+  const times = [];
+  try {
+    for await (const p of new MB.EncodedPacketSink(track).packets(undefined, undefined, { metadataOnly: true })){
+      times.push(p.timestamp);
+      if (times.length >= 240) break;
+    }
+  } catch (e){ console.warn(e); }
+  return exportRateOf(times);
+}
 // 元のコマから出力フレームを作る。
 // フレームレート指定時は、指定 fps の等間隔の時刻ごとに1フレーム作る。
 // 映像はその時刻を含む元のコマを使い（元が 30fps なら実質 30fps）、コメントはフレームごとの時刻で描く。
@@ -84,13 +109,13 @@ async function exportConvertWith(MB, d, ctl, { input, format, output, vcodec, tr
     e.code = 'undecodable';
     throw e;
   }
-  const frames = exportFramer(MB, d);
+  const frames = exportFramer(MB, d), rate = await exportRate(MB, d, track);
   let relative = null;
   const conv = await MB.Conversion.init({
     input, output, tracks: 'primary',
     trim: { start: d.start, end: d.end },
     video: {
-      codec: vcodec, bitrate: d.vbps, forceTranscode: true,
+      codec: vcodec, bitrate: d.vbps, forceTranscode: true, ...(rate ? { frameRate: rate } : {}),
       processedWidth: d.W, processedHeight: d.H, allowTransformationMetadata: false,
       process: (sample) => {
         if (relative === null) relative = sample.timestamp < d.start - 0.5;
