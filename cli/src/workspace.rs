@@ -115,13 +115,31 @@ impl Workspace {
                 ),
             )?;
         }
+        let _git = git_lock();
         ws.run_git(&["add", "--", COMMENTS_FILE, ".gitignore"])?;
-        ws.commit(
-            "komenagare: 作業フォルダを作成",
-            "komenagare",
-            "komenagare@localhost",
-            &[],
-        )?;
+        // git で複製したフォルダを init し直したとき（どちらのファイルも変わっていない）は、空のコミットを作らない
+        let unchanged = git_out(&ws.dir, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok()
+            && git_out(
+                &ws.dir,
+                &[
+                    "diff",
+                    "--cached",
+                    "--quiet",
+                    "--",
+                    COMMENTS_FILE,
+                    ".gitignore",
+                ],
+            )
+            .is_ok();
+        if !unchanged {
+            ws.commit(
+                &[COMMENTS_FILE, ".gitignore"],
+                "komenagare: 作業フォルダを作成",
+                "komenagare",
+                "komenagare@localhost",
+                &[],
+            )?;
+        }
         Ok(ws)
     }
 
@@ -134,10 +152,17 @@ impl Workspace {
             } else {
                 format!(" {}", dir.display())
             };
+            // git で複製したフォルダには、作業用の記録（.komenagare。git に入れない）が無い
+            let cloned = dir.join(COMMENTS_FILE).is_file();
             bail!(
                 "{} はコメナガレの作業フォルダではありません。\n\
-                 作業フォルダを作るには: komenagare init{arg}",
-                shown.display()
+                 作業フォルダを作るには: komenagare init{arg}{}",
+                shown.display(),
+                if cloned {
+                    "\n（comments.jsonl はあるので、git で複製したフォルダなら init し直すとコメントはそのままで開けます）"
+                } else {
+                    ""
+                }
             );
         }
         let dir = dir.canonicalize()?;
@@ -314,14 +339,18 @@ impl Workspace {
         write_new(&tmp, body.as_bytes())?;
         std::fs::rename(&tmp, self.dir.join(COMMENTS_FILE))?;
         if self.git {
+            let _git = git_lock();
             self.run_git(&["add", "--", COMMENTS_FILE])?;
-            self.commit(message, author, email, trailers)?;
+            self.commit(&[COMMENTS_FILE], message, author, email, trailers)?;
         }
         Ok(())
     }
 
+    /// paths（作業フォルダからの相対）だけをコミットする。1つのリポジトリに複数のプロジェクト（作業フォルダ）を
+    /// 入れたときに、ほかのプロジェクトや、人が git add しておいたファイルまで一緒にコミットしないように
     fn commit(
         &self,
+        paths: &[&str],
         message: &str,
         author: &str,
         email: &str,
@@ -337,7 +366,7 @@ impl Workspace {
             }
         }
         let author = format!("{} <{}>", clean(author), clean(email));
-        self.run_git(&[
+        let mut args = vec![
             "commit",
             "-q",
             "--no-verify",
@@ -346,7 +375,10 @@ impl Workspace {
             &msg,
             "--author",
             &author,
-        ])
+            "--",
+        ];
+        args.extend_from_slice(paths);
+        self.run_git(&args)
     }
 
     fn run_git(&self, args: &[&str]) -> Result<()> {
@@ -374,6 +406,13 @@ impl Workspace {
         }
         Ok(())
     }
+}
+
+/// git を動かしている間持っておく。1つのリポジトリに複数のプロジェクトを入れると、プロジェクトごとの
+/// 書き込み担当が同時に git を動かして index.lock を取り合うので、このプロセスの中では1つずつ動かす
+fn git_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // .komenagare は git に入れない（ignore した）ので、git の checkout や reset で、追跡されたファイルや
@@ -650,6 +689,91 @@ pub(crate) mod tests {
                 .len(),
             2
         );
+    }
+
+    /// 1つのリポジトリに複数のプロジェクトを入れても、それぞれ自分のファイルだけをコミットし、
+    /// 同時に書き込んでも index.lock を取り合わない。複製したリポジトリでは init し直せば開ける
+    #[test]
+    fn several_projects_in_one_repo() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_out(&repo, &["init", "-q"]).unwrap();
+        // 人が git add しておいたファイルは、自動のコミットに入れない
+        std::fs::write(repo.join("memo.txt"), "メモ").unwrap();
+        git_out(&repo, &["add", "memo.txt"]).unwrap();
+        let a = Workspace::init(&repo.join("a"), GitMode::Require).unwrap();
+        let b = Workspace::init(&repo.join("b"), GitMode::Require).unwrap();
+        assert!(!repo.join("a/.git").exists() && !repo.join("b/.git").exists());
+        std::thread::scope(|sc| {
+            for (ws, name) in [(&a, "a"), (&b, "b")] {
+                sc.spawn(move || {
+                    for i in 0..10 {
+                        let mut store = Store::new(ws.load_comments().unwrap());
+                        store.apply(
+                            &add(&format!("{name}{i}"), &format!("{name}{i}"), i as f64, name),
+                            false,
+                        );
+                        ws.save(
+                            &store,
+                            &format!("{name}: 追加 {i}"),
+                            name,
+                            "x@komenagare",
+                            &[],
+                        )
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        let files = |rev: &str| git_out(&repo, &["show", "--format=", "--name-only", rev]).unwrap();
+        let log = git_out(&repo, &["log", "--format=%H|%s"]).unwrap();
+        assert_eq!(log.lines().count(), 2 + 20, "{log}");
+        for line in log.lines() {
+            let (h, subject) = line.split_once('|').unwrap();
+            let changed = files(h);
+            assert!(!changed.contains("memo.txt"), "{subject}: {changed}");
+            if let Some(name) = subject
+                .strip_suffix(|c: char| c.is_ascii_digit())
+                .and_then(|s| s.strip_suffix(": 追加 "))
+            {
+                assert_eq!(
+                    changed.trim(),
+                    format!("{name}/comments.jsonl"),
+                    "{subject}"
+                );
+            }
+        }
+        assert!(git_out(&repo, &["diff", "--cached", "--name-only"])
+            .unwrap()
+            .contains("memo.txt"));
+        assert_eq!(a.load_comments().unwrap().len(), 10);
+
+        // 複製したリポジトリには .komenagare（git に入れない）が無いので、init し直してから開く
+        let clone = tmp.path().join("clone");
+        let out = Command::new("git")
+            .args(["clone", "-q"])
+            .arg(&repo)
+            .arg(&clone)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(Workspace::open(&clone.join("a"), GitMode::Require).is_err());
+        let commits = || git_out(&clone, &["rev-list", "--count", "HEAD"]).unwrap();
+        let before = commits();
+        let a2 = Workspace::init(&clone.join("a"), GitMode::Require).unwrap();
+        assert_eq!(commits(), before, "init し直しても空のコミットは作らない");
+        assert_eq!(a2.load_comments().unwrap().len(), 10);
+        assert_ne!(a2.id, a.id);
+        let ignore = std::fs::read_to_string(clone.join("a/.gitignore")).unwrap();
+        assert_eq!(ignore.matches(".komenagare/").count(), 1, "{ignore}");
     }
 
     /// フックの置き場所を作業ツリーの中にし（husky など）、動いたら印のファイルを作るフックを置く

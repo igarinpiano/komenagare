@@ -124,10 +124,11 @@ fn firewall_disabled() -> bool {
         .unwrap_or(false)
 }
 
-/// 端末から y と答えたら true（端末でなければ聞かずに false）
+/// 端末から y と答えたら true（端末でなければ聞かずに false。--log で出力をファイルに向けたときも、
+/// 問いが見えないので聞かない）
 fn ask(prompt: &str) -> bool {
     use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return false;
     }
     eprint!("{prompt}");

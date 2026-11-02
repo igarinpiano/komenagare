@@ -11,6 +11,7 @@ mod auth;
 mod awake;
 mod files;
 mod firewall;
+mod output;
 mod remote;
 mod render;
 mod server;
@@ -98,6 +99,9 @@ struct Args {
     /// 起動したらブラウザで開く
     #[arg(long)]
     open: bool,
+    /// 画面に出す内容（起動時の URL・参加者の出入りなど）をこのファイルに書き足す（裏で動かすとき用）
+    #[arg(long, value_name = "FILE", env = "KOMENAGARE_LOG")]
+    log: Option<PathBuf>,
     /// ほかの人と共有している間も、このパソコンのスリープを止めない
     /// （既定では --host 0.0.0.0・--tunnel・--public-url のとき、終わるまでスリープさせない）
     #[arg(long)]
@@ -121,9 +125,10 @@ struct Args {
 enum Cmd {
     /// 作業フォルダを作る（comments.jsonl と履歴の置き場所。git があれば git の管理下にする）
     Init {
-        /// 作業フォルダにする場所。無ければ作る
+        /// 作業フォルダにする場所（複数並べられる）。無ければ作る。git で複製したフォルダ（comments.jsonl がある）なら、
+        /// コメントはそのままで作業用の記録（.komenagare。git には入らない）だけを作る
         #[arg(default_value = ".")]
-        dir: PathBuf,
+        dirs: Vec<PathBuf>,
         /// git を使わない（履歴を残さない）
         #[arg(long, conflicts_with = "require_git")]
         no_git: bool,
@@ -340,13 +345,16 @@ async fn run(args: Args) -> Result<()> {
         return run_render(cmd);
     }
     if let Some(Cmd::Init {
-        dir,
+        dirs,
         no_git,
         require_git,
         import: file,
     }) = &args.cmd
     {
-        return run_init(dir, git_mode(*no_git, *require_git), file.as_deref());
+        if file.is_some() && dirs.len() > 1 {
+            bail!("--import は作業フォルダを1つだけ指定したときに使えます");
+        }
+        return run_init(dirs, git_mode(*no_git, *require_git), file.as_deref());
     }
     if let Some(Cmd::Update { check, version }) = &args.cmd {
         let (check, version) = (*check, version.clone());
@@ -371,6 +379,9 @@ async fn run(args: Args) -> Result<()> {
     }
     if args.import.is_some() && args.dirs.len() > 1 {
         bail!("--import は作業フォルダを1つだけ指定したときに使えます");
+    }
+    if let Some(path) = &args.log {
+        output::to_file(path)?;
     }
     let mode = git_mode(args.no_git, args.require_git);
     let mut opened: Vec<Opened> = vec![];
@@ -702,25 +713,89 @@ type Opened = (
     std::collections::VecDeque<LogEntry>,
 );
 
-/// Ctrl+C（SIGINT）か、systemd などからの SIGTERM を待つ
+/// 終わる合図を待つ。Ctrl+C（SIGINT）、systemd などからの SIGTERM、端末が閉じられたとき（SIGHUP）、
+/// Windows ではウィンドウを閉じたとき・ログオフ・シャットダウン（Ctrl+Break も）。
+/// どれも、書き込み中の変更を保存してから終わる（Windows は閉じてから 5 秒ほどで OS に止められるが、
+/// 変更は受け取った時点で記録に書いてあるので、間に合わなくても次の起動で当て直す）
 async fn shutdown_signal() {
     let interrupt = async {
         let _ = tokio::signal::ctrl_c().await;
     };
     #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut s) => {
-                s.recv().await;
+    let other = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let wait = |kind: SignalKind| async move {
+            match signal(kind) {
+                Ok(mut s) => {
+                    s.recv().await;
+                }
+                Err(_) => std::future::pending::<()>().await,
             }
-            Err(_) => std::future::pending::<()>().await,
+        };
+        // nohup などで SIGHUP を無視するよう起動されたときは、そのまま無視する（受け取るようにすると、
+        // 端末を閉じたときに終わってしまう）
+        let hangup = async {
+            if hangup_ignored() {
+                std::future::pending::<()>().await
+            }
+            wait(SignalKind::hangup()).await;
+            // 端末はもう無いので、端末への出力は捨てる（書くと失敗して、保存する前に落ちる）
+            output::detach_terminal();
+        };
+        tokio::select! {
+            _ = wait(SignalKind::terminate()) => {}
+            _ = hangup => {}
         }
     };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    #[cfg(windows)]
+    let other = async {
+        use tokio::signal::windows;
+        let wait = |s: std::io::Result<windows::CtrlBreak>| async move {
+            match s {
+                Ok(mut s) => {
+                    s.recv().await;
+                }
+                Err(_) => std::future::pending::<()>().await,
+            }
+        };
+        // 閉じる・ログオフ・シャットダウンは型が別なので、同じ形に包んで待つ
+        macro_rules! closing {
+            ($f:path) => {
+                async {
+                    match $f() {
+                        Ok(mut s) => {
+                            s.recv().await;
+                            // コンソールはもう無いので、そこへの出力は捨てる
+                            output::detach_terminal();
+                        }
+                        Err(_) => std::future::pending::<()>().await,
+                    }
+                }
+            };
+        }
+        tokio::select! {
+            _ = wait(windows::ctrl_break()) => {}
+            _ = closing!(windows::ctrl_close) => {}
+            _ = closing!(windows::ctrl_logoff) => {}
+            _ = closing!(windows::ctrl_shutdown) => {}
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
+    let other = std::future::pending::<()>();
     tokio::select! {
         _ = interrupt => {}
-        _ = terminate => {}
+        _ = other => {}
+    }
+}
+
+/// 起動したときに SIGHUP を無視するよう言われていたか（nohup など）
+#[cfg(unix)]
+fn hangup_ignored() -> bool {
+    // SAFETY: 今の設定を読むだけ（変えない）
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) == 0
+            && old.sa_sigaction == libc::SIG_IGN
     }
 }
 
@@ -824,23 +899,32 @@ fn git_mode(no_git: bool, require_git: bool) -> GitMode {
 }
 
 /// komenagare init
-fn run_init(dir: &Path, git_mode: GitMode, file: Option<&Path>) -> Result<()> {
-    let ws = Workspace::init(dir, git_mode)?;
-    println!(
-        "作業フォルダを作りました: {}（履歴: {}）",
-        ws.dir.display(),
-        if ws.git { "git" } else { "なし" }
-    );
-    if let Some(file) = file {
-        let mut store = Store::new(ws.load_comments()?);
-        let n = import(&ws, &mut store, file)?;
-        println!("{} から {} 件のコメントを取り込みました", file.display(), n);
+fn run_init(dirs: &[PathBuf], git_mode: GitMode, file: Option<&Path>) -> Result<()> {
+    for dir in dirs {
+        let ws = Workspace::init(dir, git_mode)?;
+        let n = ws.load_comments()?.len();
+        println!(
+            "作業フォルダを作りました: {}（履歴: {}{}）",
+            ws.dir.display(),
+            if ws.git { "git" } else { "なし" },
+            if n > 0 {
+                format!("・コメント {n} 件")
+            } else {
+                String::new()
+            }
+        );
+        if let Some(file) = file {
+            let mut store = Store::new(ws.load_comments()?);
+            let n = import(&ws, &mut store, file)?;
+            println!("{} から {} 件のコメントを取り込みました", file.display(), n);
+        }
     }
-    if dir == Path::new(".") {
-        println!("始めるには: komenagare");
-    } else {
-        println!("始めるには: komenagare {}", dir.display());
-    }
+    let args: Vec<String> = dirs
+        .iter()
+        .filter(|d| d.as_path() != Path::new("."))
+        .map(|d| format!(" {}", d.display()))
+        .collect();
+    println!("始めるには: komenagare{}", args.concat());
     Ok(())
 }
 

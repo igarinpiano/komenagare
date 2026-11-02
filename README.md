@@ -89,7 +89,7 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
 - 再生バーの 📣（ここ見て）で今の再生位置と選んでいるコメントをほかの人に知らせ、🔗 でその位置（コメント）へのリンク（`#t=秒&c=コメントの id`）をコピーできます。電話やメッセージで作業するときに便利です。
 - 動画は各自の手元のものを使うので、ほかの人と動画の長さが違えば知らせます（違う動画だと、コメントの出る場面がずれます）。
 - ほかの人と共有している間（`--host 0.0.0.0`・`--tunnel`・`--public-url`）は、終わるまでホストのパソコンをスリープさせません（macOS は `caffeinate`、Linux は `systemd-inhibit`、Windows は `SetThreadExecutionState`、Termux は `termux-wake-lock`）。止めるなら `--allow-sleep`。ノートパソコンはふたを閉じるとスリープすることがあります。
-- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし。IP アドレス・`localhost`・このパソコンの名前（`mypc`・`mypc.local` など）で開いてください。悪意のあるサイトから名前を切り替えて入られないよう、ほかのドメインの名前では入れません。使うときは `--public-url` で指定）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）、`--remote`（画面からホストでコマンドを打つ）。一覧は `komenagare --help`。
+- 主なオプション: `--port`、`--no-git`（履歴なし）、`--require-git`（git が無ければ起動しない）、`--no-token`（合言葉なし。IP アドレス・`localhost`・このパソコンの名前（`mypc`・`mypc.local` など）で開いてください。悪意のあるサイトから名前を切り替えて入られないよう、ほかのドメインの名前では入れません。使うときは `--public-url` で指定）、`--otp`（参加者ごとのワンタイムパスワード）、`--tunnel` / `--public-url`（ローカルネットワークの外から使う）、`--remote`（画面からホストでコマンドを打つ）、`--log`（画面の表示をファイルにも書く。[裏で動かす](#裏で動かす)）。一覧は `komenagare --help`。
 - 画面（Web アプリ）は起動のたびに GitHub Pages の最新版を確かめて使います（`komenagare update-web` で手動更新、`--no-update` で確かめない、`--bundled-web` で内蔵版）。
   取れないときは前回取得した版、それも無ければ CLI に内蔵した版を使います。最新版が新しい取り決めになっていて CLI が対応していないときは、`komenagare update` を促します。
   取ってきた Web アプリは署名（`web.sums`）を確かめてから使います。署名の合わないもの、手元の控えより古いものは使いません（GitHub Pages や途中の経路が差し替えられても、ホストが配信する画面は変わりません）。
@@ -99,6 +99,18 @@ komenagare ~/projects/a ~/projects/b # 複数のプロジェクト（作業フ�
 1フォルダ1プロジェクトのまま、作業フォルダを複数渡すと1つのホストでまとめて共有できます（`komenagare ~/projects/*` でも可）。
 画面右上の「📁」からプロジェクトの一覧を開き、このタブのまま切り替える（動画・再生位置・タイムラインの表示はプロジェクトごとに覚えていて、戻ってくると元に戻します）か、新しいタブで開けます。
 一覧には、それぞれのプロジェクトに今いる人も出ます。同じプロジェクトや別のプロジェクトを複数のタブで並べて作業しても、変更・衝突はタブごとに正しく扱われます。
+
+いくつものプロジェクトを1つの git リポジトリにまとめることもできます（プロジェクトごとにリポジトリを作らなくてよい）。
+リポジトリの中のフォルダで `komenagare init` すると、そのリポジトリに履歴を残し、自動のコミットにはそのプロジェクトの `comments.jsonl` だけを入れます（ほかのプロジェクトや、自分で `git add` しておいたファイルは入れません）。
+
+```sh
+cd my-komenagare          # 1つのリポジトリ
+komenagare init a b c     # プロジェクトを3つ作る
+komenagare a b c          # まとめて共有する
+```
+
+作業用の記録（`.komenagare/`）は git に入れないので、リポジトリを `git clone` した先では、初めに一度 `komenagare init a b c` をし直します（コメントはそのまま。プロジェクトの id は新しくなるので、共有のリンクも変わります）。
+`--remote git` の参加者が打つ git は、リポジトリ全体に効きます（ほかのプロジェクトも含めて）。
 
 ### ワンタイムパスワード（--otp）
 
@@ -212,9 +224,76 @@ komenagare.example.com {
 komenagare /srv/komenagare/* --otp --no-update --public-url https://komenagare.example.com
 ```
 
-systemd などで常駐させる場合も、止めるとき（SIGTERM）は書き込み中の変更を保存してから終わります。
+常駐させる方法は「[裏で動かす](#裏で動かす)」を見てください。
 `komenagare otp new` は、動いているホストの公開 URL を使ってリンクを出します（別の URL にするなら `--url`）。
 動画はサーバーから配らないので、今まで通り各自が手元の動画を開きます。
+
+### 裏で動かす
+
+`--log ファイル` を付けると、画面に出す内容（起動時の URL・参加者の出入りなど）をそのファイルに書き足します（起動のたびに日時の見出しを付けます）。
+止めるとき（Ctrl+C・`kill`・systemd の停止・端末を閉じる・Windows でウィンドウを閉じる）は、書き込み中の変更を保存してから終わります。
+強制終了や停電で止まっても、受け取った変更は記録してあるので、次に起動したときに書き込みます。
+
+- 合言葉は起動のたびに変わるので、裏で動かすなら `--token 合言葉` で決めておくと同じリンクで入れます。`--otp` なら、動いているホストの管理者用のリンクを `komenagare otp new 名前 --admin` で出せます。
+- Quick Tunnel（`--tunnel cloudflare`）の URL は起動のたびに変わります。ログで確かめてください。
+- 止めるときは `kill`（`-9` は付けない）。`-9` で止めるとトンネル（cloudflared など）が残ります。
+
+```sh
+# Linux・macOS・Android（Termux）: 端末を閉じても動き続ける
+nohup komenagare ~/projects/* --otp --tunnel cloudflare --log ~/komenagare.log &
+grep URL ~/komenagare.log      # 公開 URL を見る
+pkill -x komenagare            # 止める（保存してから終わる）
+```
+
+tmux（`tmux new -s kome` の中で起動し、Ctrl+B → D で抜ける。`tmux attach -t kome` で戻る）を使うと、画面の表示をあとから見に行けます。
+
+Linux で常駐させる（ログインしていなくても動かし、落ちたら起動し直す）なら systemd のユーザーサービスにします。`~/.config/systemd/user/komenagare.service`:
+
+```ini
+[Unit]
+Description=komenagare
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/komenagare %h/projects/kome --otp --no-update --public-url https://komenagare.example.com
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now komenagare
+loginctl enable-linger $USER   # ログアウトしても動かし続ける
+journalctl --user -u komenagare   # 画面の表示を見る
+```
+
+Windows（PowerShell）では、ウィンドウを出さずに起動できます。komenagare が止まると（強制終了でも）、`--tunnel` で始めたトンネルも止まります。
+
+```powershell
+Start-Process komenagare -ArgumentList 'C:\projects\kome','--otp','--tunnel','cloudflare','--log',"$env:USERPROFILE\komenagare.log" -WindowStyle Hidden
+taskkill /IM komenagare.exe /F   # 止める（ウィンドウの無いプログラムは /F が要る。変更は次の起動で書き込む）
+```
+
+Android（Termux）では、共有している間は komenagare が `termux-wake-lock` をかけます。あわせて Android の設定で Termux の電池の最適化を外してください（画面を消したあとに止められないように）。
+Android 12 以降は裏で動く子プロセス（`--tunnel` の cloudflared など）を OS が止めることがあります（Android 14 以降なら開発者向けオプションの「子プロセスの制限を無効にする」で止められます）。端末の起動時に動かすなら Termux:Boot を使います。
+
+#### GitHub Codespaces で動かす
+
+手元のパソコンを付けておかなくても、GitHub Codespaces（無料のアカウントで月 60 時間ほど）でホストできます。
+操作しないでいるとしばらくして止まり、使わない codespace はいずれ消されるので、数時間の作業会に向いています。コメントは終わったら GitHub に push して残します。
+
+1. プロジェクトを入れるリポジトリ（非公開でよい）を1つ作り、上の「複数のプロジェクト」のようにプロジェクトのフォルダを入れて push する
+2. そのリポジトリの「Code」→「Codespaces」から codespace を作り、ターミナルで:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/igarinpiano/komenagare/main/install.sh | sh
+curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && sudo dpkg -i /tmp/cloudflared.deb
+komenagare init a b c                      # 初回だけ（作業用の記録を作る。コメントはそのまま）
+komenagare a b c --otp --tunnel cloudflare
+```
+
+3. 終わったら `git push`（自動のコミットが積まれています）
 
 ### コメントを動画に焼き込む（komenagare render）
 
