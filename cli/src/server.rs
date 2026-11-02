@@ -13,7 +13,11 @@
 //!
 //! HTTP
 //!   GET  /api/info                       {"app":"komenagare","version"}（だれでも）
-//!   GET  /api/projects                   {"auth","me":{name,admin}|null,"projects":[{"id","name","peers":[名前]}]}
+//!   GET  /api/projects                   {"auth","me":{name,admin}|null,"projects":[{"id","name","peers":[名前]}],
+//!                                         "manage":bool,"hidden":[フォルダの名前]}（manage はプロジェクトを作る・外すことができるか。
+//!                                         まとめフォルダで起動したときだけ。--otp なら管理者、それ以外は入れる人みんな）
+//!   POST /api/projects {"name","by"}     まとめフォルダにプロジェクトを作る（同じ名前の外したフォルダなら戻す）{"id","name"}
+//!   POST /api/projects/remove {"id","by"} プロジェクトを外す（フォルダとコメントは残す。つながっている人は切る）
 //!   POST /api/login {"code"}             {"token","name","admin"}（--otp のとき）
 //!   GET  /api/me / POST /api/logout      セッションの確認・ログアウト
 //!   GET  /api/admin/auth                 {"sessions":[...],"otps":[...]}（管理者のみ）
@@ -55,6 +59,7 @@
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
 
 use crate::auth::{self, Auth, Kind, SessionRec};
+use crate::collection::Collection;
 use crate::remote::{self, Remote};
 use crate::store::{Change, Comment, Store};
 use crate::workspace::{LogEntry, Workspace};
@@ -111,7 +116,12 @@ pub struct Project {
 }
 
 pub struct Server {
-    pub projects: Vec<Project>,
+    /// 共有しているプロジェクト（まとめフォルダなら、画面から足したり外したりできる）
+    projects: std::sync::RwLock<Vec<Arc<Project>>>,
+    /// まとめフォルダ（komenagare <まとめフォルダ> で起動したとき）
+    collection: Option<Arc<Collection>>,
+    /// 書き込み担当の thread（終わるときに、書き込み終わるのを待つ）
+    writers: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
     pub access: Access,
     /// リモートのコマンド（--remote。--otp のときだけ）
     pub remote: Option<Remote>,
@@ -139,13 +149,18 @@ const SESSION_CHECK: Duration = Duration::from_secs(15);
 
 impl Server {
     pub fn new(
-        projects: Vec<Project>,
+        projects: Vec<(Project, std::thread::JoinHandle<()>)>,
+        collection: Option<Collection>,
         access: Access,
         remote: Option<Remote>,
         web_dir: Option<PathBuf>,
     ) -> Arc<Server> {
+        let (projects, writers): (Vec<_>, Vec<_>) =
+            projects.into_iter().map(|(p, w)| (Arc::new(p), w)).unzip();
         Arc::new(Server {
-            projects,
+            projects: std::sync::RwLock::new(projects),
+            collection: collection.map(Arc::new),
+            writers: std::sync::Mutex::new(writers),
             access,
             remote,
             web_dir,
@@ -168,12 +183,36 @@ impl Server {
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn project(&self, id: Option<&str>) -> Option<&Project> {
+    fn project(&self, id: Option<&str>) -> Option<Arc<Project>> {
+        let projects = self.projects.read().unwrap();
         match id.filter(|s| !s.is_empty()) {
-            Some(id) => self.projects.iter().find(|p| p.id == id),
-            None if self.projects.len() == 1 => self.projects.first(),
+            Some(id) => projects.iter().find(|p| p.id == id).cloned(),
+            None if projects.len() == 1 => projects.first().cloned(),
             None => None,
         }
+    }
+
+    pub fn projects(&self) -> Vec<Arc<Project>> {
+        self.projects.read().unwrap().clone()
+    }
+
+    /// 終わるとき: プロジェクトを手放し、書き込み担当の thread を返す（Hub が全部捨てられると書き込み担当が終わる）
+    pub fn finish(&self) -> Vec<std::thread::JoinHandle<()>> {
+        let projects = std::mem::take(&mut *self.projects.write().unwrap());
+        for p in &projects {
+            p.hub.close();
+        }
+        drop(projects);
+        std::mem::take(&mut *self.writers.lock().unwrap())
+    }
+
+    /// この人がプロジェクトを作る・外すことができるか
+    fn can_manage(&self, me: &Option<SessionRec>) -> bool {
+        self.collection.is_some()
+            && match &self.access {
+                Access::Otp(_) => me.as_ref().is_some_and(|s| s.admin),
+                _ => true,
+            }
     }
 
     fn auth(&self) -> Option<&Auth> {
@@ -193,6 +232,8 @@ pub struct Hub {
     dir: PathBuf,
     /// 起動ごとの id（つなぎ直しで差分を返してよいかを見分ける。起動し直したら、記録の外で変わったかもしれないので全体を返す）
     epoch: String,
+    /// プロジェクトが外された（つながっている人を切る）
+    closed: tokio::sync::watch::Sender<bool>,
 }
 
 struct Inner {
@@ -405,7 +446,13 @@ impl Hub {
             conflicts_file,
             dir,
             epoch: crate::auth::random_hex(8),
+            closed: tokio::sync::watch::channel(false).0,
         })
+    }
+
+    /// 外したので、つながっている人を切る
+    pub fn close(&self) {
+        let _ = self.closed.send(true);
     }
 
     async fn peer_names(&self) -> Vec<String> {
@@ -425,7 +472,11 @@ pub fn router(server: Arc<Server>) -> Router {
                 Json(json!({ "app": "komenagare", "version": env!("CARGO_PKG_VERSION") }))
             }),
         )
-        .route("/api/projects", get(projects_handler))
+        .route(
+            "/api/projects",
+            get(projects_handler).post(project_add_handler),
+        )
+        .route("/api/projects/remove", post(project_remove_handler))
         .route("/api/login", post(login_handler))
         .route("/api/me", get(me_handler))
         .route("/api/logout", post(logout_handler))
@@ -670,15 +721,205 @@ async fn projects_handler(
         Err(r) => return r,
     };
     let mut projects = vec![];
-    for p in &server.projects {
+    for p in server.projects() {
         projects.push(json!({ "id": p.id, "name": p.name, "peers": p.hub.peer_names().await }));
     }
+    let manage = server.can_manage(&me);
+    let hidden = match (&server.collection, manage) {
+        (Some(c), true) => {
+            let c = c.clone();
+            tokio::task::spawn_blocking(move || c.hidden())
+                .await
+                .unwrap_or_default()
+        }
+        _ => vec![],
+    };
     Json(json!({
         "auth": server.access.label(),
         "me": me.map(|s| json!({ "name": s.name, "admin": s.admin })),
         "projects": projects,
+        "manage": manage,
+        "hidden": hidden,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct ProjectBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    id: String,
+    /// した人の名前（--otp ならセッションの名前を使う）。コミットの作者になる
+    #[serde(default)]
+    by: String,
+}
+
+/// プロジェクトを作る・外すことができるか確かめ、した人の名前を返す
+#[allow(clippy::result_large_err)]
+fn authorize_manage(
+    server: &Server,
+    headers: &HeaderMap,
+    k: Option<&str>,
+    by: &str,
+) -> Result<(Arc<Collection>, String), Response> {
+    let me = authorize(server, headers, k)?;
+    let Some(c) = server.collection.clone() else {
+        return Err(api_error(
+            StatusCode::NOT_FOUND,
+            "プロジェクトを作る・外すのは、まとめフォルダで起動したときだけです（komenagare init --collection）",
+        ));
+    };
+    if !server.can_manage(&me) {
+        return Err(api_error(StatusCode::FORBIDDEN, "管理者だけが使えます"));
+    }
+    let name = match me {
+        Some(s) => s.name,
+        None => {
+            let n: String = by.trim().chars().take(40).collect();
+            if n.is_empty() {
+                "名無し".to_string()
+            } else {
+                n
+            }
+        }
+    };
+    Ok((c, name))
+}
+
+async fn project_add_handler(
+    State(server): State<Arc<Server>>,
+    Query(q): Query<KeyQuery>,
+    headers: HeaderMap,
+    Json(body): Json<ProjectBody>,
+) -> Response {
+    let (c, by) = match authorize_manage(&server, &headers, q.k.as_deref(), &body.by) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let name = body.name.trim().to_string();
+    let srv = server.clone();
+    let r = tokio::task::spawn_blocking(move || -> anyhow::Result<(Arc<Project>, usize)> {
+        let ws = c.add(&name, &by)?;
+        let loaded = load(ws)?;
+        let recovered = loaded.recovered;
+        let mut projects = srv.projects.write().unwrap();
+        let names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+        let (project, writer) = start(loaded, unique_name(&name, &names));
+        let project = Arc::new(project);
+        projects.push(project.clone());
+        srv.writers.lock().unwrap().push(writer);
+        println!("プロジェクトを追加しました: {}（{by}）", project.name);
+        Ok((project, recovered))
+    })
+    .await;
+    match r {
+        Ok(Ok((p, _))) => Json(json!({ "id": p.id, "name": p.name })).into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+async fn project_remove_handler(
+    State(server): State<Arc<Server>>,
+    Query(q): Query<KeyQuery>,
+    headers: HeaderMap,
+    Json(body): Json<ProjectBody>,
+) -> Response {
+    let (c, by) = match authorize_manage(&server, &headers, q.k.as_deref(), &body.by) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(project) = server.project(Some(&body.id)) else {
+        return api_error(StatusCode::NOT_FOUND, "そのプロジェクトはありません");
+    };
+    let id = project.id.clone();
+    let listed = {
+        let c = c.clone();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || c.entries().map(|e| e.iter().any(|x| x.id == id)))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or(false)
+    };
+    if listed {
+        let (c, id, by) = (c.clone(), id.clone(), by.clone());
+        match tokio::task::spawn_blocking(move || c.remove(&id, &by)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return api_error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+            Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        }
+    }
+    server.projects.write().unwrap().retain(|p| p.id != id);
+    project.hub.close();
+    println!("プロジェクトを外しました: {}（{by}）", project.name);
+    Json(json!({})).into_response()
+}
+
+/// 開くプロジェクトの中身（コメント・記録）。読み込むときに、前回書き込めていなかった変更を当てて書き込む
+pub struct Loaded {
+    pub ws: Workspace,
+    pub store: Store,
+    seen: HashSet<String>,
+    rev: u64,
+    history: VecDeque<LogEntry>,
+    /// 前回書き込めていなかったので書き込んだ変更の数
+    pub recovered: usize,
+}
+
+pub fn load(ws: Workspace) -> anyhow::Result<Loaded> {
+    let mut store = Store::new(ws.load_comments()?);
+    let (seen, rev, history) = ws.load_log(HISTORY_KEEP)?;
+    let recovered = ws.recover(&mut store, rev)?;
+    Ok(Loaded {
+        ws,
+        store,
+        seen,
+        rev,
+        history,
+        recovered,
+    })
+}
+
+/// 読み込んだプロジェクトを始める（書き込み担当を起こす）
+pub fn start(l: Loaded, name: String) -> (Project, std::thread::JoinHandle<()>) {
+    let Loaded {
+        ws,
+        store,
+        seen,
+        rev,
+        history,
+        ..
+    } = l;
+    let id = ws.id.clone();
+    let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
+    let dir = ws.dir.clone();
+    // 書き込み担当は自分の控え（今のコメントの写し）に届いた変更を当てていく
+    let copy = Store::new(store.sorted().into_iter().cloned().collect());
+    let (writer, writer_thread) = spawn_writer(ws, copy);
+    let hub = Hub::new(
+        store,
+        rev,
+        seen,
+        history,
+        writer,
+        conflicts,
+        conflicts_file,
+        dir.clone(),
+    );
+    (Project { id, name, dir, hub }, writer_thread)
+}
+
+/// 同じ名前のプロジェクトがあれば番号を付けて見分ける
+pub fn unique_name(base: &str, taken: &[String]) -> String {
+    let mut name = base.to_string();
+    let mut n = 2;
+    while taken.iter().any(|t| t == &name) {
+        name = format!("{base} ({n})");
+        n += 1;
+    }
+    name
 }
 
 #[derive(Deserialize)]
@@ -935,6 +1176,11 @@ async fn connection(
     let mut running: Option<Running> = None;
     let mut shutdown = server.shutdown.subscribe();
     let mut revoked = server.revoked.subscribe();
+    let mut closed = hub.closed.subscribe();
+    // 選んだあとに外されていたら、すぐに知らせて切る
+    if *closed.borrow_and_update() {
+        closed.mark_changed();
+    }
     let mut check = tokio::time::interval(SESSION_CHECK);
     // つないでから hello が届くまで待つ（届かなければ切る）
     let hello_deadline = tokio::time::sleep(HELLO_TIMEOUT);
@@ -953,6 +1199,11 @@ async fn connection(
         let msg = tokio::select! {
             m = stream.next() => match m { Some(Ok(m)) => m, _ => break },
             _ = shutdown.changed() => break,
+            _ = closed.changed() => {
+                let _ = out_tx.send(json!({ "type": "error", "code": "project",
+                    "message": "このプロジェクトはホストで外されました。ほかのプロジェクトを選んでください" }).to_string());
+                break;
+            }
             _ = &mut hello_deadline, if !joined => break,
             _ = &mut idle, if joined => break,
             r = revoked.recv() => {

@@ -59,6 +59,25 @@ impl Workspace {
 
     /// 作業フォルダを作る（komenagare init）。git が使えれば git の管理下にして、最初のコミットをする
     pub fn init(dir: &Path, git_mode: GitMode) -> Result<Workspace> {
+        Self::init_inner(dir, git_mode, None)
+    }
+
+    /// まとめフォルダ（collection.rs）に載っているプロジェクトを開く。作業用の記録（.komenagare。git に入れない）が
+    /// 無ければ（git で複製した直後など）、載っている id で作る。id が違っていれば載っている方に合わせる
+    /// （複製したそれぞれの場所で同じ id になり、共有のリンクが変わらないように）
+    pub fn adopt(dir: &Path, git_mode: GitMode, id: &str) -> Result<Workspace> {
+        if !Self::is_workspace(dir) {
+            return Self::init_inner(dir, git_mode, Some(id));
+        }
+        let ws = Self::open(dir, git_mode)?;
+        if ws.id == id {
+            return Ok(ws);
+        }
+        write_new(&meta_dir(&ws.dir)?.join("id"), id.as_bytes())?;
+        Self::open(dir, git_mode)
+    }
+
+    fn init_inner(dir: &Path, git_mode: GitMode, id: Option<&str>) -> Result<Workspace> {
         if git_mode == GitMode::Require && !git_available() {
             bail!("git が見つかりません（--require-git が指定されています）");
         }
@@ -77,7 +96,8 @@ impl Workspace {
         if !comments.exists() {
             std::fs::write(&comments, "")?;
         }
-        write_new(&meta.join("id"), crate::store::uuid_v7().as_bytes())?;
+        let id = id.map_or_else(crate::store::uuid_v7, str::to_string);
+        write_new(&meta.join("id"), id.as_bytes())?;
 
         // （まだ git の管理下にないこともあるので、--require-git でも止めずに開く）
         let mut ws = Self::open(
@@ -382,30 +402,81 @@ impl Workspace {
     }
 
     fn run_git(&self, args: &[&str]) -> Result<()> {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&self.dir);
-        // フックは動かさない（--no-verify では post-commit などは止まらない。フックの置き場所が作業ツリーの
-        // 中（husky など）だと、--remote git の参加者が checkout で置いたフックが自動のコミットで動いてしまう）
-        cmd.arg("-c")
-            .arg(format!("core.hooksPath={}", no_hooks_path().display()));
-        if self.git_identity {
-            cmd.args([
-                "-c",
-                "user.name=komenagare",
-                "-c",
-                "user.email=komenagare@localhost",
-            ]);
-        }
-        let out = cmd.args(args).output().context("git を実行できません")?;
-        if !out.status.success() {
-            bail!(
-                "git {} に失敗しました: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(())
+        run_git(&self.dir, self.git_identity, args)
     }
+}
+
+fn run_git(dir: &Path, identity: bool, args: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    // フックは動かさない（--no-verify では post-commit などは止まらない。フックの置き場所が作業ツリーの
+    // 中（husky など）だと、--remote git の参加者が checkout で置いたフックが自動のコミットで動いてしまう）
+    cmd.arg("-c")
+        .arg(format!("core.hooksPath={}", no_hooks_path().display()));
+    if identity {
+        cmd.args([
+            "-c",
+            "user.name=komenagare",
+            "-c",
+            "user.email=komenagare@localhost",
+        ]);
+    }
+    let out = cmd.args(args).output().context("git を実行できません")?;
+    if !out.status.success() {
+        bail!(
+            "git {} に失敗しました: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// dir が git の管理下か
+pub fn in_git(dir: &Path) -> bool {
+    git_available() && git_out(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok()
+}
+
+/// dir にリポジトリを作る（git init）
+pub fn git_init(dir: &Path) -> Result<()> {
+    run_git(dir, false, &["init", "-q"])
+}
+
+/// files（dir からの相対）だけをコミットする（変わっていなければ何もしない）。git の管理下でなければ何もしない
+pub fn commit_files(
+    dir: &Path,
+    files: &[&str],
+    message: &str,
+    author: &str,
+    email: &str,
+) -> Result<()> {
+    if !in_git(dir) {
+        return Ok(());
+    }
+    let identity = needs_identity(dir);
+    let _git = git_lock();
+    let mut add = vec!["add", "--"];
+    add.extend_from_slice(files);
+    run_git(dir, identity, &add)?;
+    let mut diff = vec!["diff", "--cached", "--quiet", "--"];
+    diff.extend_from_slice(files);
+    if git_out(dir, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok() && git_out(dir, &diff).is_ok()
+    {
+        return Ok(());
+    }
+    let author = format!("{} <{}>", clean(author), clean(email));
+    let mut args = vec![
+        "commit",
+        "-q",
+        "--no-verify",
+        "-m",
+        message,
+        "--author",
+        &author,
+        "--",
+    ];
+    args.extend_from_slice(files);
+    run_git(dir, identity, &args)
 }
 
 /// git を動かしている間持っておく。1つのリポジトリに複数のプロジェクトを入れると、プロジェクトごとの

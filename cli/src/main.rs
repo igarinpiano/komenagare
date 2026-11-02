@@ -9,6 +9,7 @@
 
 mod auth;
 mod awake;
+mod collection;
 mod files;
 mod firewall;
 mod output;
@@ -126,9 +127,13 @@ enum Cmd {
     /// 作業フォルダを作る（comments.jsonl と履歴の置き場所。git があれば git の管理下にする）
     Init {
         /// 作業フォルダにする場所（複数並べられる）。無ければ作る。git で複製したフォルダ（comments.jsonl がある）なら、
-        /// コメントはそのままで作業用の記録（.komenagare。git には入らない）だけを作る
+        /// コメントはそのままで作業用の記録（.komenagare。git には入らない）だけを作る。
+        /// まとめフォルダの中に作ると、その一覧（komenagare.json）にも載せる
         #[arg(default_value = ".")]
         dirs: Vec<PathBuf>,
+        /// プロジェクトではなく、まとめフォルダ（いくつものプロジェクトを1つのフォルダ・1つの git リポジトリで持つ）を作る
+        #[arg(long, conflicts_with = "import")]
+        collection: bool,
         /// git を使わない（履歴を残さない）
         #[arg(long, conflicts_with = "require_git")]
         no_git: bool,
@@ -349,12 +354,48 @@ async fn run(args: Args) -> Result<()> {
         no_git,
         require_git,
         import: file,
+        collection,
     }) = &args.cmd
     {
+        let mode = git_mode(*no_git, *require_git);
+        if *collection {
+            if dirs.len() > 1 {
+                bail!("まとめフォルダは1つずつ作ってください");
+            }
+            let c = collection::Collection::create(&dirs[0], mode)?;
+            let n = c.entries()?.len();
+            println!(
+                "まとめフォルダを作りました: {}（{}）",
+                c.dir.display(),
+                if n > 0 {
+                    format!("中のプロジェクト {n} 件を載せました")
+                } else {
+                    "プロジェクトはまだありません".to_string()
+                }
+            );
+            let shown = dirs[0].display().to_string();
+            let cd = if dirs[0] == Path::new(".") {
+                String::new()
+            } else {
+                format!("cd {shown} && ")
+            };
+            println!(
+                "プロジェクトを作るには: {cd}komenagare init 名前（ホストの画面からも作れます）"
+            );
+            println!(
+                "始めるには: komenagare{}",
+                if cd.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {shown}")
+                }
+            );
+            return Ok(());
+        }
         if file.is_some() && dirs.len() > 1 {
             bail!("--import は作業フォルダを1つだけ指定したときに使えます");
         }
-        return run_init(dirs, git_mode(*no_git, *require_git), file.as_deref());
+        return run_init(dirs, mode, file.as_deref());
     }
     if let Some(Cmd::Update { check, version }) = &args.cmd {
         let (check, version) = (*check, version.clone());
@@ -384,31 +425,47 @@ async fn run(args: Args) -> Result<()> {
         output::to_file(path)?;
     }
     let mode = git_mode(args.no_git, args.require_git);
-    let mut opened: Vec<Opened> = vec![];
+    // まとめフォルダ（komenagare.json がある）なら、一覧のプロジェクトを全部開く（画面から足したり外したりもできる）
+    let mut coll: Option<collection::Collection> = None;
+    let mut workspaces = vec![];
     for dir in &args.dirs {
-        let ws = Workspace::open(dir, mode)?;
-        if let Some((other, ..)) = opened.iter().find(|(o, ..)| o.id == ws.id) {
+        if !Workspace::is_workspace(dir) && collection::Collection::is_collection(dir) {
+            if coll.is_some() {
+                bail!("まとめフォルダは1つだけ指定できます");
+            }
+            if args.import.is_some() {
+                bail!("--import はプロジェクト（作業フォルダ）を1つだけ指定したときに使えます");
+            }
+            let c = collection::Collection::open(dir, mode)?;
+            workspaces.extend(c.open_projects()?);
+            coll = Some(c);
+        } else {
+            workspaces.push(Workspace::open(dir, mode)?);
+        }
+    }
+    let mut opened: Vec<server::Loaded> = vec![];
+    for ws in workspaces {
+        if let Some(other) = opened.iter().find(|o| o.ws.id == ws.id) {
             bail!(
                 "{} と {} は同じ作業フォルダです（同じフォルダを2回指定したか、作業フォルダをコピーしています）",
-                other.dir.display(),
+                other.ws.dir.display(),
                 ws.dir.display()
             );
         }
-        let mut store = Store::new(ws.load_comments()?);
-        let (seen, rev, history) = ws.load_log(server::HISTORY_KEEP)?;
         // 前に止まったときに書き込めていなかった変更（記録にはある）を当てて書き込む
-        let recovered = ws.recover(&mut store, rev)?;
-        if recovered > 0 {
+        let mut loaded = server::load(ws)?;
+        if loaded.recovered > 0 {
             println!(
-                "{}: 前回書き込めていなかった変更 {recovered} 件を書き込みました",
-                ws.dir.display()
+                "{}: 前回書き込めていなかった変更 {} 件を書き込みました",
+                loaded.ws.dir.display(),
+                loaded.recovered
             );
         }
         if let Some(file) = &args.import {
-            let n = import(&ws, &mut store, file)?;
+            let n = import(&loaded.ws, &mut loaded.store, file)?;
             println!("{} から {} 件のコメントを取り込みました", file.display(), n);
         }
-        opened.push((ws, store, seen, rev, history));
+        opened.push(loaded);
     }
 
     // komenagare 自身の新しい版があるか（Web アプリの用意と並べて確かめる）
@@ -444,52 +501,31 @@ async fn run(args: Args) -> Result<()> {
         server::Access::Token(args.token.clone().unwrap_or_else(random_token))
     };
 
-    let mut projects = vec![];
-    let mut writers = vec![];
+    let mut projects: Vec<(server::Project, std::thread::JoinHandle<()>)> = vec![];
     let mut lines = vec![];
-    for (ws, store, seen, rev, history) in opened {
-        let base = ws
-            .dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ws.dir.display().to_string());
-        // 同じ名前のフォルダがあれば番号を付けて見分ける
-        let mut name = base.clone();
-        let mut n = 2;
-        while projects.iter().any(|p: &server::Project| p.name == name) {
-            name = format!("{base} ({n})");
-            n += 1;
-        }
+    for l in opened {
+        let base =
+            l.ws.dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| l.ws.dir.display().to_string());
+        let taken: Vec<String> = projects.iter().map(|(p, _)| p.name.clone()).collect();
+        let name = server::unique_name(&base, &taken);
         lines.push(format!(
             "{name}: {}（コメント {} 件、履歴: {}）",
-            ws.dir.display(),
-            store.len(),
-            if ws.git { "git" } else { "なし" }
+            l.ws.dir.display(),
+            l.store.len(),
+            if l.ws.git { "git" } else { "なし" }
         ));
-        let id = ws.id.clone();
-        let (conflicts, conflicts_file) = (ws.load_conflicts(), ws.conflicts_path());
-        let dir = ws.dir.clone();
-        // 書き込み担当は自分の控え（今のコメントの写し）に届いた変更を当てていく
-        let copy = Store::new(store.sorted().into_iter().cloned().collect());
-        let (writer, writer_thread) = server::spawn_writer(ws, copy);
-        writers.push(writer_thread);
-        let hub = server::Hub::new(
-            store,
-            rev,
-            seen,
-            history,
-            writer,
-            conflicts,
-            conflicts_file,
-            dir.clone(),
-        );
-        projects.push(server::Project { id, name, dir, hub });
+        projects.push(server::start(l, name));
     }
     let remote = args
         .remote
         .map(|mode| remote::Remote::new(mode, &args.remote_users));
+    let coll_dir = coll.as_ref().map(|c| c.dir.clone());
     let server = server::Server::new(
         projects,
+        coll,
         access,
         remote,
         match web_source {
@@ -558,7 +594,18 @@ async fn run(args: Args) -> Result<()> {
         open_query
     );
     println!("komenagare {}", env!("CARGO_PKG_VERSION"));
-    if lines.len() == 1 {
+    if let Some(d) = &coll_dir {
+        println!(
+            "  まとめフォルダ: {}（画面の「プロジェクト」から作る・外すことができます: {}）",
+            d.display(),
+            if matches!(server.access, server::Access::Otp(_)) {
+                "管理者"
+            } else {
+                "入れる人みんな"
+            }
+        );
+    }
+    if lines.len() == 1 && coll_dir.is_none() {
         let l = &lines[0];
         println!(
             "  作業フォルダ: {}",
@@ -675,6 +722,7 @@ async fn run(args: Args) -> Result<()> {
     }
 
     let stop = server.shutdown.clone();
+    let srv = server.clone();
     // 終わるときに公開 URL の控えを消すため、記録の置き場所を覚えておく
     let otp_dir = match &server.access {
         server::Access::Otp(a) => Some(a.dir().to_path_buf()),
@@ -695,6 +743,8 @@ async fn run(args: Args) -> Result<()> {
         let _ = tunnel::write_url_file(dir, None);
     }
     // Hub が持つ送り口が全部閉じると書き込み担当が終わる
+    let writers = srv.finish();
+    drop(srv);
     tokio::task::spawn_blocking(move || {
         for w in writers {
             let _ = w.join();
@@ -703,15 +753,6 @@ async fn run(args: Args) -> Result<()> {
     .await?;
     Ok(())
 }
-
-/// 読み込んだ作業フォルダ（作業フォルダ・コメント・適用済みの変更セット・通し番号・最近の変更）
-type Opened = (
-    Workspace,
-    Store,
-    std::collections::HashSet<String>,
-    u64,
-    std::collections::VecDeque<LogEntry>,
-);
 
 /// 終わる合図を待つ。Ctrl+C（SIGINT）、systemd などからの SIGTERM、端末が閉じられたとき（SIGHUP）、
 /// Windows ではウィンドウを閉じたとき・ログオフ・シャットダウン（Ctrl+Break も）。
@@ -900,17 +941,52 @@ fn git_mode(no_git: bool, require_git: bool) -> GitMode {
 
 /// komenagare init
 fn run_init(dirs: &[PathBuf], git_mode: GitMode, file: Option<&Path>) -> Result<()> {
+    let mut in_collection = None;
     for dir in dirs {
-        let ws = Workspace::init(dir, git_mode)?;
+        if collection::Collection::is_collection(dir) {
+            bail!(
+                "{} はまとめフォルダです。プロジェクトは、その中に komenagare init 名前 で作ってください",
+                dir.display()
+            );
+        }
+        // まとめフォルダの直下に作るなら、まとめフォルダの一覧にも載せる
+        let parent = {
+            let abs = if dir.is_absolute() {
+                dir.clone()
+            } else {
+                std::env::current_dir()?.join(dir)
+            };
+            let name = abs.components().next_back().and_then(|c| match c {
+                std::path::Component::Normal(n) => n.to_str().map(str::to_string),
+                _ => None,
+            });
+            abs.parent()
+                .filter(|p| collection::Collection::is_collection(p))
+                .zip(name)
+                .map(|(p, n)| (p.to_path_buf(), n))
+        };
+        let ws = match &parent {
+            Some((p, name)) => {
+                let c = collection::Collection::open(p, git_mode)?;
+                in_collection = Some(c.dir.clone());
+                c.add(name, "komenagare")?
+            }
+            None => Workspace::init(dir, git_mode)?,
+        };
         let n = ws.load_comments()?.len();
         println!(
-            "作業フォルダを作りました: {}（履歴: {}{}）",
+            "作業フォルダを作りました: {}（履歴: {}{}{}）",
             ws.dir.display(),
             if ws.git { "git" } else { "なし" },
             if n > 0 {
                 format!("・コメント {n} 件")
             } else {
                 String::new()
+            },
+            if parent.is_some() {
+                "・まとめフォルダの一覧に載せました"
+            } else {
+                ""
             }
         );
         if let Some(file) = file {
@@ -918,6 +994,17 @@ fn run_init(dirs: &[PathBuf], git_mode: GitMode, file: Option<&Path>) -> Result<
             let n = import(&ws, &mut store, file)?;
             println!("{} から {} 件のコメントを取り込みました", file.display(), n);
         }
+    }
+    if let Some(c) = in_collection {
+        let here = std::env::current_dir()
+            .ok()
+            .and_then(|d| d.canonicalize().ok());
+        if here.as_deref() == Some(c.as_path()) {
+            println!("始めるには: komenagare");
+        } else {
+            println!("始めるには: komenagare {}", c.display());
+        }
+        return Ok(());
     }
     let args: Vec<String> = dirs
         .iter()
