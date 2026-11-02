@@ -418,3 +418,65 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   html.phone-landscape .side{margin:6px}
   html.phone-landscape .m-resize{display:none}
 }
+
+/* ---------- タイムマシン（右から目盛りを出して、画面をその分押し縮める） ---------- */
+:root{--tm-w:96px}
+@media (max-width: 980px){ :root{--tm-w:58px} }
+body{transition:padding-right .35s ease}
+body.tm-on{padding-right:var(--tm-w)}
+.tm-rail{position:fixed;top:0;right:0;bottom:0;width:var(--tm-w);z-index:40;display:flex;flex-direction:column;align-items:stretch;
+  background:linear-gradient(to left,rgba(16,16,20,.97),rgba(22,22,28,.92));border-left:1px solid #2c2c34;
+  transform:translateX(100%);transition:transform .35s ease;outline:none;touch-action:none;user-select:none;-webkit-user-select:none}
+body.tm-on .tm-rail{transform:none;box-shadow:-8px 0 24px rgba(0,0,0,.35)}
+.tm-rail:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
+.tm-arrow{flex:none;margin:6px auto;width:30px;height:26px;padding:0;border-radius:999px;font-size:11px;line-height:1;color:#ddd;background:#2a2a32;border-color:#3d3d48}
+.tm-arrow:disabled{opacity:.3}
+.tm-track{position:relative;flex:1;min-height:0;margin:10px 0}
+.tm-ticks{position:absolute;inset:0;cursor:pointer}
+.tm-tick{position:absolute;right:10px;width:9px;height:1px;background:#777;pointer-events:none}
+.tm-tick.long{width:20px;height:2px;margin-top:-.5px;background:#d0d0d6}
+.tm-tick.now{background:#ff5a5a}
+.tm-label{position:absolute;right:35px;transform:translateY(-50%);font-size:10px;line-height:1;color:#a8a8b2;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+.tm-label.now{color:#ff6b6b;font-weight:700}
+.tm-cur{position:absolute;right:4px;width:30px;height:3px;margin-top:-1.5px;border-radius:2px;background:var(--accent2);box-shadow:0 0 8px rgba(255,179,0,.7);pointer-events:none;transition:top .12s ease}
+.tm-hov{position:absolute;right:6px;width:26px;height:1px;background:#fff;pointer-events:none}
+.tm-tip{position:absolute;right:calc(100% + 8px);transform:translateY(-50%);display:flex;flex-direction:column;gap:1px;max-width:min(360px,60vw);
+  padding:5px 10px;border-radius:7px;background:rgba(14,14,18,.92);border:1px solid #3a3a46;box-shadow:0 6px 20px rgba(0,0,0,.5);pointer-events:none;white-space:nowrap}
+.tm-tip b{font-size:12.5px}
+.tm-tip span{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+/* 指でなぞっている間の日付。後ろをぼかし、右（目盛りの側）から左へ薄くする */
+.tm-scrub{position:fixed;top:0;bottom:0;right:var(--tm-w);width:min(80vw,440px);z-index:39;pointer-events:none;opacity:0;transition:opacity .2s ease}
+.tm-scrub.on{opacity:1}
+.tm-scrub::before{content:"";position:absolute;inset:0;backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);
+  background:linear-gradient(to left,rgba(8,8,12,.78),rgba(8,8,12,.35) 60%,rgba(8,8,12,0));
+  -webkit-mask-image:linear-gradient(to left,#000 30%,transparent);mask-image:linear-gradient(to left,#000 30%,transparent)}
+.tm-scrub-text{position:absolute;right:14px;max-width:calc(100% - 28px);text-align:right;text-shadow:0 1px 6px rgba(0,0,0,.8)}
+#tmScrubDate{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+#tmScrubSub{font-size:13px;color:#c8c8d0;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* メニューバー：タイムマシンの間は、編集の操作の代わりに、見ている時点・前後・復元・終了を出す */
+body.tm-on .topbar{background:linear-gradient(#1d1708,#0b0b0b);border-bottom-color:#5a4520}
+body.tm-on .tb-edit{display:none}
+.tm-bar{align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:nowrap}
+.tm-title{font-weight:700;color:#ffd28a;white-space:nowrap}
+.tm-at{display:flex;flex-direction:column;min-width:0;line-height:1.25}
+.tm-at b{font-size:13px;white-space:nowrap}
+#tmWhat{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:34ch}
+.tm-pos{font-size:11.5px;color:var(--muted);white-space:nowrap}
+.tm-step{display:flex;gap:4px}
+.tm-step button{padding:4px 9px;font-size:11px}
+#tmBtn.on{color:#ffd28a;border-color:#7a5420;background:#2a2110}
+/* 過去を見ている間は書き込む場所を隠す（再生・タイムライン・リスト・書き出しはそのまま） */
+body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row .del,
+body.tm-on #tlNew,body.tm-on #tlEdit,body.tm-on #tlDelete,body.tm-on #tlUndo,body.tm-on #tlRedo,body.tm-on .tl-bar > .tl-sep:nth-of-type(-n+2){display:none}
+@media (max-width: 980px){
+  .tm-tick{right:7px;width:7px}
+  .tm-tick.long{width:14px}
+  .tm-label{right:23px;font-size:9px}
+  .tm-cur{width:22px;right:3px}
+  .tm-hov{width:18px;right:4px}
+  .tm-arrow{width:26px;height:24px}
+  .tm-bar{flex:none;gap:6px}
+  #tmWhat{max-width:20ch}
+  .tm-pos{display:none}
+}
+@media (prefers-reduced-motion: reduce){ body,.tm-rail,.tm-cur,.tm-scrub{transition:none} }

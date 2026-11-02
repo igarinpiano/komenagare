@@ -25,7 +25,7 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":8,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき),
+//!   {"type":"hello","protocol":9,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき),
 //!    "since":N,"epoch":"…"(つなぎ直しのとき)}
 //!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
 //!     since・epoch は、前の接続で最後に受け取った通し番号と、そのときのホストの起動ごとの id。同じ起動のホストで、
@@ -39,6 +39,9 @@
 //!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
 //!   {"type":"run","id":"…","line":"git status"}              ホストの作業フォルダでコマンドを打つ（--remote。許された人だけ。1つずつ）
 //!   {"type":"run_stop","id":"…"}                             動いているコマンドを止める
+//!   {"type":"tm_log"}                                        タイムマシン: comments.jsonl を変えたコミットの一覧を求める（--remote で許された人だけ）
+//!   {"type":"tm_show","commit":"…"}                          タイムマシン: そのコミットのときのコメントを求める
+//!   {"type":"tm_restore","commit":"…"}                       タイムマシン: そのコミットのときの中身に戻す（今の中身からの変更として記録・コミットし、全員に配る）
 //! サーバー → クライアント
 //!   {"type":"snapshot","rev":N,"epoch":"…","you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
 //!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類。
@@ -55,6 +58,10 @@
 //!   {"type":"peers","names":[...],"peers":[{"id","name","client","color"}]} 参加者（color は色の番号。今いる人の中で空いている一番小さい番号）
 //!   {"type":"run_out","id":"…","data":"出力","err":bool}       コマンドの出力（err は標準エラー出力）
 //!   {"type":"run_end","id":"…","code":N|null,"message":"…"|null} コマンドが終わった（message は止めた理由・断った理由）
+//!   {"type":"tm_log","commits":[{"id","time"(ミリ秒),"author","subject"},...]} コミットの一覧（新しい順）
+//!   {"type":"tm_show","commit":"…","comments":[...]}          そのコミットのときのコメント
+//!   {"type":"tm_restore","commit":"…","rev":N|null,"count":N} 戻した（rev は記録した通し番号。変わらなければ null）。変更は change でも届く
+//!     tm_* が失敗したときは "error":"理由" が付く
 //!   {"type":"error","code":"protocol"|"auth"|"project","message":…} code があるものは送ったあと切る
 //! 同じ変更セットを何度送っても1回だけ適用する（id で判定）ので、送り直しても安全。
 
@@ -80,7 +87,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 8;
+pub const PROTOCOL: u32 = 9;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -624,6 +631,80 @@ impl Hub {
             log
         });
         let _ = self.writer.send(WriterMsg::External(log));
+    }
+
+    /// 当てた変更を記録して（.komenagare/log.jsonl と最近の記録）、書き込み担当に渡し、ほかの人に配る
+    /// （from の接続には配らない。0 なら全員に）。通し番号を返す
+    fn record(
+        &self,
+        inner: &mut Inner,
+        applied: &Change,
+        name: &str,
+        email: &str,
+        message: String,
+        from: u64,
+    ) -> u64 {
+        inner.rev += 1;
+        let rev = inner.rev;
+        let job_time = now_ms();
+        let log = LogEntry {
+            rev,
+            time: job_time,
+            author: name.to_string(),
+            change: applied.clone(),
+        };
+        inner.history.push_back(log.clone());
+        if inner.history.len() > HISTORY_KEEP {
+            inner.history.pop_front();
+        }
+        // 受け取ったと返す前に記録へ書き足す（comments.jsonl と git への書き込みは後から。
+        // その前にホストが止まっても、次に起動したときに記録から当て直す）
+        if let Err(e) = crate::workspace::append_log_in(&self.dir, &log) {
+            eprintln!("変更の記録に失敗しました: {e:#}");
+        }
+        let job = Job {
+            message,
+            author: name.to_string(),
+            email: email.to_string(),
+            log,
+        };
+        let _ = self.writer.send(WriterMsg::Job(job));
+        let msg =
+            json!({ "type": "change", "rev": rev, "time": job_time, "author": name, "change": applied }).to_string();
+        let _ = self.tx.send((from, msg.into()));
+        rev
+    }
+
+    /// タイムマシン: 今の中身を、コミット snap のときの中身（target）に戻す。git reset ではなく、今の中身からの
+    /// 変更として記録してコミットし、全員に配る（頼んだ人にも）。通し番号と op の数を返す（同じなら None）
+    async fn restore(
+        &self,
+        target: Vec<Comment>,
+        snap: &crate::workspace::Snapshot,
+        name: &str,
+        email: &str,
+    ) -> Option<(u64, usize)> {
+        let mut inner = self.inner.lock().await;
+        let ops = inner.store.ops_to(&Store::new(target));
+        if ops.is_empty() {
+            return None;
+        }
+        let change = Change {
+            id: crate::store::uuid_v7(),
+            ops,
+        };
+        let applied = inner.store.apply(&change, true).applied?;
+        inner.seen.insert(change.id.clone());
+        let message = format!(
+            "{name}: {} の状態に復元（{}）\n\n復元元: {} {}",
+            &snap.id[..7],
+            summary(&applied),
+            snap.id,
+            snap.subject
+        );
+        let n = applied.ops.len();
+        let rev = self.record(&mut inner, &applied, name, email, message, 0);
+        Some((rev, n))
     }
 
     /// ホストの外で comments.jsonl が変わっていないか、書き込み担当に確かめさせる
@@ -1420,6 +1501,8 @@ async fn connection(
     // リモートのコマンドを打てるか（hello で決める）と、動いているもの
     let mut can_run = false;
     let mut running: Option<Running> = None;
+    // タイムマシン（tm_*）で git を動かすのは1つずつ
+    let tm_gate = Arc::new(tokio::sync::Semaphore::new(TM_PARALLEL));
     let mut shutdown = server.shutdown.subscribe();
     let mut revoked = server.revoked.subscribe();
     let mut closed = hub.closed.subscribe();
@@ -1688,6 +1771,17 @@ async fn connection(
                     }
                 }
             }
+            Some(k @ ("tm_log" | "tm_show" | "tm_restore")) => {
+                // コマンドを打てる人だけ（git の履歴を読む・戻す）
+                if !can_run {
+                    let _ = out_tx.send(
+                        json!({ "type": k, "commit": v["commit"], "error": "このホストでは、あなたはタイムマシンを使えません" })
+                            .to_string(),
+                    );
+                    continue;
+                }
+                time_machine(k, &v, &hub, &dir, &name, &email, &out_tx, &tm_gate);
+            }
             Some("history") => {
                 let limit = v["limit"].as_u64().unwrap_or(200).min(HISTORY_KEEP as u64) as usize;
                 let inner = hub.inner.lock().await;
@@ -1747,50 +1841,104 @@ async fn apply_change(hub: &Hub, conn: u64, name: &str, email: &str, change: Cha
         .map(|id| json!({ "id": id, "comment": inner.store.get(id) }))
         .collect();
     if let Some(applied) = &r.applied {
-        inner.rev += 1;
-        let rev = inner.rev;
-        let (mut add, mut upd, mut del) = (0, 0, 0);
-        for op in &applied.ops {
-            match op {
-                crate::store::Op::Add { .. } => add += 1,
-                crate::store::Op::Update { .. } => upd += 1,
-                crate::store::Op::Delete { .. } => del += 1,
-            }
-        }
-        let summary = [("追加", add), ("変更", upd), ("削除", del)]
-            .iter()
-            .filter(|(_, n)| *n > 0)
-            .map(|(k, n)| format!("{k} {n}"))
-            .collect::<Vec<_>>()
-            .join("・");
-        let job_time = now_ms();
-        let log = LogEntry {
-            rev,
-            time: job_time,
-            author: name.to_string(),
-            change: applied.clone(),
-        };
-        inner.history.push_back(log.clone());
-        if inner.history.len() > HISTORY_KEEP {
-            inner.history.pop_front();
-        }
-        // 受け取ったと返す前に記録へ書き足す（comments.jsonl と git への書き込みは後から。
-        // その前にホストが止まっても、次に起動したときに記録から当て直す）
-        if let Err(e) = crate::workspace::append_log_in(&hub.dir, &log) {
-            eprintln!("変更の記録に失敗しました: {e:#}");
-        }
-        let job = Job {
-            message: format!("{name}: {summary}"),
-            author: name.to_string(),
-            email: email.to_string(),
-            log,
-        };
-        let _ = hub.writer.send(WriterMsg::Job(job));
-        let msg =
-            json!({ "type": "change", "rev": rev, "time": job_time, "author": name, "change": applied }).to_string();
-        let _ = hub.tx.send((conn, msg.into()));
+        let message = format!("{name}: {}", summary(applied));
+        hub.record(&mut inner, applied, name, email, message, conn);
     }
     json!({ "type": "ack", "id": change.id, "rev": inner.rev, "dup": false, "conflicts": r.conflicts, "fix": fix }).to_string()
+}
+
+/// 変更セットの中身の数（「追加 1・変更 2」）
+fn summary(change: &Change) -> String {
+    let (mut add, mut upd, mut del) = (0, 0, 0);
+    for op in &change.ops {
+        match op {
+            crate::store::Op::Add { .. } => add += 1,
+            crate::store::Op::Update { .. } => upd += 1,
+            crate::store::Op::Delete { .. } => del += 1,
+        }
+    }
+    [("追加", add), ("変更", upd), ("削除", del)]
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect::<Vec<_>>()
+        .join("・")
+}
+
+/// タイムマシンの1つの接続から同時に動かす git の数
+const TM_PARALLEL: usize = 1;
+/// タイムマシンで返すコミットの数の上限（新しいものから）
+const TM_LOG_MAX: usize = 5000;
+
+/// タイムマシンの求め（tm_log・tm_show・tm_restore）に答える。git は別の thread で動かし、
+/// 1つの接続からは1つずつ（速く動かしても、ホストで git がたくさん動かないように）
+#[allow(clippy::too_many_arguments)]
+fn time_machine(
+    kind: &str,
+    v: &Value,
+    hub: &Arc<Hub>,
+    dir: &std::path::Path,
+    name: &str,
+    email: &str,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    gate: &Arc<tokio::sync::Semaphore>,
+) {
+    let kind = kind.to_string();
+    let commit = v["commit"].as_str().unwrap_or("").to_string();
+    let (hub, dir, name, email, out, gate) = (
+        hub.clone(),
+        dir.to_path_buf(),
+        name.to_string(),
+        email.to_string(),
+        out_tx.clone(),
+        gate.clone(),
+    );
+    tokio::spawn(async move {
+        let Ok(_permit) = gate.acquire().await else {
+            return;
+        };
+        let reply = match kind.as_str() {
+            "tm_log" => {
+                match tokio::task::spawn_blocking(move || {
+                    crate::workspace::snapshots(&dir, TM_LOG_MAX)
+                })
+                .await
+                {
+                    Ok(Ok(list)) => json!({ "type": "tm_log", "commits": list }),
+                    Ok(Err(e)) => json!({ "type": "tm_log", "error": format!("{e:#}") }),
+                    Err(_) => json!({ "type": "tm_log", "error": "履歴を読めませんでした" }),
+                }
+            }
+            _ => {
+                let c = commit.clone();
+                let read =
+                    tokio::task::spawn_blocking(move || crate::workspace::comments_at(&dir, &c))
+                        .await
+                        .map_err(|_| anyhow::anyhow!("履歴を読めませんでした"))
+                        .and_then(|r| r);
+                match (kind.as_str(), read) {
+                    (_, Err(e)) => {
+                        json!({ "type": kind, "commit": commit, "error": format!("{e:#}") })
+                    }
+                    ("tm_show", Ok((_, comments))) => {
+                        json!({ "type": "tm_show", "commit": commit, "comments": comments })
+                    }
+                    (_, Ok((snap, comments))) => {
+                        let done = hub.restore(comments, &snap, &name, &email).await;
+                        println!(
+                            "[タイムマシン] {} が {} の状態に復元しました（{} 件）",
+                            remote::printable(&name),
+                            &snap.id[..7],
+                            done.map_or(0, |d| d.1)
+                        );
+                        json!({ "type": "tm_restore", "commit": commit,
+                            "rev": done.map(|d| d.0), "count": done.map_or(0, |d| d.1) })
+                    }
+                }
+            }
+        };
+        let _ = out.send(reply.to_string());
+    });
 }
 
 /// 通し番号 since より後の変更（古い順）。最近の記録に全部残っていなければ None（全体を送る）
@@ -2082,6 +2230,107 @@ mod tests {
         // 取り込み（通し番号 0）が混ざっていても数え違えない
         inner.history.push_front(entry(0));
         assert_eq!(revs(changes_since(&inner, 7)), Some(vec![8, 9, 10]));
+    }
+
+    #[tokio::test]
+    async fn time_machine_restores_as_a_new_commit() {
+        use crate::store::{Fields, Op};
+        use crate::workspace::GitMode;
+        if !crate::workspace::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(tmp.path(), GitMode::Require).unwrap();
+        let dir = ws.dir.clone();
+        let (project, writer) = start(load(ws).unwrap(), "p".into());
+        let hub = project.hub.clone();
+        let mut rx = hub.tx.subscribe();
+        let add = |id: &str, text: &str| Op::Add {
+            id: id.into(),
+            after: Fields {
+                t: Some(1.0),
+                cmd: Some("".into()),
+                text: Some(text.into()),
+            },
+        };
+        let ch = |id: &str, ops| Change { id: id.into(), ops };
+        let wait_commits = |n: usize| {
+            for _ in 0..100 {
+                if crate::workspace::snapshots(&dir, 100).unwrap().len() >= n {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("コミットされません");
+        };
+        let base = crate::workspace::snapshots(&dir, 100).unwrap().len();
+        apply_change(&hub, 1, "たろう", "t@k", ch("c1", vec![add("a", "あ")])).await;
+        wait_commits(base + 1);
+        let past = crate::workspace::snapshots(&dir, 100).unwrap()[0].clone();
+        apply_change(&hub, 1, "たろう", "t@k", ch("c2", vec![add("b", "い")])).await;
+        apply_change(
+            &hub,
+            1,
+            "たろう",
+            "t@k",
+            ch(
+                "c3",
+                vec![Op::Update {
+                    id: "a".into(),
+                    before: Fields {
+                        text: Some("あ".into()),
+                        ..Default::default()
+                    },
+                    after: Fields {
+                        text: Some("う".into()),
+                        ..Default::default()
+                    },
+                }],
+            ),
+        )
+        .await;
+        wait_commits(base + 2);
+        let (snap, comments) = crate::workspace::comments_at(&dir, &past.id).unwrap();
+        let (rev, n) = hub
+            .restore(comments.clone(), &snap, "はなこ", "h@k")
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        // 頼んだ人も含めて全員に配る
+        let mut got = None;
+        while let Ok((from, m)) = rx.try_recv() {
+            if m.contains("\"author\":\"はなこ\"") {
+                got = Some((from, m));
+            }
+        }
+        let (from, m) = got.expect("復元の変更が配られません");
+        assert_eq!(from, 0);
+        assert!(m.contains(&format!("\"rev\":{rev}")));
+        // 同じ中身なら何もしない
+        assert!(hub
+            .restore(comments, &snap, "はなこ", "h@k")
+            .await
+            .is_none());
+        drop(rx);
+        drop(hub);
+        drop(project);
+        tokio::task::spawn_blocking(move || writer.join().unwrap())
+            .await
+            .unwrap();
+        // 履歴は消さずに、戻したコミットを足す
+        let list = crate::workspace::snapshots(&dir, 100).unwrap();
+        assert!(list.iter().any(|c| c.id == past.id));
+        assert!(
+            list[0]
+                .subject
+                .starts_with(&format!("はなこ: {} の状態に復元", &past.id[..7])),
+            "{list:?}"
+        );
+        let now = std::fs::read_to_string(dir.join(crate::workspace::COMMENTS_FILE)).unwrap();
+        assert_eq!(
+            now,
+            "{\"id\":\"a\",\"t\":1.0,\"cmd\":\"\",\"text\":\"あ\"}\n"
+        );
     }
 
     #[test]

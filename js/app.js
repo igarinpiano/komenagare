@@ -26,13 +26,29 @@ const store = new CommentStore();
 // 共同編集で自分の様子（再生位置・選択・カーソル）を送るための状態（送る処理は「ほかの参加者の様子」）
 const presence = { ready: false, timer: 0, last: 0, sent: '', cursor: null, dirty: false, dlgAt: 0, dlgRows: new Map() };
 const state = {
-  get comments(){ return store.comments; }, layouts: [],
+  get comments(){ return shown().comments; }, layouts: [],
   changeLog: [], // この画面で行った変更（変更履歴の表示用。新しいものが後ろ）
   collab: !!document.querySelector('meta[name="komenagare-host"]'), // komenagare CLI から配信されているか（共同編集）
   fileHandle: null, fileName: null, dirty: false,
   videoName: null, videoUrl: null, videoLoaded: false, needsDraw: true, needsRelayout: false, version: 0,
   stage: STAGE, // コメントを描く範囲（基準ステージの単位。updateStage で動画に合わせる）
 };
+// タイムマシン（共同編集で、ホストの --remote で許された人が、git の履歴をさかのぼって見る・戻す）。
+// 過去を見ている間は view にそのときのコメントを入れて、画面（リスト・タイムライン・描画・書き出し）はそちらを出す。
+// store は今のコメントのまま（ほかの人の変更も届き続ける）。編集はできない（tmLocked）
+const tm = {
+  on: false, list: [], idx: -1, // list: 古い順のコミット（{ id, time, author, subject }）。最後は「今」（id: null）。idx: 見ている位置
+  view: null, cache: new Map(), want: null, timer: 0, refresh: 0, loading: false, restoring: false,
+  hover: -1, scrub: null,
+};
+// 画面に出しているコメント（タイムマシンで過去を見ているときはそのときのもの）
+const shown = () => tm.view || store;
+// タイムマシンで見ている間は編集させない（true なら止める）
+function tmLocked(){
+  if (!tm.on) return false;
+  toast('タイムマシンで見ている間は編集できません（「終了」で今に戻ります）', { type:'error' });
+  return true;
+}
 
 /* =====================================================================
    ユーティリティ
@@ -160,6 +176,7 @@ function updateOps(changes){
 // conflicts に配列を渡すと、適用できなかった op（衝突）をそこに入れる
 function commitOps(ops, { undoable = true, save = true, atomic = false, send = true, record = true, conflicts: out = null } = {}){
   if (!ops.length) return null;
+  if (send && tmLocked()) return null;
   const { applied, conflicts } = store.apply({ id: uuidv7(), ops }, { atomic });
   if (conflicts.length){ if (out) out.push(...conflicts); else console.warn('変更の衝突', conflicts); }
   if (!applied) return null;
@@ -221,7 +238,7 @@ function addComments(items, opts = {}){
 }
 function commentsChanged(){
   state.version++;
-  if (TL.sel.size) for (const id of [...TL.sel]) if (!store.has(id)) TL.sel.delete(id);
+  if (TL.sel.size) for (const id of [...TL.sel]) if (!shown().has(id)) TL.sel.delete(id);
   relayout();
   renderList();
   drawDensity();
@@ -540,6 +557,7 @@ $('#btnPost').onclick = postComment;
 
 // 再生位置にコメントを投稿する（成功したら true）
 function postAtCurrentTime(text, cmd){
+  if (tmLocked()) return false;
   if (!state.videoLoaded){ toast('先に動画を開いてください'); return false; }
   const c = makeComment(video.currentTime, cmd, text, true);
   if (store.hasKey(c.key)){ toast('同じ時刻に同じコメントが既にあります'); return false; }
@@ -1846,6 +1864,7 @@ function pushUndo(ch){
   updateUndoUI();
 }
 function applyHistory(ch){
+  if (tmLocked()) return false;
   const { applied, conflicts } = store.apply(ch, { atomic: true });
   if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return false; }
   if (applied){ recordChange(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
@@ -1867,6 +1886,7 @@ function redo(){
 }
 // 特定の変更を打ち消す変更を新しく積む（git revert）
 function revertChange(ch){
+  if (tmLocked()) return null;
   const { applied, conflicts } = store.apply(invertChange(ch), { atomic: true });
   if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return null; }
   if (applied){ pushUndo(applied); recordChange(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
@@ -2101,7 +2121,7 @@ function tlDraw(){
   const drawnSel = new Set();
   for (let i = lo; i < hi; i++){ const c = cs[i]; if (TL.sel.has(c.id)) drawnSel.add(c.id); drawOne(c); }
   // ドラッグ中は時刻だけ一時的に変えている（並び順はそのまま）ので、選んでいるものは必ず描く
-  for (const id of TL.sel) if (!drawnSel.has(id)){ const c = store.get(id); if (c) drawOne(c); }
+  for (const id of TL.sel) if (!drawnSel.has(id)){ const c = shown().get(id); if (c) drawOne(c); }
   if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
   tlDrawPeerSel(g, t1);
   const md = TL.drag;
@@ -2500,7 +2520,7 @@ TL.main.addEventListener('pointerdown', (e) => {
     return;
   }
   // Shift＋横にドラッグ（空いている所から）: その長さのコメントを、その段（上・流・下）に作る
-  if (e.shiftKey && !hit && p.x >= TL_HEAD){
+  if (e.shiftKey && !hit && p.x >= TL_HEAD && !tm.on){
     const gi = tlGroupAt(p.y);
     if (gi != null){ TL.drag = { ...base, type:'create', ta: xt(p.x), gi, lane: Math.max(0, Math.floor((p.y - laneTop(gi, 0)) / laneH())) }; return; }
   }
@@ -2516,7 +2536,8 @@ TL.main.addEventListener('pointerdown', (e) => {
     const moving = hit.zone === 'move' ? tlSelected() : [c];
     // Option（Alt）＋ドラッグ: 選んでいるコメントを複製して、ドラッグした所に置く（元はそのまま）
     const copy = e.altKey && hit.zone === 'move';
-    TL.drag = { ...base, type: hit.zone, c, orig: new Map(moving.map(x => [x, { t: x.t, cmd: x.cmd }])), copy };
+    // タイムマシンで見ている間は選ぶだけ（動かさない）
+    TL.drag = tm.on ? { ...base, type:'none' } : { ...base, type: hit.zone, c, orig: new Map(moving.map(x => [x, { t: x.t, cmd: x.cmd }])), copy };
     return;
   }
   TL.drag = { ...base, type:'pan', t0: TL.t0, sy: TL.scrollY };
@@ -2791,6 +2812,7 @@ function edSync(){
   $('#edSpeed').textContent = o.pos === 'naka' ? `流れる速さ ×${((DEFAULT_DURATION + NAKA_LEAD) / (d + NAKA_LEAD)).toFixed(2)}` : '';
 }
 function openEditDialog(c){
+  if (tmLocked()) return;
   editTarget = c;
   editBase = pickFields(c);
   $('#edTitle').textContent = 'コメントを編集';
@@ -2803,6 +2825,7 @@ function openEditDialog(c){
   $('#edText').focus();
 }
 function openNewDialog(t, pos, dur){
+  if (tmLocked()) return;
   editTarget = null;
   $('#edTitle').textContent = '新しいコメント';
   $('#edText').value = '';
@@ -2899,6 +2922,7 @@ function parseVimLine(ln){
   return { t, cmd, text };
 }
 function vimWrite(text, force){
+  if (tm.on) return { ok:false, err:'E21: タイムマシンで見ている間は書き込めません（「終了」で今に戻ります）' };
   if (!force && vim.synced !== state.version) return { ok:false, err:'E949: コメントは読み込み後に他の場所で変更されています（:w! で上書き、:e! で読み直し）' };
   const parsed = [], errors = [];
   text.split('\n').forEach((ln, i) => {
@@ -3506,7 +3530,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 8;
+const COLLAB_PROTOCOL = 9;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   // ホストから最後に受け取った変更の通し番号と、ホストの起動ごとの id（つなぎ直したとき、それ以降の変更だけを受け取るため）
@@ -3719,6 +3743,7 @@ function collabHandle(m){
     collab.epoch = typeof m.epoch === 'string' ? m.epoch : null;
     collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null; collab.myClient = typeof m.client === 'string' ? m.client : null;
     collab.remote = m.remote || null;
+    if (!collab.remote) tmClose();
     collab.synced = true; collab.peersReady = false;
     termDropped('接続し直したため');
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
@@ -3733,6 +3758,7 @@ function collabHandle(m){
     const r = store.apply(m.change);
     if (r.applied){ commentsChanged(); collabSaveSoon(); }
     if (hist.entries){ hist.entries.unshift({ rev: m.rev, time: m.time, author: m.author, change: m.change }); histRender(); }
+    tmRefreshSoon();
   } else if (m.type === 'ack'){
     const entry = collab.outbox.find(e => e.id === m.id);
     collab.outbox = collab.outbox.filter(e => e.id !== m.id);
@@ -3745,6 +3771,8 @@ function collabHandle(m){
     }
     collabUI();
     histChanged();
+  } else if (m.type === 'tm_log' || m.type === 'tm_show' || m.type === 'tm_restore'){
+    tmHandle(m);
   } else if (m.type === 'run_out'){
     if (m.id === term.running) for (const c of term.ansi[m.err ? 'err' : 'out'].push(m.data)) termAppend(c.text, m.err ? 'err' : '', c.style);
   } else if (m.type === 'run_end'){
@@ -3832,6 +3860,7 @@ function collabUI(){
   const el = $('#collabStatus');
   if (!el) return;
   termUI();
+  tmUI();
   el.hidden = !state.collab;
   $('#btnCall').hidden = !state.collab;
   $('#btnCall').disabled = !collab.connected;
@@ -3950,6 +3979,312 @@ $('#termInput').addEventListener('keydown', (e) => {
     inp.setSelectionRange(inp.value.length, inp.value.length);
   }
 });
+
+/* ---------- タイムマシン（ホストの --remote で許された人が、git の履歴をさかのぼって見る・戻す） ----------
+   右から目盛り（1本が1コミット。上が古く、一番下が今）を出して、画面をその分だけ押し縮める。
+   目盛りを選ぶと、そのときのコメントを画面に出す（再生・タイムライン・リスト・書き出しはそのまま使える。編集はできない）。
+   「復元」は git reset ではなく、今の中身からそのときの中身に戻す変更として、ホストが記録・コミットして全員に配る */
+const TM_WD = '日月火水木金土';
+const tmPad = (n) => String(n).padStart(2, '0');
+function tmDayKey(ms){ const d = new Date(ms); return d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate(); }
+function tmDate(ms){
+  const d = new Date(ms);
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${TM_WD[d.getDay()]}) ${tmPad(d.getHours())}:${tmPad(d.getMinutes())}`;
+}
+function tmDayLabel(ms){
+  const d = new Date(ms), y = d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '/';
+  return `${y}${d.getMonth() + 1}/${d.getDate()}`;
+}
+const tmIsNow = (i) => i === tm.list.length - 1;
+// その位置の説明（日時と、だれのどの変更か）
+function tmTitle(i){
+  const p = tm.list[i];
+  if (!p) return { date: '', sub: '' };
+  if (tmIsNow(i)) return { date: '今', sub: '今のコメント（最新）' };
+  return { date: tmDate(p.time), sub: p.subject || p.author || '' };
+}
+function tmUI(){
+  const btn = $('#tmBtn');
+  btn.hidden = !(state.collab && collab.remote);
+  btn.disabled = !collab.connected;
+  btn.classList.toggle('on', tm.on);
+  if (!tm.on) return;
+  const n = tm.list.length, i = tm.idx, t = tmTitle(i);
+  $('#tmUp').disabled = !n || i <= 0;
+  $('#tmDown').disabled = !n || i >= n - 1;
+  $('#tmWhen').textContent = n ? t.date : (tm.loading ? '履歴を読んでいます…' : '');
+  $('#tmWhat').textContent = n ? (tm.want ? '読み込み中…' : t.sub) : '';
+  $('#tmWhen').title = $('#tmWhat').title = n && !tmIsNow(i) ? `${t.date}\n${t.sub}\nコミット ${tm.list[i].id.slice(0, 7)}（${tm.list[i].author}）` : '';
+  $('#tmPos').textContent = n ? (tmIsNow(i) ? '' : `${n - 1 - i} 個前`) : '';
+  $('#tmRestore').disabled = !n || tmIsNow(i) || !!tm.want || !tm.view || tm.restoring || !collab.connected;
+  tmMarks();
+}
+// 目盛りの位置（上端からの px。上が古く、下が今）
+function tmY(i, h){ const n = tm.list.length; return n <= 1 ? h : i / (n - 1) * h; }
+function tmIndexAt(y, h){ const n = tm.list.length; return n <= 1 ? 0 : clamp(Math.round(y / h * (n - 1)), 0, n - 1); }
+// 目盛りを描く。最初と最後と、各日の最初は長くし、間が空いていれば日付も出す（近すぎるものは間引く。どれも選べる）
+function tmRender(){
+  const box = $('#tmTicks'), h = box.clientHeight, n = tm.list.length;
+  const frag = document.createDocumentFragment();
+  let lastY = -1e9, lastLong = -1e9, lastLabel = -1e9, prevDay = null;
+  const endY = tmY(n - 1, h);
+  for (let i = 0; i < n; i++){
+    const p = tm.list[i], y = tmY(i, h), day = tmIsNow(i) ? null : tmDayKey(p.time);
+    const dayFirst = day != null && day !== prevDay;
+    prevDay = day ?? prevDay;
+    const edge = i === 0 || i === n - 1, long = edge || dayFirst;
+    if (long ? (y - lastLong < 2 && !edge) : (y - lastY < 3)) continue;
+    const tk = mkEl('div', 'tm-tick' + (long ? ' long' : '') + (tmIsNow(i) ? ' now' : ''));
+    tk.style.top = y + 'px';
+    frag.append(tk);
+    lastY = y; if (long) lastLong = y;
+    // 日付（その日の最初の目盛りに。前の日付や「今」と重なるときは出さない）
+    const label = tmIsNow(i) ? '今' : (dayFirst ? tmDayLabel(p.time) : null);
+    if (label && y - lastLabel >= 14 && (tmIsNow(i) || endY - y >= 14)){
+      const lb = mkEl('div', 'tm-label' + (tmIsNow(i) ? ' now' : ''), label);
+      lb.style.top = y + 'px';
+      frag.append(lb);
+      lastLabel = y;
+    }
+  }
+  box.replaceChildren(frag);
+  tmMarks();
+}
+// 見ている位置・指している位置の印
+function tmMarks(){
+  const h = $('#tmTicks').clientHeight, n = tm.list.length;
+  const cur = $('#tmCur'), hov = $('#tmHov');
+  cur.hidden = !n || tm.idx < 0;
+  if (!cur.hidden) cur.style.top = tmY(tm.idx, h) + 'px';
+  hov.hidden = !n || tm.hover < 0 || tm.hover === tm.idx;
+  if (!hov.hidden) hov.style.top = tmY(tm.hover, h) + 'px';
+}
+// マウスを重ねた目盛りの日付（PC）と、指でなぞっている間の大きな日付（スマホ。右から左へ薄くなるぼかしの上に出す）
+function tmTip(i, y, touch){
+  const tip = $('#tmTip'), sc = $('#tmScrub');
+  if (i < 0){ tip.hidden = true; sc.classList.remove('on'); return; }
+  const t = tmTitle(i);
+  if (touch){
+    tip.hidden = true;
+    sc.classList.add('on');
+    $('#tmScrubDate').textContent = t.date;
+    $('#tmScrubSub').textContent = t.sub;
+    // 指で隠れないよう、指より少し上に出す
+    const box = $('#tmTicks').getBoundingClientRect();
+    $('#tmScrubText').style.top = clamp(box.top + y - 64, 8, window.innerHeight - 90) + 'px';
+    return;
+  }
+  tip.hidden = false;
+  tip.replaceChildren(mkEl('b', null, t.date), mkEl('span', null, t.sub));
+  tip.style.top = y + 'px';
+}
+// 位置を選ぶ（そのときのコメントを出す。読み込みは少し待ってから。続けて動かしても最後のものだけ取る）
+function tmSelect(i){
+  const n = tm.list.length;
+  if (!n) return;
+  i = clamp(i, 0, n - 1);
+  if (i === tm.idx && !tm.want) return;
+  tm.idx = i;
+  clearTimeout(tm.timer);
+  const p = tm.list[i];
+  if (tmIsNow(i)){ tm.want = null; tmShow(null); return; }
+  const got = tm.cache.get(p.id);
+  if (got){ tm.want = null; tmShow(got); return; }
+  tm.want = p.id;
+  tmUI();
+  tm.timer = setTimeout(() => {
+    if (tm.want === p.id && collab.connected) collab.ws.send(JSON.stringify({ type: 'tm_show', commit: p.id }));
+  }, 150);
+}
+// そのときのコメントを画面に出す（raw はホストから届いたもの。null なら今）
+function tmShow(raw){
+  if (!tm.on) return;
+  if (raw == null) tm.view = null;
+  else {
+    const v = new CommentStore(), ids = new Set(), items = [];
+    for (const c of raw){
+      if (!c || typeof c !== 'object' || !isUuid(c.id) || ids.has(c.id)) continue;
+      ids.add(c.id);
+      items.push(makeComment(c.t, c.cmd, c.text, !!store.get(c.id)?.mine, c.id));
+    }
+    v.reset(items);
+    tm.view = v;
+  }
+  commentsChanged();
+  vimReload(true);
+  tmUI();
+}
+function tmOpen(){
+  if (tm.on || !collab.connected || !collab.remote) return;
+  if (vim.E?.modified && !confirm('Vim エディタに書き込んでいない変更があります。捨ててタイムマシンを開きますか？')) return;
+  tmCancelEdits();
+  Object.assign(tm, { on: true, list: [], idx: -1, view: null, want: null, loading: true, restoring: false, hover: -1 });
+  tm.cache.clear();
+  document.body.classList.add('tm-on');
+  $('#tmRail').inert = false;
+  $('#tmBar').hidden = false;
+  // スマホではメニューバーが横にスクロールするので、タイムマシンの操作が見えるところまで戻す
+  $('.topbar').scrollLeft = 0;
+  collab.ws.send(JSON.stringify({ type: 'tm_log' }));
+  tmRender();
+  tmUI();
+  // 押し縮めるのが終わってから、目盛りを今の高さで描き直す
+  setTimeout(tmRender, 400);
+  $('#tmRail').focus({ preventScroll: true });
+}
+function tmClose(){
+  if (!tm.on) return;
+  clearTimeout(tm.timer); clearTimeout(tm.refresh);
+  const had = !!tm.view;
+  Object.assign(tm, { on: false, list: [], idx: -1, view: null, want: null, loading: false, restoring: false, hover: -1, scrub: null });
+  tm.cache.clear();
+  document.body.classList.remove('tm-on');
+  $('#tmRail').inert = true;
+  $('#tmBar').hidden = true;
+  tmTip(-1);
+  if ($('#tmRestoreDlg').open) $('#tmRestoreDlg').close();
+  if (had){ commentsChanged(); vimReload(true); }
+  tmUI();
+}
+// 入力中の文字や書きかけの Vim は、過去を見ている間は使わないので片付ける
+function tmCancelEdits(){
+  if (document.activeElement && (document.activeElement === textInput || document.activeElement === cmdInput)) document.activeElement.blur();
+}
+// 一覧を取り直す（新しいコミットができたとき）。見ている位置は同じコミット（今なら今）のまま
+function tmRefreshSoon(){
+  if (!tm.on) return;
+  clearTimeout(tm.refresh);
+  tm.refresh = setTimeout(() => { if (tm.on && collab.connected) collab.ws.send(JSON.stringify({ type: 'tm_log' })); }, 2500);
+}
+function tmHandle(m){
+  if (!tm.on) return;
+  if (m.type === 'tm_log'){
+    tm.loading = false;
+    if (m.error){ toast('タイムマシン: ' + m.error, { type:'error', timeout:6000 }); tmClose(); return; }
+    const keep = tm.idx >= 0 && !tmIsNow(tm.idx) ? tm.list[tm.idx]?.id : null;
+    const commits = (Array.isArray(m.commits) ? m.commits : []).filter(c => c && typeof c.id === 'string' && /^[0-9a-f]{40,64}$/.test(c.id) && typeof c.time === 'number')
+      .map(c => ({ id: c.id, time: c.time, author: String(c.author ?? ''), subject: String(c.subject ?? '') }));
+    tm.list = commits.reverse().concat([{ id: null, time: Date.now(), author: '', subject: '' }]);
+    const at = keep ? tm.list.findIndex(p => p.id === keep) : -1;
+    tm.idx = at >= 0 ? at : tm.list.length - 1;
+    if (tm.list.length === 1) toast('このプロジェクトには、まださかのぼれる履歴がありません', { timeout:5000 });
+    tmRender();
+    tmUI();
+  } else if (m.type === 'tm_show'){
+    if (m.error){
+      toast('タイムマシン: ' + m.error, { type:'error', timeout:6000 });
+      if (m.commit === tm.want){ tm.want = null; tmUI(); }
+      return;
+    }
+    if (typeof m.commit !== 'string' || !Array.isArray(m.comments)) return;
+    tm.cache.set(m.commit, m.comments);
+    // 覚えておくのは最近の 12 個まで
+    while (tm.cache.size > 12) tm.cache.delete(tm.cache.keys().next().value);
+    if (m.commit === tm.want){ tm.want = null; tmShow(m.comments); }
+  } else if (m.type === 'tm_restore'){
+    tm.restoring = false;
+    if (m.error){ toast('復元できませんでした: ' + m.error, { type:'error', timeout:8000 }); tmUI(); return; }
+    toast(m.rev == null ? '今と同じ内容だったため、何も変わりませんでした' : `復元しました（${m.count} 件の変更として記録しました）`, { timeout:5000 });
+    tmClose();
+  }
+}
+// 今の中身からそのときの中身にする変更の数
+function tmDiff(){
+  const now = store, then = tm.view, r = { add: 0, upd: 0, del: 0 };
+  if (!then) return r;
+  for (const c of now.comments){
+    const o = then.get(c.id);
+    if (!o) r.del++;
+    else if (o.t !== c.t || o.cmd !== c.cmd || o.text !== c.text) r.upd++;
+  }
+  for (const c of then.comments) if (!now.has(c.id)) r.add++;
+  return r;
+}
+function tmRestoreAsk(){
+  if (!tm.on || !tm.view || tmIsNow(tm.idx) || tm.want) return;
+  const p = tm.list[tm.idx], d = tmDiff(), t = tmTitle(tm.idx);
+  $('#tmRestoreWhen').textContent = t.date;
+  $('#tmRestoreWhat').textContent = `${t.sub}（${p.author}・コミット ${p.id.slice(0, 7)}）`;
+  const parts = [['追加', d.add], ['変更', d.upd], ['削除', d.del]].filter(x => x[1]).map(([k, n]) => `${k} ${n} 件`);
+  $('#tmRestoreDiff').textContent = parts.length
+    ? `今のコメント（${store.size} 件）から、${parts.join('・')}をして、このときのコメント（${tm.view.size} 件）に戻します。`
+    : '今のコメントと同じ内容です（戻しても何も変わりません）。';
+  $('#tmRestoreOk').disabled = !parts.length || !collab.connected;
+  $('#tmRestoreDlg').showModal();
+}
+function tmRestore(){
+  const p = tm.list[tm.idx];
+  $('#tmRestoreDlg').close();
+  if (!tm.on || !p?.id || !collab.connected) return;
+  tm.restoring = true;
+  collab.ws.send(JSON.stringify({ type: 'tm_restore', commit: p.id }));
+  tmUI();
+}
+$('#tmBtn').onclick = () => tm.on ? tmClose() : tmOpen();
+$('#tmExit').onclick = tmClose;
+$('#tmUp').onclick = $('#tmRailUp').onclick = () => tmSelect(tm.idx - 1);
+$('#tmDown').onclick = $('#tmRailDown').onclick = () => tmSelect(tm.idx + 1);
+$('#tmRestore').onclick = tmRestoreAsk;
+$('#tmRestoreCancel').onclick = () => $('#tmRestoreDlg').close();
+$('#tmRestoreOk').onclick = tmRestore;
+// 目盛り：マウスを重ねると日付、押すかなぞって選ぶ（指でなぞっている間は大きな日付を出す）
+(() => {
+  const box = $('#tmTicks'), rail = $('#tmRail');
+  const at = (e) => { const r = box.getBoundingClientRect(); const y = clamp(e.clientY - r.top, 0, r.height); return { y, i: tmIndexAt(y, r.height) }; };
+  const point = (e, touch) => {
+    if (!tm.list.length) return -1;
+    const p = at(e);
+    tm.hover = p.i;
+    tmTip(p.i, tmY(p.i, box.clientHeight), touch);
+    tmMarks();
+    return p.i;
+  };
+  box.addEventListener('pointerdown', (e) => {
+    if (e.button > 0 || !tm.list.length) return;
+    e.preventDefault();
+    const touch = e.pointerType !== 'mouse';
+    tm.scrub = { id: e.pointerId, touch };
+    try { box.setPointerCapture(e.pointerId); } catch {}
+    const i = point(e, touch);
+    if (!touch) tmSelect(i);
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (tm.scrub && tm.scrub.id !== e.pointerId) return;
+    if (!tm.scrub && e.pointerType !== 'mouse') return;
+    const i = point(e, !!tm.scrub?.touch);
+    // マウスで押したままなぞると、そのまま見ていく（指は離したときに選ぶ。なぞっている間に読み込みを重ねない）
+    if (tm.scrub && !tm.scrub.touch) tmSelect(i);
+  });
+  const end = (e, cancel) => {
+    if (!tm.scrub || tm.scrub.id !== e.pointerId) return;
+    const s = tm.scrub;
+    tm.scrub = null;
+    if (s.touch){
+      if (!cancel && tm.hover >= 0) tmSelect(tm.hover);
+      // 選んだ日付を少しだけ見せてから消す
+      setTimeout(() => { if (!tm.scrub){ tm.hover = -1; tmTip(-1); tmMarks(); } }, cancel ? 0 : 700);
+    }
+  };
+  box.addEventListener('pointerup', (e) => end(e, false));
+  box.addEventListener('pointercancel', (e) => end(e, true));
+  box.addEventListener('pointerleave', (e) => { if (!tm.scrub && e.pointerType === 'mouse'){ tm.hover = -1; tmTip(-1); tmMarks(); } });
+  // ホイールで1つずつ動く
+  let acc = 0;
+  rail.addEventListener('wheel', (e) => {
+    if (!tm.on) return;
+    e.preventDefault();
+    acc += e.deltaY;
+    if (Math.abs(acc) >= 40){ tmSelect(tm.idx + Math.sign(acc)); acc = 0; }
+  }, { passive: false });
+  rail.addEventListener('keydown', (e) => {
+    if (!tm.on) return;
+    const k = { ArrowUp: -1, ArrowDown: 1, PageUp: -10, PageDown: 10, Home: -1e9, End: 1e9 }[e.key];
+    if (k == null) return;
+    e.preventDefault(); e.stopPropagation();
+    tmSelect(tm.idx + k);
+  });
+  new ResizeObserver(() => { if (tm.on) tmRender(); }).observe(box);
+})();
 
 /* ---------- ホストへの問い合わせ（合言葉・ログインを付ける） ---------- */
 async function collabApi(path, body){
@@ -4141,6 +4476,7 @@ const VIDEO_HINT = 'komenagare.video.';
 function collabVideoOpened(file){ if (collab.project) collabLS(VIDEO_HINT + collab.project.id, file.name); }
 // 開いているプロジェクトを閉じて、そのプロジェクトのものを片付ける
 function collabClose(){
+  tmClose();
   // このプロジェクトで開いていた動画とタイムラインの表示を覚えて閉じる（このタブで戻ってきたら戻す）
   if (collab.project) projectVideos.set(collab.project.id, { file: state.videoFile, t: video.currentTime || 0, view: tlSaveView() });
   unloadVideo();
@@ -4767,7 +5103,7 @@ function tlDrawPeerSel(g, t1){
     if (!p || !pr.state.sel || !pr.state.sel.length) continue;
     g.strokeStyle = peerColor(p, 0.95); g.fillStyle = peerColor(p, 0.18);
     for (const cid of pr.state.sel){
-      const c = store.get(cid), pos = c && TL.laneOf.get(cid);
+      const c = shown().get(cid), pos = c && TL.laneOf.get(cid);
       if (!pos) continue;
       const sp = spanOf(c);
       if (sp.e < TL.t0 || sp.s > t1) continue;
@@ -5019,7 +5355,7 @@ function callReceived(m){
 // その時刻へ移り、コメントを選ぶ（t が無ければ最初のコメントの時刻へ）
 function jumpTo(t, ids = []){
   collabUnfollow();
-  const cs = ids.map(id => store.get(id)).filter(Boolean);
+  const cs = ids.map(id => shown().get(id)).filter(Boolean);
   if (t == null && cs.length) t = parseCmd(cs[0].cmd).pos === 'naka' ? cs[0].t - NAKA_LEAD : cs[0].t;
   if (t != null){
     seekTo(t);
@@ -5092,7 +5428,7 @@ function linkTry(){
   }
   if (p.c && state.collab && !collab.synced) return; // ホストからコメントが届くのを待つ
   link.pending = null;
-  if (p.c && !store.has(p.c)) toast('リンクのコメントが見つかりません（消されたか、別のコメントかもしれません）', { type:'error' });
+  if (p.c && !shown().has(p.c)) toast('リンクのコメントが見つかりません（消されたか、別のコメントかもしれません）', { type:'error' });
   jumpTo(p.t, p.c ? [p.c] : []);
 }
 window.addEventListener('hashchange', linkParse);

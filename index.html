@@ -15,7 +15,7 @@
   <div class="tb-group">
     <button id="btnOpenVideo" class="primary">🎬 動画を開く</button>
   </div>
-  <div class="tb-group">
+  <div class="tb-group tb-edit">
     <button id="btnOpenComments" title="コメントファイルを開く（現在のコメントと置き換え）">📂 コメントを開く</button>
     <button id="btnMerge" title="複数のコメントファイルを現在のコメントに統合">🔀 マージ</button>
     <button id="btnSave" title="保存 (Ctrl+S)">💾 保存</button>
@@ -26,12 +26,21 @@
     <button id="btnExport">⏺ コメ付き書き出し</button>
     <button id="btnHelp" title="使い方">？</button>
   </div>
+  <div class="tb-group tm-bar" id="tmBar" hidden>
+    <span class="tm-title">🕰 タイムマシン</span>
+    <span class="tm-at"><b id="tmWhen"></b><span id="tmWhat"></span></span>
+    <span class="tm-pos" id="tmPos"></span>
+    <span class="tm-step"><button id="tmUp" title="ひとつ前（古い方）へ">▲</button><button id="tmDown" title="ひとつ後（新しい方）へ">▼</button></span>
+    <button id="tmRestore" class="primary" title="今のコメントを、このときのコメントに戻す（新しいコミットとして記録します）">この時点に復元…</button>
+    <button id="tmExit" title="タイムマシンを終わって、今に戻る">終了</button>
+  </div>
   <div class="status">
     <span id="videoStatus">動画: なし</span>
     <span id="fileStatus"></span>
     <button id="projectBtn" class="collab proj" hidden title="プロジェクトの一覧（切り替え・新しいタブで開く）"></button>
     <button id="collabStatus" class="collab" hidden></button>
     <button id="termBtn" class="collab term" hidden title="ホストの作業フォルダでコマンドを打つ">⌨ ターミナル</button>
+    <button id="tmBtn" class="collab term" hidden title="git の履歴をさかのぼって、前のコメントを見る・戻す">🕰 タイムマシン</button>
     <button id="conflictBtn" class="collab warn" hidden title="ほかの人の変更と重なった変更を確認する"></button>
   </div>
 </header>
@@ -374,6 +383,29 @@
   <div class="dlg-foot"><button id="peersRename">表示名を変更</button><span class="spacer"></span><button id="peersClose" class="primary">閉じる</button></div>
 </dialog>
 
+<!-- タイムマシンの目盛り（右から出して、画面を押し縮める） -->
+<aside class="tm-rail" id="tmRail" tabindex="0" inert aria-label="タイムマシンの目盛り（上が古く、下が今）">
+  <button class="tm-arrow" id="tmRailUp" title="ひとつ前（古い方）へ" aria-label="ひとつ前へ">▲</button>
+  <div class="tm-track">
+    <div class="tm-ticks" id="tmTicks"></div>
+    <div class="tm-cur" id="tmCur" hidden></div>
+    <div class="tm-hov" id="tmHov" hidden></div>
+    <div class="tm-tip" id="tmTip" hidden></div>
+  </div>
+  <button class="tm-arrow" id="tmRailDown" title="ひとつ後（新しい方）へ" aria-label="ひとつ後へ">▼</button>
+</aside>
+<div class="tm-scrub" id="tmScrub" aria-hidden="true"><div class="tm-scrub-text" id="tmScrubText"><div id="tmScrubDate"></div><div id="tmScrubSub"></div></div></div>
+
+<dialog id="tmRestoreDlg">
+  <div class="dlg-head">この時点に復元</div>
+  <div class="dlg-body">
+    <p style="margin:0"><b id="tmRestoreWhen"></b><br><span class="muted" id="tmRestoreWhat"></span></p>
+    <p id="tmRestoreDiff"></p>
+    <p class="muted" style="margin:0;font-size:12.5px">履歴を巻き戻す（git reset）のではなく、今の状態からこの時点の状態に戻す変更を、新しいコミットとして記録します。参加者全員に届き、それまでの履歴もそのまま残るので、あとでまたタイムマシンで戻せます。</p>
+  </div>
+  <div class="dlg-foot"><span class="spacer"></span><button id="tmRestoreCancel">やめる</button><button id="tmRestoreOk" class="primary">復元</button></div>
+</dialog>
+
 <dialog id="termDlg" class="term-dlg">
   <div class="dlg-head term-head"><span>ターミナル（ホストの作業フォルダ）</span><button id="termX" class="dlg-x" type="button" title="閉じる" aria-label="閉じる">×</button></div>
   <div class="dlg-body">
@@ -459,6 +491,7 @@
     <p class="muted" style="margin:6px 0 0">再生バーの 📣（ここ見て）を押すと、今の再生位置と選んでいるコメントをほかの参加者に知らせます。受け取った人は「見る」でそこへ移れます。🔗 は今の位置へのリンク（コメントを1件選んでいればそのコメントへのリンク）をコピーします。メッセージで送れば、開いた人がそこへ移ります（動画を開く前なら、開いたときに移ります）。</p>
     <p class="muted" style="margin:6px 0 0">動画は各自が手元のファイルを開くので、ほかの人と動画の長さが違うと知らせます（違う動画だと、コメントの出る場面がずれます）。参加者の一覧にも出ます。</p>
     <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「⌨ ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
+    <p class="muted" style="margin:6px 0 0">同じ人は「🕰 タイムマシン」で、git に残っている前のコメントをさかのぼって見られます。右の目盛り（上が古く、一番下が今）にマウスを重ねると日時が出て、押すとそのときのコメントになります（スマホは指でなぞって離す）。見ている間も再生・タイムライン・書き出しは使えますが、編集はできません。「この時点に復元…」は、今のコメントからそのときのコメントに戻す変更を新しいコミットとして記録します（履歴は消えません）。</p>
 
     <h4>ファイル形式</h4>
     <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。表計算ソフトで数式として動かないよう、<code>= + - @</code> などで始まるセルは先頭に <code>'</code> を付けて書き出します（コメナガレで読み込むと元に戻ります）。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
