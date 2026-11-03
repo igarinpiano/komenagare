@@ -5102,8 +5102,8 @@ function cleanPresence(s){
     cur: !c || typeof c !== 'object' ? null
       : c.a === 'st' ? (finiteOr(c.x) != null && finiteOr(c.y) != null ? { a: 'st', x: clamp(c.x, 0, 1), y: clamp(c.y, 0, 1) } : null)
       : c.a === 'tl' && finiteOr(c.t) != null ? { a: 'tl', t: c.t, y: cleanLane(c.y) } : null,
-    video: vd && typeof vd === 'object' && finiteOr(vd.d, 0) > 0
-      ? { d: vd.d, name: typeof vd.name === 'string' ? vd.name.slice(0, 200) : '' } : null,
+    // 動画の長さだけを取り出す（古い版が送ってくるファイル名は使わない）
+    video: vd && typeof vd === 'object' && finiteOr(vd.d, 0) > 0 ? { d: vd.d } : null,
   };
 }
 // 「ここ見て」（{ t: 秒, sel: [コメントの id] }。形が違えば null）
@@ -5274,8 +5274,8 @@ function presenceState(){
     sel: [...TL.sel].slice(0, 200),
     view: TL.inited && tlShown() ? { t0: +TL.t0.toFixed(3), span: +((TL.W - TL_HEAD) / TL.pps).toFixed(3), y: tlYToLane(TL.scrollY) } : null,
     cur: presence.cursor,
-    // 開いている動画（ほかの人と同じ動画かを長さで確かめる）
-    video: state.videoLoaded && isFinite(video.duration) ? { d: +video.duration.toFixed(3), name: clipStr(state.videoName || '', 200) } : null,
+    // 開いている動画の長さ（ほかの人と同じ動画かを確かめる。ファイル名は手元の情報なので送らない）
+    video: state.videoLoaded && isFinite(video.duration) ? { d: +video.duration.toFixed(3) } : null,
   };
 }
 function presenceDirty(){
@@ -5574,7 +5574,7 @@ function videoCheckPeer(id, pr){
   if (videoWarned.has(key)) return;
   videoWarned.add(key);
   const name = clip(p.name, 20);
-  toast(`${name}さんの動画と長さが違います（${name}さん: ${fmtPrecise(v.d)}${v.name ? `「${clip(v.name, 30)}」` : ''}、あなた: ${fmtPrecise(video.duration)}）。同じ動画ファイルか確かめてください（違うと、コメントの出る場面がずれます）`, { type:'error', timeout:15000 });
+  toast(`${name}さんの動画と長さが違います（${name}さん: ${fmtPrecise(v.d)}、あなた: ${fmtPrecise(video.duration)}）。同じ動画ファイルか確かめてください（違うと、コメントの出る場面がずれます）`, { type:'error', timeout:15000 });
 }
 function videoCheck(){
   if (!state.collab) return;
