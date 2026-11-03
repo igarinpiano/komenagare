@@ -2822,12 +2822,11 @@ function sideMaxW(){
   h.addEventListener('dblclick', () => { settings.sideWidth = SIDE_W; applyLayoutVars(); saveSettings(); });
 })();
 // 動画・右のパネル・タイムラインの境目が交わる所：ドラッグで、タイムラインの高さと右のパネルの幅を同時に変える
-//（ダブルクリックで両方を元に戻す）。横の位置は、動画と右のパネルの間のすき間の真ん中に合わせる
+//（ダブルクリックで両方をリセット）。横の位置は、右のパネルのつまみの線（.side-resize::after。つまみの左から 4〜7px）の真ん中に合わせる
 function placeTlCorner(){
-  const side = $('#side');
-  if (!side.offsetParent || !$('#timeline').offsetParent) return;
-  const gap = parseFloat(getComputedStyle($('#layout')).columnGap) || 0;
-  $('#tlCorner').style.left = (side.getBoundingClientRect().left - gap / 2 - $('#timeline').getBoundingClientRect().left) + 'px';
+  const h = $('#sideResize');
+  if (!h.offsetParent || !$('#timeline').offsetParent) return;
+  $('#tlCorner').style.left = (h.getBoundingClientRect().left + 5.5 - $('#timeline').getBoundingClientRect().left) + 'px';
 }
 new ResizeObserver(placeTlCorner).observe($('#side'));
 new ResizeObserver(placeTlCorner).observe($('#timeline'));

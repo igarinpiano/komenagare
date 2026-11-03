@@ -288,12 +288,15 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 
 /* ---------- timeline ---------- */
 .timeline{flex:none;height:var(--tl-h,260px);display:flex;flex-direction:column;background:#131313;border-top:1px solid var(--line);position:relative;min-height:0}
-.tl-resize{position:absolute;left:0;right:0;top:-5px;height:9px;cursor:ns-resize;z-index:3;touch-action:none}
-.tl-resize::after{content:"";position:absolute;left:50%;top:3px;width:44px;height:3px;margin-left:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
+/* タイムラインの高さを変えるつまみ。動画・右のパネルとの間のすき間（.layout の下の余白 12px）に置き、
+   線は右のパネルのつまみ（.side-resize）と同じ大きさで、すき間の中の同じ位置に出す（top は .timeline の上の枠線 1px の分も引く） */
+.tl-resize{position:absolute;left:0;right:0;top:-13px;height:17px;cursor:ns-resize;z-index:3;touch-action:none}
+.tl-resize::after{content:"";position:absolute;left:50%;top:4px;width:44px;height:3px;margin-left:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
 .tl-resize:hover::after,.tl-resize.on::after{opacity:1}
-/* 動画・右のパネル・タイムラインの境目の交わる所（横の位置は js/app.js の placeTlCorner で合わせる）。上は .layout の下の余白まで覆う */
-.tl-corner{display:none;position:absolute;top:-16px;width:22px;height:23px;margin-left:-11px;cursor:move;z-index:4;touch-action:none}
-.tl-corner::after{content:"";position:absolute;left:7px;top:9px;width:8px;height:8px;border-radius:50%;background:#555;opacity:0;transition:opacity .15s}
+/* 動画・右のパネル・タイムラインの境目の交わる所（横の位置は js/app.js の placeTlCorner で、2本の線の真ん中に合わせる）。
+   点の真ん中は、縦の線（すき間の左から 5.5px）と横の線（すき間の上から 5.5px）が交わる所 */
+.tl-corner{display:none;position:absolute;top:-18px;width:22px;height:22px;margin-left:-11px;cursor:move;z-index:4;touch-action:none}
+.tl-corner::after{content:"";position:absolute;left:6.5px;top:6px;width:9px;height:9px;border-radius:50%;background:#555;opacity:0;transition:opacity .15s}
 .tl-corner:hover::after,.tl-corner.on::after{opacity:1}
 .tl-bar{display:flex;align-items:center;gap:6px;padding:6px 10px 5px;flex:none;overflow-x:auto;scrollbar-width:none}
 .tl-bar::-webkit-scrollbar{display:none}
