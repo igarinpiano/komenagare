@@ -15,7 +15,7 @@ const TL_H = 270; // タイムラインの既定の高さ（PC）
 const M_VIDEO = 0.32; // 縦向きのスマホで、動画の高さが画面の高さに占める割合の既定（タイムラインの上端をドラッグして変える）
 const settings = Object.assign(
   { show:true, opacity:1, pauseOnInput:false, mineBorder:true, autosave:true, saveFormat:'json', volume:1, muted:false,
-    listVirtual:true, timeline:true, tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video' },
+    listVirtual:true, timeline:true, side:true, tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video' },
   (() => { try { return JSON.parse(localStorage.getItem('komenagare.settings') || '{}'); } catch { return {}; } })()
 );
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
@@ -367,25 +367,28 @@ function resizeCanvas(){
   const fw = Math.min(r.width, r.height * a), fh = fw / a;
   Object.assign(canvas.style, { left: (r.width - fw) / 2 + 'px', top: (r.height - fh) / 2 + 'px', width: fw + 'px', height: fh + 'px' });
   const w = Math.max(1, Math.round(fw * dpr)), h = Math.max(1, Math.round(fh * dpr));
-  if (canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; }
   state.needsDraw = true;
+  // 大きさを変えると canvas は消えるので、その場で描き直す（ResizeObserver は描画のループのあとに動くため、
+  // 次のフレームまで待つと、つまみをドラッグしている間ずっと消えたままになる）
+  if (canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; drawComments(); }
 }
 new ResizeObserver(() => { resizeCanvas(); drawDensity(); }).observe(stage);
 
+function drawComments(t = video.currentTime || 0){
+  if (state.needsRelayout){ state.needsRelayout = false; relayout(); }
+  state.needsDraw = false;
+  cctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (settings.show){
+    displayRenderer.draw(cctx, canvas.width, canvas.height, t, state.layouts,
+      { stage: state.stage, opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel, highlight: tm.on ? tm.changed : null });
+  }
+  updateTimeUI(t);
+}
 function loop(){
   requestAnimationFrame(loop);
   const playing = !video.paused && !video.ended;
   const t = video.currentTime || 0;
-  if (state.needsRelayout){ state.needsRelayout = false; relayout(); }
-  if (playing || state.needsDraw){
-    state.needsDraw = false;
-    cctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (settings.show){
-      displayRenderer.draw(cctx, canvas.width, canvas.height, t, state.layouts,
-        { stage: state.stage, opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel, highlight: tm.on ? tm.changed : null });
-    }
-    updateTimeUI(t);
-  }
+  if (playing || state.needsDraw || state.needsRelayout) drawComments(t);
   tlFrame(playing, t);
   vimFrame(playing, t);
   presenceFrame();
@@ -2024,15 +2027,19 @@ function tlResize(){
   TL.W = Math.max(1, TL.main.clientWidth); TL.H = Math.max(1, TL.main.clientHeight);
   TL.ovW = Math.max(1, TL.ovBox.clientWidth); TL.ovH = Math.max(1, TL.ovBox.clientHeight);
   TL.dpr = dpr;
+  let cleared = false;
   for (const [cv, w, h] of [[TL.cv, TL.W, TL.H], [TL.ov, TL.ovW, TL.ovH]]){
     const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
-    if (cv.width !== pw || cv.height !== ph){ cv.width = pw; cv.height = ph; }
+    if (cv.width !== pw || cv.height !== ph){ cv.width = pw; cv.height = ph; cleared = true; }
   }
   if (!TL.inited && TL.W > 60){ TL.inited = true; tlResetView(); }
   TL.ovDirty = true;
   tlClampView();
   // 隠れている間の表示範囲は、見えるようになってから戻す
   if (TL.pendingView && TL.W > 60){ const v = TL.pendingView; TL.pendingView = null; tlRestoreView(v); }
+  // 大きさを変えると canvas は消えるので、その場で描き直す（ResizeObserver は描画のループのあとに動くため、
+  // 次のフレームまで待つと、高さを変えるつまみをドラッグしている間ずっと消えたままになる）
+  if (cleared && tlShown()){ TL.dirty = false; tlDraw(); tlDrawOverview(); }
 }
 new ResizeObserver(tlResize).observe(TL.main);
 new ResizeObserver(tlResize).observe(TL.ovBox);
@@ -2791,15 +2798,15 @@ for (const h of [$('#tlResize'), $('#mResize')]) {
   h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
   h.addEventListener('dblclick', () => { if (mq.matches) settings.mVideo = M_VIDEO; else settings.tlHeight = TL_H; applyLayoutVars(); saveSettings(); });
 }
+// 右のパネルの幅の上限。動画の列に 400px 残す（css/komenagare.css の .layout と同じ）
+function sideMaxW(){
+  const l = $('#layout'), cs = getComputedStyle(l);
+  return Math.max(300, l.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - parseFloat(cs.columnGap) - 400);
+}
 // 右のパネルの幅：左端をドラッグして変える（ダブルクリックで元に戻す）
 (() => {
   const h = $('#sideResize');
   let st = null;
-  // 動画の列に 400px 残す（css/komenagare.css の .layout と同じ）
-  const maxW = () => {
-    const l = $('#layout'), cs = getComputedStyle(l);
-    return Math.max(300, l.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - parseFloat(cs.columnGap) - 400);
-  };
   h.addEventListener('pointerdown', (e) => {
     // 今の見た目の幅から始める（画面が狭くて縮んでいるときも飛ばないように）
     st = { x: e.clientX, w: $('#side').getBoundingClientRect().width };
@@ -2807,12 +2814,42 @@ for (const h of [$('#tlResize'), $('#mResize')]) {
   });
   h.addEventListener('pointermove', (e) => {
     if (!st) return;
-    settings.sideWidth = Math.round(clamp(st.w - (e.clientX - st.x), 300, maxW()));
+    settings.sideWidth = Math.round(clamp(st.w - (e.clientX - st.x), 300, sideMaxW()));
     applyLayoutVars();
   });
   const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
   h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
   h.addEventListener('dblclick', () => { settings.sideWidth = SIDE_W; applyLayoutVars(); saveSettings(); });
+})();
+// 動画・右のパネル・タイムラインの境目が交わる所：ドラッグで、タイムラインの高さと右のパネルの幅を同時に変える
+//（ダブルクリックで両方を元に戻す）。横の位置は、動画と右のパネルの間のすき間の真ん中に合わせる
+function placeTlCorner(){
+  const side = $('#side');
+  if (!side.offsetParent || !$('#timeline').offsetParent) return;
+  const gap = parseFloat(getComputedStyle($('#layout')).columnGap) || 0;
+  $('#tlCorner').style.left = (side.getBoundingClientRect().left - gap / 2 - $('#timeline').getBoundingClientRect().left) + 'px';
+}
+new ResizeObserver(placeTlCorner).observe($('#side'));
+new ResizeObserver(placeTlCorner).observe($('#timeline'));
+(() => {
+  const h = $('#tlCorner'), marks = [h, $('#sideResize'), $('#tlResize')];
+  let st = null;
+  const mark = (on) => { for (const m of marks) m.classList.toggle('on', on); };
+  h.addEventListener('pointerenter', () => mark(true));
+  h.addEventListener('pointerleave', () => { if (!st) mark(false); });
+  h.addEventListener('pointerdown', (e) => {
+    st = { x: e.clientX, y: e.clientY, w: $('#side').getBoundingClientRect().width, h: Math.min(settings.tlHeight, tlMaxHeight()) };
+    h.setPointerCapture(e.pointerId); mark(true);
+  });
+  h.addEventListener('pointermove', (e) => {
+    if (!st) return;
+    settings.sideWidth = Math.round(clamp(st.w - (e.clientX - st.x), 300, sideMaxW()));
+    settings.tlHeight = Math.round(clamp(st.h - (e.clientY - st.y), 140, tlMaxHeight()));
+    applyLayoutVars();
+  });
+  const end = (e) => { if (st){ st = null; saveSettings(); if (e.type === 'pointercancel' || !h.matches(':hover')) mark(false); } };
+  h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
+  h.addEventListener('dblclick', () => { settings.sideWidth = SIDE_W; settings.tlHeight = TL_H; applyLayoutVars(); saveSettings(); });
 })();
 
 /* =====================================================================
@@ -3516,11 +3553,15 @@ function applyPanes(){
   $('#paneHistory').hidden = pane !== 'history';
   document.body.dataset.mpane = settings.mobilePane;
   document.body.classList.toggle('tl-off', !settings.timeline);
+  // 右のパネル（コメントリスト・Vim・変更履歴）は PC の幅のときだけ隠せる
+  document.body.classList.toggle('side-off', !settings.side);
   $('#btnTimeline').classList.toggle('on', settings.timeline);
+  $('#btnSide').classList.toggle('on', settings.side);
+  if (!mobile && !settings.side && $('#side').contains(document.activeElement)) document.activeElement.blur();
   for (const b of document.querySelectorAll('.stab')) b.classList.toggle('on', b.dataset.pane === settings.sidePane);
   for (const b of document.querySelectorAll('.mtab')) b.classList.toggle('on', b.dataset.mpane === settings.mobilePane);
   applyLayoutVars();
-  const vimShown = pane === 'vim' && (!mobile || settings.mobilePane === 'vim');
+  const vimShown = pane === 'vim' && (mobile ? settings.mobilePane === 'vim' : settings.side);
   if (vimShown){ vimEnsure(); if (!vim.E.modified && vim.synced !== state.version) vimReload(false); }
   if (pane === 'history') histRefresh();
   requestAnimationFrame(() => {
@@ -3536,6 +3577,7 @@ for (const b of document.querySelectorAll('.mtab')) b.onclick = () => {
   settings.mobilePane = b.dataset.mpane; saveSettings(); applyPanes();
 };
 $('#btnTimeline').onclick = () => { settings.timeline = !settings.timeline; saveSettings(); applyPanes(); };
+$('#btnSide').onclick = () => { settings.side = !settings.side; saveSettings(); applyPanes(); };
 mq.addEventListener('change', applyPanes);
 // ウィンドウや右のパネルの幅が変わったら描き直す
 new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender(); }).observe($('#vimScreen'));
