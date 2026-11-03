@@ -279,6 +279,8 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .side-resize{display:none;justify-self:start;align-self:stretch;width:12px;margin-left:-12px;cursor:ew-resize;z-index:3;position:relative;touch-action:none}
 .side-resize::after{content:"";position:absolute;top:50%;left:4px;width:3px;height:44px;margin-top:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
 .side-resize:hover::after,.side-resize.on::after{opacity:1}
+/* メニューバーの表示切替（タイムライン・コメントリスト）。出しているときは色を付ける */
+.topbar .tb-toggle.on{background:#17345a;border-color:var(--accent)}
 .mtabs{display:none}
 .m-resize{display:none}
 .danger{color:#ff8a8a;border-color:#6a2c2c}
@@ -289,6 +291,10 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .tl-resize{position:absolute;left:0;right:0;top:-5px;height:9px;cursor:ns-resize;z-index:3;touch-action:none}
 .tl-resize::after{content:"";position:absolute;left:50%;top:3px;width:44px;height:3px;margin-left:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
 .tl-resize:hover::after,.tl-resize.on::after{opacity:1}
+/* 動画・右のパネル・タイムラインの境目の交わる所（横の位置は js/app.js の placeTlCorner で合わせる）。上は .layout の下の余白まで覆う */
+.tl-corner{display:none;position:absolute;top:-16px;width:22px;height:23px;margin-left:-11px;cursor:move;z-index:4;touch-action:none}
+.tl-corner::after{content:"";position:absolute;left:7px;top:9px;width:8px;height:8px;border-radius:50%;background:#555;opacity:0;transition:opacity .15s}
+.tl-corner:hover::after,.tl-corner.on::after{opacity:1}
 .tl-bar{display:flex;align-items:center;gap:6px;padding:6px 10px 5px;flex:none;overflow-x:auto;scrollbar-width:none}
 .tl-bar::-webkit-scrollbar{display:none}
 .tl-bar button{padding:4px 9px;font-size:12.5px}
@@ -366,6 +372,10 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   body.tl-off .timeline{display:none}
   .layout > .side,.side-resize{grid-column:2;grid-row:1}
   .side-resize{display:block}
+  .tl-corner{display:block}
+  /* 右のパネルを隠したら、動画を横いっぱいにする */
+  body.side-off .layout{grid-template-columns:minmax(0,1fr)}
+  body.side-off .side,body.side-off .side-resize,body.side-off .tl-corner{display:none}
 }
 @media (max-width: 980px){
   body{overflow-x:hidden;overflow-y:auto}
