@@ -122,11 +122,26 @@ komenagare split                    # まとめフォルダを解除して、プ
   「プロジェクトを復元」で外したものを選んで戻すと、同じ id（共有のリンクもそのまま）で一覧とリポジトリに戻ります。別の場所で外したもの（手元にフォルダが無いもの）も、外す前の履歴から取り出して戻せます。作る・外す・復元するたびに git にコミットします。
 - いまある作業フォルダ（それぞれ自分の `.git` を持つもの）は、そのまままとめフォルダにできます。それらを入れたフォルダで `komenagare init --collection` とすると、それぞれの git の履歴をまとめフォルダのリポジトリに取り込みます（コメントとプロジェクトの id はそのまま。元の `.git` は `.komenagare/git-backup/` に控えます）。
   あとから作業フォルダごとコピーして入れたときも、`komenagare init a` で同じように取り込んで一覧に載せます。どちらも git の履歴に手を入れるので、y/N で確かめます（`-y` で確かめずに進めます）。
+- git なしで作ったまとめフォルダ（`komenagare init --collection --no-git` や、git が入っていないときに作ったもの。直下に `.git` が無く、中のプロジェクトがそれぞれ自分の `.git` を持っている）は、`komenagare.json` をいったん外へよけてから作り直すと、git のリポジトリになります（プロジェクトの id は各フォルダの `.komenagare/id` から読み直すので変わりません。それぞれの履歴も上と同じように取り込みます）:
+  `mv komenagare.json ../komenagare.json.bak && komenagare init --collection . -y`（ホストを止めて、まとめフォルダの中で）
 - 逆に、`komenagare split` でまとめフォルダを解除して、プロジェクトごとの git リポジトリ（「1つのプロジェクトに1つの `.git`」）に戻せます。
   それぞれの履歴は、まとめフォルダの履歴からそのプロジェクトの分だけを切り出します（取り込む前のコミットは元のまま）。今のリポジトリと `komenagare.json` は `.komenagare/git-backup/` に控えます。これも y/N で確かめます（`-y`）。
   分けたあとは `komenagare a b c` で今まで通りまとめて共有でき、もう一度 `komenagare init --collection` でまとめフォルダにも戻せます。
 - 別のファイルのコメントだけを取り込むなら: `komenagare init a --import ~/old/a/comments.jsonl`（コメントの id は引き継ぎます）
 - `--remote git` の参加者が打つ git は、リポジトリ全体に効きます（ほかのプロジェクトも含めて）。
+
+##### GitHub に push する
+
+GitHub で空のリポジトリ（README なし・非公開でよい）を作り、まとめフォルダの中で:
+
+```sh
+git remote add origin https://github.com/<ユーザー名>/<リポジトリ名>.git
+git push -u origin HEAD          # 今のブランチ（git の設定で main か master）と同じ名前で push する
+```
+
+- 手元とは違う名前のブランチに push したいときは、先に手元のブランチの名前を変えます（例: `git branch -m main master` のあと `git push -u origin master`）。
+- リポジトリを作るときに README などを足したなら、GitHub 側に別の履歴があるので、そのままでは push できません（手元の履歴だけでよければ、そのブランチを GitHub で消してから push する）。
+- `.DS_Store` などは自動のコミットには入りませんが、自分で `git add .` すると入るので、`.gitignore` に足しておくと安心です。
 
 まとめフォルダにせず、リポジトリの中の作業フォルダを `komenagare a b c` と並べて開くこともできます（この場合は画面から作る・外すことはできず、`git clone` した先では初めに一度 `komenagare init a b c` が要ります）。
 
