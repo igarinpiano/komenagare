@@ -58,6 +58,10 @@
 - ほかの参加者から届くもの（presence・共有された衝突・「ここ見て」）は、使う前に `cleanPresence` / `cleanConflict` / `cleanCall`（`js/app.js`）で型を確かめて取り出す。項目を足したらそこにも足す。
 - ブラウザの id（client）はホストが `client_key`（ブラウザだけが知る秘密。localStorage の `komenagare.clientKey`）のハッシュから作る。自分のものかは snapshot の `client` と比べて見分ける（client_key は配らない）。
 - CLI から git を動かすときは、フックを動かさない（`core.hooksPath` を `workspace::no_hooks_path()` にする）。
+  ホストが動かす git は `workspace.rs` の `git_cmd` を通す: まとめフォルダの中のプロジェクトは自分の `.git` を持たないので、
+  フォルダに HEAD・objects・refs の形のファイルを置かれると git がそこをリポジトリとして使い、その config でプログラムを動かせる。
+  `check_git_dir` で断り、`safe.bareRepository=explicit` も渡す（`--remote git` の git にも。`remote.rs` の `build`）。
+  パスは書いたとおりに読ませる（`GIT_LITERAL_PATHSPECS`。名前の `[ ]` を模様にしない）。
   1つのリポジトリに複数のプロジェクト（作業フォルダ）を入れられるよう、自動のコミットは自分のファイルだけを指定して行い（`commit` の paths）、git はプロセスの中で1つずつ動かす（`git_lock`）。
 - ホストは Ctrl+C・SIGTERM・SIGHUP（nohup で無視されていればそのまま）・Windows の閉じる／ログオフ／シャットダウンで、保存してから終わる（`main.rs` の `shutdown_signal`）。Windows では `--tunnel` の子プロセスをジョブに入れ、強制終了されても残らないようにする。
 - ホストの外で `comments.jsonl` が変わったら（git checkout・reset など）、書き込み担当が気づいて（2 秒ごとと `--remote` のコマンドのあと。`spawn_writer` の `external_change`）、最後に書いた中身からの差分を Hub に渡し（`Hub::apply_external`）、全員に配る。返ってくるまで・読めない間は書き込まない（外での変更を上書きしない）。
@@ -70,6 +74,8 @@
 - `--otp` のときは `collab.session`（localStorage の `komenagare.session`）で入り、名前はホストが決める。
   ログインには有効期限がある（`auth.rs`。既定 30 日、`--session-ttl`。期限はホストだけが確かめる。`komenagare otp` は期限を知らないので消さない）。
 - ホストに送る変更セットは `collabQueue`（`js/app.js`）で 2000 op・2MB ほどに分けて送る。ホストは 1 万 op・1 通 16MB・本文 40 万バイト・コマンド 4000 バイトまで（`server.rs` の `change_ok`）。どちらかを変えるときは、もう片方を超えないようにする。
+  コメントの時刻は 0〜1000 万秒（`js/app.js` と `server.rs` の `TIME_MAX`。ホストは新しく入れる時刻だけを確かめる）、表示時間（`@秒`）は 100 万秒まで（`LONG_MAX`。`render.rs` も同じ）。
+  画面は、それを超える値（前からあるもの・ホストの外で書かれたもの）が来ても描画が止まらないようにする（`tlDuration`・`rulerStep`・`TL_TICKS_MAX`）。
 - hello（ログイン）より前の接続は、30 秒・64KB・同時に 32 まで（`server.rs`）。`--no-token` のときは、Host が手元の名前（IP・localhost・ドットの無い名前・.local など）か公開 URL のときだけ API と WebSocket を使わせる（DNS リバインディング対策）。
 - 再生位置・選択・タイムラインの表示範囲・カーソルは `presence` メッセージで配り合う（`presenceDirty` で送る。ホストは中継するだけで保存しない）。
   参加者一覧（`#peersDlg`）から「追いかける」と `followApply` で相手に合わせ、自分で操作したらやめる。どちらかがつなぎ直しても、ブラウザの id（`collab.followClient`）で同じ人を追いかけ続ける。
@@ -77,7 +83,7 @@
 - つなぎ直したときは、hello に前の接続で最後に受け取った通し番号（`collab.rev`）とホストの起動ごとの id（`collab.epoch`）を付け、ホストは同じ起動で最近の記録（1000 件）に全部残っていれば snapshot に `changes`（それ以降の変更だけ）を入れて返す（`server.rs` の `changes_since`）。無ければ今まで通り全体（`comments`）。自分の変更が混ざっていても、当て直すと衝突して何も変わらない。ページを開き直したとき（タブが変わったとき）は全体を受け取る。
 - ブラウザは 20 秒ごとに `ping` を送り、`pong`（か何か）が返らなければつなぎ直す（`collabPing`）。ホストは 2 分間何も届かない接続を切る（`server.rs` の `IDLE_TIMEOUT`。裏のタブの timer は 1 分に 1 回ほどに間引かれるので、これより短くしない）。
 - ホストの `--remote` で許された人には、snapshot の `remote` が付き、「⌨ ターミナル」（`#termDlg`）から `run` / `run_stop` を送れる。出力は `run_out`、終わりは `run_end`（`term`）。
-  許すかどうかはホストが決める（画面で隠すだけに頼らない）。git で使えるサブコマンドやオプションを増やすときは、ほかのプログラムを動かせないか・作業フォルダの外を読み書きできないかを確かめ、`remote.rs` のテストに足す。
+  許すかどうかはホストが決める（画面で隠すだけに頼らない）。`--remote-users` に名前で挙げた人のワンタイムパスワードは、自分も打てる人かホストの人（起動時の URL で入った人。セッションの `startup`）だけが画面から発行できる（`admin_otp_handler`）。git で使えるサブコマンドやオプションを増やすときは、ほかのプログラムを動かせないか・作業フォルダの外を読み書きできないかを確かめ、`remote.rs` のテストに足す。
 - 変更履歴は、ひとりのときは `state.changeLog`（`recordChange`）、共同編集のときはホストの記録（`history` メッセージ）を出す。
 - タイムマシン（`tm`・`tmOpen`。`--remote` で許された人だけ。ホストも `can_run` で確かめる）は `tm_log` / `tm_show` / `tm_restore` で git の履歴（`workspace::snapshots` / `comments_at`）を読む。
   過去を見ている間は `tm.view`（そのときのコメントの CommentStore）を画面に出す（`state.comments` と `shown()`。画面に出すものを `store` から直接読まない）。`store` は今のまま、ほかの人の変更も当て続ける。

@@ -78,6 +78,10 @@ function hashStr(s){ let h = 2166136261; for (let i=0;i<s.length;i++){ h ^= s.ch
 function expandHex(h){ h = h.toUpperCase(); return h.length === 4 ? '#'+h[1]+h[1]+h[2]+h[2]+h[3]+h[3] : h; }
 // コメントの本文・コマンドの長さの上限（ホストは本文 40 万バイト・コマンド 4000 バイトまで受け付ける）
 const TEXT_MAX = 100000, CMD_MAX = 1000;
+// コメントの時刻（秒）と、表示時間（@秒）の上限。けた外れの値（読み込んだファイルの書き間違いや、
+// ほかの参加者が送ってきたもの）でタイムラインが延びきったり、描画が終わらなくなったりしないようにする。
+// ホストも時刻は 1000 万秒までしか受け付けない（cli/src/server.rs の TIME_MAX。cli/src/render.rs の LONG_MAX も同じ値）
+const TIME_MAX = 1e7, LONG_MAX = 1e6;
 // 長すぎる文字列を切る（サロゲートペアの途中では切らない。半端な文字はホストが読めないため）
 function clipStr(s, max){
   if (s.length <= max) return s;
@@ -123,6 +127,8 @@ const cmdCache = new Map();
 function parseCmd(cmd){
   let o = cmdCache.get(cmd);
   if (o) return o;
+  // コマンドの種類が増え続けても（1つずつ違う @秒 など）、覚えておく数は増やし続けない
+  if (cmdCache.size >= 20000) cmdCache.clear();
   o = { pos:null, size:null, color:null, font:null, long:null, invisible:false, full:false, ender:false, live:false };
   for (const raw of cmd.split(' ')){
     if (!raw) continue;
@@ -131,7 +137,7 @@ function parseCmd(cmd){
     else if (g === 'size') o.size ??= t;
     else if (g === 'color') o.color ??= (COLOR_TABLE[t] || expandHex(t));
     else if (g === 'font') o.font ??= t;
-    else if (g === 'long') o.long ??= Math.max(0.1, parseFloat(t.slice(1)));
+    else if (g === 'long') o.long ??= clamp(parseFloat(t.slice(1)), 0.1, LONG_MAX);
     else if (t === 'invisible') o.invisible = true;
     else if (t === 'full') o.full = true;
     else if (t === 'ender') o.ender = true;
@@ -146,7 +152,7 @@ function parseCmd(cmd){
    コメントデータ
    ===================================================================== */
 const normFields = (t, cmd, text) => ({
-  t: Math.max(0, Math.round(Number(t) * 100) / 100), cmd: normCmd(cmd), text: clipStr(String(text ?? '').replace(/\r\n?/g, '\n'), TEXT_MAX),
+  t: Math.min(TIME_MAX, Math.max(0, Math.round(Number(t) * 100) / 100)), cmd: normCmd(cmd), text: clipStr(String(text ?? '').replace(/\r\n?/g, '\n'), TEXT_MAX),
 });
 // まだ store に入れていないコメント（id はファイルにあればそれを使う）
 function makeComment(t, cmd, text, mine = false, id = null){
@@ -1936,7 +1942,8 @@ function tlDuration(){
   if (isFinite(d) && d > 0) return d;
   let m = 0;
   for (const c of state.comments){ const e = spanOf(c).e; if (e > m) m = e; }
-  return Math.max(60, m + 5);
+  // 前からあるけた外れの時刻のコメント（ホストの外で書かれたものなど）があっても、有限の長さにする
+  return clamp(m + 5, 60, TIME_MAX + LONG_MAX + 5);
 }
 const tx = (t) => TL_HEAD + (t - TL.t0) * TL.pps;
 const xt = (x) => TL.t0 + (x - TL_HEAD) / TL.pps;
@@ -2046,8 +2053,16 @@ new ResizeObserver(tlResize).observe(TL.ovBox);
 coarse.addEventListener?.('change', tlRelane);
 
 const RULER_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+// 1回に描く目盛りの数の上限（ふつうは数百本。表示範囲の値がおかしくなっても、描画が終わらなくならないように）
+const TL_TICKS_MAX = 5000;
+// 目盛りの刻み。1時間でも細かすぎるほど引いたとき（動画を開かず、遠い時刻にコメントがあるとき）は、
+// 1時間の 10 倍・100 倍…にする（刻みが細かいままだと、目盛りを描く繰り返しが終わらなくなる）
 function rulerStep(){
-  const major = RULER_STEPS.find(s => s * TL.pps >= 70) ?? 3600;
+  let major = RULER_STEPS.find(s => s * TL.pps >= 70);
+  if (major == null){
+    major = 3600;
+    while (major * TL.pps < 70 && major < 1e15) major *= 10;
+  }
   const div = [0.2, 2, 120].includes(major) ? 4 : [15, 900].includes(major) ? 3 : [30, 300, 1800].includes(major) ? 6 : 5;
   return { major, div };
 }
@@ -2124,7 +2139,7 @@ function tlDraw(){
     }
   });
   g.fillStyle = 'rgba(255,255,255,.045)';
-  for (let k = Math.ceil(TL.t0 / step.major); k * step.major <= t1; k++) g.fillRect(Math.round(tx(k * step.major)), TL_RULER, 1, H - TL_RULER);
+  for (let k = Math.ceil(TL.t0 / step.major), n = 0; k * step.major <= t1 && n < TL_TICKS_MAX; k++, n++) g.fillRect(Math.round(tx(k * step.major)), TL_RULER, 1, H - TL_RULER);
   g.fillStyle = 'rgba(0,0,0,.5)';
   if (tx(0) > TL_HEAD) g.fillRect(TL_HEAD, TL_RULER, tx(0) - TL_HEAD, H);
   if (hasDur && tx(D) < W) g.fillRect(tx(D), TL_RULER, W - tx(D), H);
@@ -2189,7 +2204,7 @@ function tlDraw(){
   g.fillStyle = '#333'; g.fillRect(0, TL_RULER - 1, W, 1);
   g.save(); g.beginPath(); g.rect(TL_HEAD, 0, W - TL_HEAD, TL_RULER); g.clip();
   g.font = '11px system-ui,sans-serif'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-  for (let k = Math.ceil(TL.t0 / minor); k * minor <= t1; k++){
+  for (let k = Math.ceil(TL.t0 / minor), n = 0; k * minor <= t1 && n < TL_TICKS_MAX; k++, n++){
     const x = Math.round(tx(k * minor));
     if (k % step.div === 0){
       g.fillStyle = '#8a8a8a'; g.fillRect(x, TL_RULER - 9, 1, 8);
