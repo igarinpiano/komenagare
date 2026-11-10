@@ -252,21 +252,27 @@ impl Collection {
             bail!("{} がファイルではありません", path.display());
         }
         let cur = std::fs::read_to_string(&path).unwrap_or_default();
-        let line = format!("/{name}/");
+        // 名前の [ は .gitignore では模様（[ab] は a か b）になるので、\[ と書く（そのまま書くと、
+        // ほかのフォルダまで git に入らなくなる）。前の版がそのまま書いた行も、同じものとして扱う
+        let line = format!("/{}/", name.replace('[', "\\["));
+        let old_line = format!("/{name}/");
+        let is_line = |l: &str| l.trim() == line || l.trim() == old_line;
         let has = cur.lines().any(|l| l.trim() == line);
-        if has == ignored {
+        let has_any = cur.lines().any(is_line);
+        if (ignored && has) || (!ignored && !has_any) {
             return Ok(());
         }
         let next = if ignored {
-            let sep = if cur.is_empty() || cur.ends_with('\n') {
-                ""
-            } else {
-                "\n"
-            };
-            format!("{cur}{sep}{line}\n")
+            // 前の版の行があれば、正しい書き方に置き換える
+            let kept: String = cur
+                .lines()
+                .filter(|l| !is_line(l))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            format!("{kept}{line}\n")
         } else {
             cur.lines()
-                .filter(|l| l.trim() != line)
+                .filter(|l| !is_line(l))
                 .map(|l| format!("{l}\n"))
                 .collect()
         };
@@ -345,15 +351,25 @@ impl Collection {
             }
         }
         let pattern = format!("*/{}", workspace::COMMENTS_FILE);
-        let out = g(&[
-            "log",
-            "--relative",
-            "--diff-filter=D",
-            "--name-only",
-            "--format=",
-            "--",
-            &pattern,
-        ])
+        // ここだけは * を模様として読ませる（ほかは書いたとおりのパスとして渡している）
+        let out = workspace::git_with(
+            &self.dir,
+            false,
+            &[
+                // 日本語などの名前を "\346…" の形にして出させない（その形だと名前として読めず、一覧に出ない）
+                "-c",
+                "core.quotePath=false",
+                "log",
+                "--relative",
+                "--diff-filter=D",
+                "--name-only",
+                "--format=",
+                "--",
+                &pattern,
+            ],
+            &[("GIT_LITERAL_PATHSPECS", "0")],
+            None,
+        )
         .unwrap_or_default();
         let mut names: Vec<String> = vec![];
         for line in out.lines() {
@@ -1250,5 +1266,65 @@ mod tests {
         .unwrap();
         assert!(c.open_projects().unwrap().is_empty());
         assert!(!outside.join(".komenagare").exists());
+    }
+
+    /// 名前に [ ] が入ったプロジェクトを外しても、ほかのプロジェクトを巻き込まない
+    /// （git のパスの模様や .gitignore の模様として読ませない）
+    #[test]
+    fn brackets_in_names_are_not_patterns() {
+        if !workspace::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("kome");
+        let c = Collection::create(&root, GitMode::Auto, false).unwrap();
+        let a = c.add("a", "たろう").unwrap();
+        c.add("b", "たろう").unwrap();
+        let x = c.add("[ab]", "たろう").unwrap();
+        add_comment(&a, "aのコメント");
+        assert_eq!(c.remove(&x.id, "たろう").unwrap(), "[ab]");
+        assert!(git(&root, &["ls-files", "a"]).contains("a/comments.jsonl"));
+        assert!(git(&root, &["ls-files", "b"]).contains("b/comments.jsonl"));
+        assert_eq!(git(&root, &["--literal-pathspecs", "ls-files", "[ab]"]), "");
+        let ignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(ignore.lines().any(|l| l == "/\\[ab]/"), "{ignore}");
+        // 外したフォルダだけが git に入らなくなる（a・b に新しく置いたファイルは見える）
+        for d in ["a", "b", "[ab]"] {
+            std::fs::write(root.join(d).join("new.txt"), "x").unwrap();
+        }
+        let status = git(&root, &["status", "--porcelain", "-uall"]);
+        assert!(status.contains("a/new.txt") && status.contains("b/new.txt"));
+        assert!(!status.contains("[ab]"), "{status}");
+        for d in ["a", "b", "[ab]"] {
+            std::fs::remove_file(root.join(d).join("new.txt")).unwrap();
+        }
+        assert_eq!(c.hidden(), vec!["[ab]".to_string()]);
+        // 戻すと同じ id で、.gitignore からも外れる（前の版がそのまま書いた行も外す）
+        std::fs::write(root.join(".gitignore"), format!("{ignore}/[ab]/\n")).unwrap();
+        assert_eq!(c.add("[ab]", "たろう").unwrap().id, x.id);
+        let ignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(!ignore.contains("ab]"), "{ignore}");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "");
+    }
+
+    /// 日本語の名前のプロジェクトも、外したあと履歴から見つけて戻せる
+    #[test]
+    fn finds_removed_projects_with_japanese_names() {
+        if !workspace::git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("kome");
+        let c = Collection::create(&root, GitMode::Auto, false).unwrap();
+        let p = c.add("第1話", "たろう").unwrap();
+        c.remove(&p.id, "たろう").unwrap();
+        let cl = tmp.path().join("clone");
+        git(
+            tmp.path(),
+            &["clone", "-q", root.to_str().unwrap(), cl.to_str().unwrap()],
+        );
+        let cc = Collection::open(&cl, GitMode::Auto).unwrap();
+        assert_eq!(cc.hidden(), vec!["第1話".to_string()]);
+        assert_eq!(cc.add("第1話", "じろう").unwrap().id, p.id);
     }
 }

@@ -72,6 +72,9 @@ pub struct SessionRec {
     pub admin: bool,
     hash: String,
     pub created: u64,
+    /// 起動のたびに作る管理者用のワンタイムパスワードで入った（ホストの端末を見られる人）
+    #[serde(default)]
+    pub startup: bool,
 }
 
 pub struct Issued {
@@ -119,6 +122,9 @@ impl Auth {
                 .with_context(|| format!("{} を作れません", dir.join(sub).display()))?;
         }
         private(dir, true);
+        for sub in ["otp", "sessions"] {
+            private(&dir.join(sub), true);
+        }
         Ok(Auth {
             dir: dir.to_path_buf(),
             session_ttl: Some(SESSION_TTL_DEFAULT),
@@ -202,7 +208,7 @@ impl Auth {
         let h = hash(&normalize(code));
         let now = now_ms();
         for o in self.otps() {
-            if o.hash != h || o.expires < now {
+            if !same_hash(&o.hash, &h) || o.expires < now {
                 continue;
             }
             // 消せた人だけが使える（同時に使われても1回きり）
@@ -216,6 +222,7 @@ impl Auth {
                 admin: o.admin,
                 hash: hash(&secret),
                 created: now,
+                startup: o.startup,
             };
             self.write(&self.session_path(&rec.id), &rec)?;
             return Ok(Some((format!("{}.{}", rec.id, secret), rec)));
@@ -230,7 +237,7 @@ impl Auth {
             return None;
         }
         let rec = self.session(id)?;
-        if rec.hash != hash(secret) {
+        if !same_hash(&rec.hash, &hash(secret)) {
             return None;
         }
         // 期限が過ぎたら使えない（もう使わないので消す。ワンタイムパスワードでログインし直す）
@@ -297,8 +304,19 @@ impl Auth {
         self.dir.join("sessions").join(format!("{id}.json"))
     }
     fn write<T: Serialize>(&self, path: &Path, v: &T) -> Result<()> {
+        use std::io::Write;
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_vec(v)?)?;
+        // 作るときから自分だけが読めるようにする（作ってから権限を絞ると、その間はほかの人にも読める）。
+        // 前の書きかけが残っていても、それ（リンクかもしれない）には書かずに作り直す
+        let _ = std::fs::remove_file(&tmp);
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        o.open(&tmp)?.write_all(&serde_json::to_vec(v)?)?;
         private(&tmp, false);
         std::fs::rename(&tmp, path)?;
         Ok(())
@@ -374,6 +392,15 @@ fn hash(s: &str) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// ハッシュ（16進）を、どこまで合っていたかが時間で分からないように比べる
+fn same_hash(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 fn is_hex(s: &str) -> bool {
@@ -585,5 +612,42 @@ mod tests {
         assert!(parse_ttl("x").is_err());
         assert!(parse_ttl("0m").is_err());
         assert!(parse_ttl("5w").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn records_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, a) = auth();
+        let i = a
+            .issue("I", false, Kind::Random, Duration::from_secs(60))
+            .unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&a.otp_path(&i.id)), 0o600);
+        let (_, s) = a.login(&i.code).unwrap().unwrap();
+        assert_eq!(mode(&a.session_path(&s.id)), 0o600);
+        for sub in ["", "otp", "sessions"] {
+            assert_eq!(mode(&d.path().join(sub)), 0o700);
+        }
+    }
+
+    #[test]
+    fn startup_login_is_marked() {
+        let (_d, a) = auth();
+        let i = a.issue_startup().unwrap();
+        let (token, s) = a.login(&i.code).unwrap().unwrap();
+        assert!(s.startup && s.admin);
+        assert!(a.verify(&token).unwrap().startup);
+        let j = a
+            .issue("J", true, Kind::Random, Duration::from_secs(60))
+            .unwrap();
+        assert!(!a.login(&j.code).unwrap().unwrap().1.startup);
+    }
+
+    #[test]
+    fn compares_hashes() {
+        assert!(same_hash("abc", "abc"));
+        assert!(!same_hash("abc", "abd"));
+        assert!(!same_hash("abc", "abcd"));
     }
 }

@@ -92,10 +92,7 @@ impl Workspace {
         std::fs::create_dir_all(dir.join(META_DIR))?;
         // .komenagare がシンボリックリンクなら作業フォルダの外に書いてしまうので断る（meta_dir）
         let meta = meta_dir(&dir)?;
-        let comments = dir.join(COMMENTS_FILE);
-        if !comments.exists() {
-            std::fs::write(&comments, "")?;
-        }
+        create_if_missing(&dir.join(COMMENTS_FILE))?;
         let id = id.map_or_else(crate::store::uuid_v7, str::to_string);
         write_new(&meta.join("id"), id.as_bytes())?;
 
@@ -118,6 +115,10 @@ impl Workspace {
         }
         // 作業用の記録は履歴に入れない
         let ignore = ws.dir.join(".gitignore");
+        // シンボリックリンクなら、その先（作業フォルダの外かもしれない）には書かない
+        if std::fs::symlink_metadata(&ignore).is_ok_and(|m| !m.is_file()) {
+            bail!("{} がファイルではありません", ignore.display());
+        }
         let cur = std::fs::read_to_string(&ignore).unwrap_or_default();
         if !cur
             .lines()
@@ -187,10 +188,7 @@ impl Workspace {
         }
         let dir = dir.canonicalize()?;
         let id = read_id(&dir)?;
-        let comments = dir.join(COMMENTS_FILE);
-        if !comments.exists() {
-            std::fs::write(&comments, "")?;
-        }
+        create_if_missing(&dir.join(COMMENTS_FILE))?;
         let mut ws = Workspace {
             dir,
             id,
@@ -207,6 +205,10 @@ impl Workspace {
             eprintln!("警告: git が見つからないため、変更の履歴は残りません（comments.jsonl への書き込みだけ行います）");
             eprintln!("      履歴を残すには git をインストールしてください: https://git-scm.com/downloads");
             return Ok(ws);
+        }
+        // git のリポジトリの中身のようなファイルを置かれていたら、git は使わない（理由を知らせる）
+        if let Err(e) = check_git_dir(&ws.dir) {
+            eprintln!("警告: {e:#}");
         }
         // git の管理下でなければ（init --no-git で作ったときなど）履歴は残さない
         if git_out(&ws.dir, &["rev-parse", "--is-inside-work-tree"]).is_err() {
@@ -406,13 +408,57 @@ impl Workspace {
     }
 }
 
-fn run_git(dir: &Path, identity: bool, args: &[&str]) -> Result<()> {
+/// dir（とその上のフォルダ。.git のあるフォルダまで）が、git のリポジトリの中身（HEAD・objects・refs など）の
+/// ように見えたら断る。git は .git が無いフォルダでも、その形のファイルがあればリポジトリとして扱い、
+/// そこの config（core.sshCommand・core.fsmonitor など、プログラムを動かせる設定）を読む。
+/// まとめフォルダの中のプロジェクトは自分の .git を持たないので、--remote git の参加者が checkout で
+/// その形のファイルを置くと、ホストの git（自動のコミットも）に好きな設定を読ませられてしまう。
+/// 新しい git には safe.bareRepository=explicit も渡すが、古い git はそれを知らないので、ここでも確かめる
+pub fn check_git_dir(dir: &Path) -> Result<()> {
+    let there = |p: PathBuf| std::fs::symlink_metadata(p).is_ok();
+    // 上のフォルダもたどれるよう、絶対パスにしてから見る
+    let abs = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let mut cur = Some(abs.as_path());
+    while let Some(d) = cur {
+        if there(d.join(".git")) {
+            return Ok(());
+        }
+        if there(d.join("HEAD"))
+            && (there(d.join("commondir")) || (there(d.join("objects")) && there(d.join("refs"))))
+        {
+            bail!(
+                "{} に git のリポジトリの中身のようなファイル（HEAD・objects・refs など）があるため、git を動かしません（身に覚えがなければ、それらを消してください）",
+                d.display()
+            );
+        }
+        cur = d.parent();
+    }
+    Ok(())
+}
+
+/// git の決まった設定（ホストが動かす git と、--remote git の git の両方に渡す）:
+/// 見つけたフォルダそのものをリポジトリとして使わない（check_git_dir と同じ理由。git 2.38 から）
+pub const GIT_SAFE_CONFIG: (&str, &str) = ("safe.bareRepository", "explicit");
+
+/// ホストが dir で動かす git（フックは動かさない・パスは書いたとおりに読む）
+fn git_cmd(dir: &Path) -> Result<Command> {
+    check_git_dir(dir)?;
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir);
     // フックは動かさない（--no-verify では post-commit などは止まらない。フックの置き場所が作業ツリーの
     // 中（husky など）だと、--remote git の参加者が checkout で置いたフックが自動のコミットで動いてしまう）
     cmd.arg("-c")
         .arg(format!("core.hooksPath={}", no_hooks_path().display()));
+    cmd.arg("-c")
+        .arg(format!("{}={}", GIT_SAFE_CONFIG.0, GIT_SAFE_CONFIG.1));
+    // パスに入った [ ] や * を、ほかのファイルにも当たる模様として読ませない（プロジェクトの名前に [ ] が
+    // 入っていると、ほかのプロジェクトまで git add / git rm してしまう）。模様を使うところだけ 0 にする
+    cmd.env("GIT_LITERAL_PATHSPECS", "1");
+    Ok(cmd)
+}
+
+fn run_git(dir: &Path, identity: bool, args: &[&str]) -> Result<()> {
+    let mut cmd = git_cmd(dir)?;
     if identity {
         cmd.args([
             "-c",
@@ -443,10 +489,7 @@ pub fn git_with(
 ) -> Result<String> {
     use std::io::Write;
     use std::process::Stdio;
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir);
-    cmd.arg("-c")
-        .arg(format!("core.hooksPath={}", no_hooks_path().display()));
+    let mut cmd = git_cmd(dir)?;
     if identity {
         cmd.args([
             "-c",
@@ -932,6 +975,20 @@ pub fn append_meta(dir: &Path, file: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// 無ければ空のファイルを作る。何か（行き先の無いシンボリックリンクも）あれば何もしない
+/// （exists() はリンクをたどるので、行き先の無いリンクを「無い」とみなして、その先に作ってしまう）
+fn create_if_missing(path: &Path) -> std::io::Result<()> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// 新しく作って書く（同じ名前のものがあれば先に消す。シンボリックリンクの先には書かない）
 pub fn write_new(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -978,7 +1035,7 @@ pub fn git_available() -> bool {
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output()?;
+    let out = git_cmd(dir)?.args(args).output()?;
     if !out.status.success() {
         bail!("git {} failed", args.join(" "));
     }
@@ -1425,5 +1482,82 @@ pub(crate) mod tests {
         assert_eq!(ws.recover(&mut store, 3).unwrap(), 0);
         assert_eq!(store.len(), 3);
         assert_eq!(ws.saved_rev(), Some(3));
+    }
+
+    /// まとめフォルダの中のプロジェクト（自分の .git が無い）に、git のリポジトリの中身のようなファイルを
+    /// 置かれても、そこの設定（プログラムを動かせる）で git を動かさない
+    #[cfg(unix)]
+    #[test]
+    fn does_not_use_a_planted_repository() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let col = tmp.path().join("col");
+        std::fs::create_dir_all(&col).unwrap();
+        git_init(&col).unwrap();
+        let ws = Workspace::init(&col.join("p"), GitMode::Require).unwrap();
+        assert!(ws.git && !ws.dir.join(".git").exists());
+        assert!(check_git_dir(&ws.dir).is_ok());
+        // --remote git の参加者が checkout で置ける形（HEAD・objects・refs と config）
+        let mark = tmp.path().join("MARK");
+        std::fs::write(ws.dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(ws.dir.join("objects")).unwrap();
+        std::fs::create_dir_all(ws.dir.join("refs")).unwrap();
+        std::fs::write(
+            ws.dir.join("config"),
+            format!(
+                "[core]\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch '{0}'; false\"\n\tsshCommand = \"touch '{0}'; false\"\n",
+                mark.display()
+            ),
+        )
+        .unwrap();
+        assert!(check_git_dir(&ws.dir).is_err());
+        assert!(!in_git(&ws.dir));
+        assert!(run_git(&ws.dir, false, &["status"]).is_err());
+        assert!(git_with(
+            &ws.dir,
+            false,
+            &["fetch", "ssh://example.invalid/x"],
+            &[],
+            None
+        )
+        .is_err());
+        // コメントは書き込む（git のコミットだけ失敗する）
+        assert!(ws
+            .save(&Store::new(vec![]), "m", "a", "b@komenagare", &[])
+            .is_err());
+        // 確かめをすり抜けても（古い版との違いを見るため、git を直接動かす）、設定で渡したものが止める
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&ws.dir)
+            .arg("-c")
+            .arg(format!("{}={}", GIT_SAFE_CONFIG.0, GIT_SAFE_CONFIG.1))
+            .args(["fetch", "ssh://example.invalid/x"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(!mark.exists(), "置かれた設定のプログラムが動きました");
+        // .komenagare だけのフォルダ（git の外）や、ふつうの作業フォルダは通す
+        let plain = Workspace::init(&tmp.path().join("plain"), GitMode::Require).unwrap();
+        assert!(check_git_dir(&plain.dir).is_ok());
+        std::fs::write(plain.dir.join("HEAD"), "x").unwrap();
+        assert!(
+            check_git_dir(&plain.dir).is_ok(),
+            ".git があればそちらが使われる"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_create_files_through_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(&tmp.path().join("w"), GitMode::Off).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::remove_file(ws.dir.join(COMMENTS_FILE)).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.dir.join(COMMENTS_FILE)).unwrap();
+        // 行き先の無いリンクになっていても、その先にファイルを作らない
+        let _ = Workspace::open(&ws.dir, GitMode::Off);
+        assert!(!outside.exists());
     }
 }

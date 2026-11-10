@@ -130,6 +130,9 @@ fn hex_color(t: &str) -> Option<String> {
     .map(|h| format!("#{h}"))
 }
 
+/// 表示時間（@秒）の上限（js/app.js の LONG_MAX と同じ。けた外れの値で無限大にならないように）
+const LONG_MAX: f64 = 1e6;
+
 /// js/app.js の parseCmd と同じ（同じ種類のものは最初の1つが有効）
 fn parse_cmd(cmd: &str) -> Cmd {
     let (mut pos, mut size, mut color, mut font, mut long) = (None, None, None, None, None);
@@ -180,7 +183,7 @@ fn parse_cmd(cmd: &str) -> Cmd {
                         && n.chars().all(|c| c.is_ascii_digit() || c == '.')
                 }) {
                     if let Ok(v) = n.parse::<f64>() {
-                        long.get_or_insert(v.max(0.1));
+                        long.get_or_insert(v.clamp(0.1, LONG_MAX));
                     }
                 }
             }
@@ -428,7 +431,9 @@ fn ass_alpha(opacity: f64) -> String {
 }
 /// 本文を ASS で文字どおりに出す（{ } と \ を特別扱いさせない）
 fn ass_text(s: &str) -> String {
-    s.replace('\\', "\\\u{2060}")
+    // CR は行の区切りとして読まれる（本文から字幕の行を足せてしまう）ので落とす
+    s.replace('\r', "")
+        .replace('\\', "\\\u{2060}")
         .replace('{', "｛")
         .replace('}', "｝")
 }
@@ -974,6 +979,20 @@ mod tests {
             text: text.into(),
             id: None,
         }
+    }
+
+    #[test]
+    fn caps_huge_durations() {
+        assert_eq!(parse_cmd("@5").long, Some(5.0));
+        assert_eq!(parse_cmd("@0").long, Some(0.1));
+        assert_eq!(
+            parse_cmd(&format!("@{}", "9".repeat(400))).long,
+            Some(LONG_MAX)
+        );
+        assert_eq!(
+            ass_text("a\rDialogue: x{\\b1}"),
+            "aDialogue: x｛\\\u{2060}b1｝"
+        );
     }
 
     #[test]

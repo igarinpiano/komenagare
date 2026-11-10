@@ -571,6 +571,10 @@ async fn run(args: Args) -> Result<()> {
             .flatten(),
         None => None,
     };
+    // 空の合言葉は、合言葉なし（--no-token）と同じなのに、その確かめ（トンネルでは使えない・Host の確かめ）を素通りする
+    if args.token.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        bail!("--token に空の合言葉は指定できません（合言葉を使わないなら --no-token）");
+    }
     let access = if args.otp {
         let dir = match &args.auth_dir {
             Some(d) => d.clone(),

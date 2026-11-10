@@ -300,20 +300,28 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// hello を済ませていない接続をいくつまで受け付けるか（ログインせずに接続を開き続けてホストを埋めないように）
 const PENDING_MAX: usize = 32;
 
-/// 変更セットとして受け取ってよいか（id の形、op の数、コメントの id・本文・コマンドの大きさ）
+/// コメントの時刻の上限（秒。ブラウザも 1000 万秒までにする）。けた外れの時刻のコメントを入れると、
+/// 動画を開いていない人のタイムラインがその時刻まで延びて、まともに使えなくなる
+const TIME_MAX: f64 = 1e7;
+
+/// 変更セットとして受け取ってよいか（id の形、op の数、コメントの id・本文・コマンドの大きさ、新しい時刻の範囲）
 fn change_ok(change: &Change) -> bool {
     let fields_ok = |f: &crate::store::Fields| {
         f.text.as_ref().is_none_or(|t| t.len() <= TEXT_MAX)
             && f.cmd.as_ref().is_none_or(|c| c.len() <= CMD_MAX)
+    };
+    // 新しく入れる時刻だけを見る（元の値（before）は、前からあるコメントを直せるようにそのまま通す）
+    let time_ok = |f: &crate::store::Fields| {
+        f.t.is_none_or(|t| t.is_finite() && (0.0..=TIME_MAX).contains(&t))
     };
     change_id_ok(&change.id)
         && change.ops.len() <= MAX_OPS_PER_CHANGE
         && change.ops.iter().all(|op| {
             op.id().len() <= 64
                 && match op {
-                    crate::store::Op::Add { after, .. } => fields_ok(after),
+                    crate::store::Op::Add { after, .. } => fields_ok(after) && time_ok(after),
                     crate::store::Op::Update { before, after, .. } => {
-                        fields_ok(before) && fields_ok(after)
+                        fields_ok(before) && fields_ok(after) && time_ok(after)
                     }
                     crate::store::Op::Delete { before, .. } => fields_ok(before),
                 }
@@ -1365,10 +1373,21 @@ async fn admin_otp_handler(
     headers: HeaderMap,
     Json(body): Json<OtpBody>,
 ) -> Response {
-    let (a, _) = match authorize_admin(&server, &headers) {
+    let (a, me) = match authorize_admin(&server, &headers) {
         Ok(v) => v,
         Err(r) => return r,
     };
+    // --remote-users に名前で挙げた人のワンタイムパスワードは、自分もコマンドを打てる人か、ホストの人
+    // （起動時の URL で入った人）だけが画面から発行できる。そうでない管理者が発行できると、その名前の
+    // 参加者として入り直して、許されていないコマンドを打てるようになってしまう
+    if let (Some(r), Some(name)) = (&server.remote, auth::clean_name(&body.name)) {
+        if r.lists_name(&name) && !me.startup && !r.allows(&me.name, me.admin) {
+            return api_error(
+                StatusCode::FORBIDDEN,
+                &format!("「{name}」はホストでコマンドを打てる人（--remote-users）なので、画面からは発行できません。ホストの端末で komenagare otp new {name} を実行するか、起動時に表示された管理者用の URL で入り直してから発行してください"),
+            );
+        }
+    }
     let Some(kind) = Kind::parse(&body.kind) else {
         return api_error(StatusCode::BAD_REQUEST, "種類は numeric か random です");
     };
@@ -2511,5 +2530,101 @@ mod tests {
         assert!(accept_conflict(&json!({ "key": "" }), "A", "c").is_none());
         assert!(accept_conflict(&json!("key"), "A", "c").is_none());
         assert!(accept_conflict(&json!({ "key": "k".repeat(201) }), "A", "c").is_none());
+    }
+
+    #[test]
+    fn rejects_out_of_range_times() {
+        use crate::store::{Fields, Op};
+        let f = |t: f64| Fields {
+            t: Some(t),
+            cmd: None,
+            text: None,
+        };
+        let add = |t: f64| Change {
+            id: "ch".into(),
+            ops: vec![Op::Add {
+                id: "c".into(),
+                after: f(t),
+            }],
+        };
+        assert!(change_ok(&add(0.0)) && change_ok(&add(12.34)) && change_ok(&add(1e7)));
+        assert!(!change_ok(&add(-1.0)) && !change_ok(&add(1.1e7)) && !change_ok(&add(1e300)));
+        assert!(!change_ok(&add(f64::INFINITY)) && !change_ok(&add(f64::NAN)));
+        // 前からあるけた外れの時刻のコメントは、直したり消したりできる（元の値は見ない）
+        assert!(change_ok(&Change {
+            id: "ch".into(),
+            ops: vec![
+                Op::Update {
+                    id: "c".into(),
+                    before: f(1e300),
+                    after: f(5.0),
+                },
+                Op::Delete {
+                    id: "d".into(),
+                    before: f(-3.0),
+                },
+            ],
+        }));
+        assert!(!change_ok(&Change {
+            id: "ch".into(),
+            ops: vec![Op::Update {
+                id: "c".into(),
+                before: f(5.0),
+                after: f(1e300),
+            }],
+        }));
+    }
+
+    /// --remote-users に名前で挙げた人のワンタイムパスワードは、コマンドを打てない管理者には発行させない
+    #[tokio::test]
+    async fn admins_cannot_mint_remote_users() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = Auth::open(tmp.path()).unwrap();
+        let login = |a: &Auth, name: &str, admin: bool| {
+            let i = a
+                .issue(name, admin, Kind::Random, Duration::from_secs(60))
+                .unwrap();
+            a.login(&i.code).unwrap().unwrap().0
+        };
+        let boss = login(&a, "管理者B", true);
+        let yamada = login(&a, "山田", true);
+        let host = a
+            .login(&a.issue_startup().unwrap().code)
+            .unwrap()
+            .unwrap()
+            .0;
+        let server = Server::new(
+            vec![],
+            None,
+            Access::Otp(a),
+            Some(Remote::new(remote::Mode::Shell, "山田")),
+            None,
+        );
+        let issue = |token: String, name: &'static str| {
+            let server = server.clone();
+            async move {
+                let mut h = HeaderMap::new();
+                h.insert(
+                    header::AUTHORIZATION,
+                    format!("Bearer {token}").parse().unwrap(),
+                );
+                let body = OtpBody {
+                    name: name.into(),
+                    kind: "random".into(),
+                    ttl: None,
+                    admin: false,
+                };
+                admin_otp_handler(State(server), h, Json(body))
+                    .await
+                    .status()
+            }
+        };
+        // コマンドを打てない管理者は、打てる人の名前では発行できない（前後の空白でもごまかせない）
+        assert_eq!(issue(boss.clone(), "山田").await, StatusCode::FORBIDDEN);
+        assert_eq!(issue(boss.clone(), " 山田 ").await, StatusCode::FORBIDDEN);
+        assert_eq!(issue(boss, "鈴木").await, StatusCode::OK);
+        // 自分も打てる人と、ホストの人（起動時の URL で入った人）は発行できる
+        assert_eq!(issue(yamada, "山田").await, StatusCode::OK);
+        assert_eq!(issue(host, "山田").await, StatusCode::OK);
     }
 }

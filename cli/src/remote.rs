@@ -69,6 +69,13 @@ impl Remote {
         })
     }
 
+    /// 名前で（admin・all ではなく）使える人に挙げられているか
+    pub fn lists_name(&self, name: &str) -> bool {
+        self.users
+            .iter()
+            .any(|u| !matches!(u.as_str(), "all" | "admin") && u == name)
+    }
+
     /// 起動時に出す説明
     pub fn describe(&self) -> String {
         let who: Vec<String> = self
@@ -158,6 +165,8 @@ fn git_deny_short(sub: &str) -> &'static [char] {
         "tag" | "merge" => &['F'],
         // -S <ファイル>（無視するコミットの一覧）
         "blame" => &['S'],
+        // reflog（show）と stash（show）は log / diff のオプションを受け取る
+        "reflog" | "stash" => &['O'],
         _ => &[],
     }
 }
@@ -210,7 +219,8 @@ pub fn check_git(args: &[String]) -> Result<(), String> {
         if !after_ddash {
             if let Some(long) = a.strip_prefix("--") {
                 let name = format!("--{}", long.split('=').next().unwrap_or(""));
-                if name.len() > 3 && GIT_DENY_LONG.iter().any(|d| d.starts_with(&name)) {
+                // 1文字だけの省略（--e=… は push の --exec）も、ほかに同じ文字で始まるオプションが無ければ git は受け付ける
+                if name.len() > 2 && GIT_DENY_LONG.iter().any(|d| d.starts_with(&name)) {
                     return Err(format!("{name} は使えません"));
                 }
                 continue;
@@ -306,6 +316,9 @@ pub fn build(mode: Mode, line: &str, dir: &Path) -> Result<tokio::process::Comma
                 return Err("git のコマンドだけが使えます（例: git status）".into());
             }
             check_git(&words[1..])?;
+            // 作業フォルダそのものが git のリポジトリの中身のように見えたら動かさない（checkout でその形の
+            // ファイルを置き、そこの config でほかのプログラムを動かす抜け道。workspace::check_git_dir）
+            crate::workspace::check_git_dir(dir).map_err(|e| e.to_string())?;
             let mut c = tokio::process::Command::new("git");
             c.args(&words[1..]);
             // fetch / pull / push / remote でつなぐ先は、ネットワークの先だけにする。手元のパス（file://）は
@@ -319,14 +332,18 @@ pub fn build(mode: Mode, line: &str, dir: &Path) -> Result<tokio::process::Comma
                 .unwrap_or(0);
             // フックは動かさない。フックの置き場所が作業ツリーの中（husky の .husky/_ など）だと、
             // fetch した中身を checkout してフックを置き、commit で動かせてしまう（git だけの制限を抜けられる）
-            c.env("GIT_CONFIG_COUNT", (n + 2).to_string())
+            let (safe_key, safe_value) = crate::workspace::GIT_SAFE_CONFIG;
+            c.env("GIT_CONFIG_COUNT", (n + 3).to_string())
                 .env(format!("GIT_CONFIG_KEY_{n}"), "color.ui")
                 .env(format!("GIT_CONFIG_VALUE_{n}"), "always")
                 .env(format!("GIT_CONFIG_KEY_{}", n + 1), "core.hooksPath")
                 .env(
                     format!("GIT_CONFIG_VALUE_{}", n + 1),
                     crate::workspace::no_hooks_path(),
-                );
+                )
+                // 見つけたフォルダそのものをリポジトリとして使わせない（check_git_dir と同じ理由）
+                .env(format!("GIT_CONFIG_KEY_{}", n + 2), safe_key)
+                .env(format!("GIT_CONFIG_VALUE_{}", n + 2), safe_value);
             c
         }
         Mode::Shell => {
@@ -554,6 +571,14 @@ mod tests {
         assert!(!ok("add --pathspec-from-file=/etc/passwd"));
         assert!(!ok("diff -O/etc/passwd"));
         assert!(!ok("log -p -O /etc/passwd"));
+        assert!(!ok("reflog -p -O/etc/passwd"));
+        assert!(!ok("stash show -p -O /etc/passwd"));
+        // 1文字だけの省略も、git はほかに候補が無ければ受け付ける（push の --e は --exec）
+        assert!(!ok("push --e=sh origin"));
+        assert!(!ok("fetch --u=sh origin"));
+        assert!(!ok("log --o=/tmp/x"));
+        assert!(ok("log --oneline"));
+        assert!(ok("commit --amend --no-edit"));
         // diff の暗黙の --no-index で作業フォルダの外を読ませない（絶対パス・.. で親へ）
         assert!(!ok("diff /etc/passwd a.txt"));
         assert!(!ok("diff a.txt /etc/passwd"));
@@ -651,6 +676,34 @@ mod tests {
         assert!(marks.is_empty(), "フックが動きました: {marks:?}");
     }
 
+    /// 作業フォルダに git のリポジトリの中身のようなファイルを置かれたら、git を動かさない
+    /// （まとめフォルダの中のプロジェクトは自分の .git を持たないので、そこの config を読ませられる）
+    #[test]
+    fn git_refuses_a_planted_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("col").join("p");
+        std::fs::create_dir_all(p.join("objects")).unwrap();
+        std::fs::create_dir_all(p.join("refs")).unwrap();
+        assert!(build(Mode::Git, "git status", &p).is_ok());
+        std::fs::write(p.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let err = build(Mode::Git, "git status", &p).err().unwrap();
+        assert!(err.contains("HEAD"), "{err}");
+        // 設定でも渡す（確かめを知らない形でも、新しい git が止める）
+        std::fs::remove_file(p.join("HEAD")).unwrap();
+        let cmd = build(Mode::Git, "git status", &p).unwrap();
+        let envs: Vec<(String, String)> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        let key = envs
+            .iter()
+            .find(|(_, v)| v == "safe.bareRepository")
+            .map(|(k, _)| k.replace("KEY", "VALUE"))
+            .unwrap();
+        assert!(envs.iter().any(|(k, v)| *k == key && v == "explicit"));
+    }
+
     #[test]
     fn printable_escapes_control_characters() {
         assert_eq!(printable("git status"), "git status");
@@ -669,6 +722,10 @@ mod tests {
         // admin という名前の参加者は管理者ではない
         assert!(!Remote::new(Mode::Git, "admin").allows("admin", false));
         assert!(Remote::new(Mode::Git, "admin").allows("admin", true));
+        // 名前で挙げられているか（admin・all は名前ではない）
+        assert!(r.lists_name("たろう"));
+        assert!(!r.lists_name("admin") && !r.lists_name("はなこ"));
+        assert!(!Remote::new(Mode::Git, "all").lists_name("all"));
     }
 
     #[test]
