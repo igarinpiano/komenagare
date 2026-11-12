@@ -515,6 +515,10 @@ async fn run(args: Args) -> Result<()> {
     if let Some(path) = &args.log {
         output::to_file(path)?;
     }
+    // --web のフォルダに index.html が無ければ、起動する前に止める（起動してからでは、開いても 404 になるだけで分かりにくい）
+    if let Some(d) = &args.web {
+        check_web_dir(d)?;
+    }
     let mode = git_mode(args.no_git, args.require_git);
     // まとめフォルダ（komenagare.json がある）なら、一覧のプロジェクトを全部開く（画面から足したり外したりもできる）
     let mut coll: Option<collection::Collection> = None;
@@ -1194,6 +1198,23 @@ fn import(ws: &Workspace, store: &mut Store, file: &Path) -> Result<usize> {
     Ok(n)
 }
 
+/// --web のフォルダを確かめる（index.html があるか）
+fn check_web_dir(dir: &Path) -> Result<()> {
+    if !dir.is_dir() {
+        bail!(
+            "--web のフォルダが見つかりません: {}\nコメナガレの Web アプリのフォルダ（index.html・css・js・lib があるところ）を指定してください",
+            dir.display()
+        );
+    }
+    if !dir.join("index.html").is_file() {
+        bail!(
+            "--web のフォルダに index.html がありません: {}\nコメナガレの Web アプリのフォルダ（index.html・css・js・lib があるところ）を指定してください",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
 /// 配信する Web アプリを決める（必要なら最新版を取ってくる）
 async fn prepare_web(args: &Args) -> (web::Source, String) {
     if let Some(d) = &args.web {
@@ -1301,5 +1322,16 @@ mod tests {
     #[test]
     fn token_length() {
         assert_eq!(random_token().len(), 10);
+    }
+    #[test]
+    fn web_dir_needs_index_html() {
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("nothing");
+        let err = check_web_dir(&missing).unwrap_err().to_string();
+        assert!(err.contains("見つかりません"), "{err}");
+        let err = check_web_dir(d.path()).unwrap_err().to_string();
+        assert!(err.contains("index.html がありません"), "{err}");
+        std::fs::write(d.path().join("index.html"), "<!doctype html>").unwrap();
+        check_web_dir(d.path()).unwrap();
     }
 }
