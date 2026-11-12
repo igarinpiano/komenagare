@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Igarin
 // SPDX-License-Identifier: Apache-2.0
 'use strict';
+// 画面の言葉（js/i18n.js の T。無いとき（Node のテストなど）は日本語のまま）
+var KT = typeof T === 'function' ? T : function (s, ...v){ return Array.isArray(s) ? s.reduce((a, x, i) => a + x + (i < v.length ? v[i] : ''), '') : s; };
 /* コメント付き動画の高速書き出し（WebCodecs）。ワーカーとメインスレッドの両方で使う */
 
 const EXPORT_FORMATS = (MB) => ({ mp4: MB.Mp4OutputFormat, mov: MB.MovOutputFormat, webm: MB.WebMOutputFormat, mkv: MB.MkvOutputFormat });
@@ -20,13 +22,13 @@ async function exportSetup(MB, d){
   const vcodec = await exportPickCodec(MB, d.container, d.W, d.H, d.vbps);
   if (!vcodec){
     const e = new Error(d.container === 'mov'
-      ? `このブラウザはこの大きさ（${d.W}×${d.H}）の H.264 / HEVC をエンコードできないため MOV で書き出せません（MP4 や WebM を選んでください）`
-      : `このブラウザはこの大きさ（${d.W}×${d.H}）・形式の映像をエンコードできません（別の形式や解像度を選んでください）`);
+      ? KT`このブラウザはこの大きさ（${d.W}×${d.H}）の H.264 / HEVC をエンコードできないため MOV で書き出せません（MP4 や WebM を選んでください）`
+      : KT`このブラウザはこの大きさ（${d.W}×${d.H}）・形式の映像をエンコードできません（別の形式や解像度を選んでください）`);
     e.code = 'unencodable';
     throw e;
   }
   const track = await input.getPrimaryVideoTrack();
-  if (!track) throw new Error('動画ファイルに映像トラックが見つかりません');
+  if (!track) throw new Error(KT('動画ファイルに映像トラックが見つかりません'));
   let sink = null, target;
   if (d.handle){
     sink = await d.handle.createWritable();
@@ -105,7 +107,7 @@ async function exportConvert(MB, d, ctl){
 async function exportConvertWith(MB, d, ctl, { input, format, output, vcodec, track, sink }){
   // このブラウザの WebCodecs で元動画の映像をデコードできない（Firefox で HEVC など）ときは、呼び出し側で再生プレーヤーから映像を取り出す
   if (!(await track.canDecode())){
-    const e = new Error('このブラウザでは元動画の映像（' + ((await track.getCodec()) || '不明な形式') + '）を直接デコードできません');
+    const e = new Error(KT('このブラウザでは元動画の映像（') + ((await track.getCodec()) || KT('不明な形式')) + KT('）を直接デコードできません'));
     e.code = 'undecodable';
     throw e;
   }
@@ -129,7 +131,7 @@ async function exportConvertWith(MB, d, ctl, { input, format, output, vcodec, tr
   const lost = conv.discardedTracks.find(x => x.track.type === 'video');
   if (!conv.isValid || lost){
     const why = conv.discardedTracks.map(x => `${x.track.type}: ${x.reason}`).join(', ');
-    const e = new Error('この動画は変換できません（' + (why || '対応していない形式') + '）');
+    const e = new Error(KT('この動画は変換できません（') + (why || KT('対応していない形式')) + KT('）'));
     if (lost && lost.reason === 'undecodable_source_codec') e.code = 'undecodable';
     throw e;
   }

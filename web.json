@@ -3,6 +3,7 @@
   "files": [
     "index.html",
     "css/komenagare.css",
+    "js/i18n.js",
     "js/vim-engine.js",
     "js/comment-store.js",
     "js/comment-csv.js",

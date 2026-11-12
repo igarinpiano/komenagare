@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 'use strict';
 /* 高速書き出し用のワーカー。変換ライブラリ（d.lib）は開始時に読み込む */
-importScripts('comment-render.js', 'export-core.js');
+// 言葉はページと同じもの（ワーカーの URL の ?lang= で受け取る）
+importScripts('i18n.js', 'comment-render.js', 'export-core.js');
 
 const ctl = { canceled: false, conv: null, onProgress: (p, t) => self.postMessage({ type: 'progress', p, t }) };
 self.onmessage = async (ev) => {

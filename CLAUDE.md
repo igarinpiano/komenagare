@@ -12,6 +12,7 @@
 - `js/comment-render.js` — コメント描画の定数と描画処理（画面・書き出し・ワーカーで共通）
 - `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通。保存先のファイル（`showSaveFilePicker` が使えるブラウザ）があれば少しずつそこへ書き、無ければ今までどおり出力をメモリに持ってダウンロードする（4 GiB まで）。どちらの方式も残す。エンコーダーには書き出しのフレームレートを伝える（伝えないと 30fps と見なしてビットレートを配る。`exportRate`。「動画に合わせる」ではコマの間隔が一定のときだけ元動画の値）
 - `js/export-worker.js` — 高速書き出し用 Web Worker
+- `js/i18n.js` — 画面の言葉（日本語・英語）。`?lang=en` / `?lang=ja` で切り替え、このブラウザで覚える（localStorage の `komenagare.lang`）。JS の言葉は `T('…')` と ``T`…${x}…` ``（キーは `${}` を `{0}` `{1}` … にしたもの）で書き、英語は `EN` から引く。index.html の言葉は開いたときに置き換え、使い方は `HELP_EN` を出す。`js/vim-engine.js`・`js/export-core.js` は `KT`（Node のテストでは日本語のまま）。書き出しのワーカーには URL の `?lang=` で渡す
 - `js/term-ansi.js` — ターミナル（`--remote`）の出力の色（ANSI のエスケープシーケンス）の読み取り（DOM 非依存。Node からも `require` できる）
 - `js/app.js` — アプリ本体（1つの IIFE。上のファイルのグローバルを使う）
 - `lib/` — 同梱ライブラリ（Mediabunny、MPL-2.0。classic スクリプト版でグローバル `Mediabunny`）
@@ -91,13 +92,19 @@
   変更履歴は `tmHistory` で見ている時点までに切り出す（`tm_log` の `changes`（コミットの Change-Id）で突き合わせ、無ければ時刻で。ホストの記録より前はコミットの一覧）。
   開いている間に届いた変更は `store` に当て、`tm_log` を取り直して目盛りを足す（過去を見ているときはスクロールを動かさない）。
   編集は `tmLocked` で止める（`commitOps` など、変更を作るところで）。復元はホストが今の中身からの変更として記録・コミットし（`Hub::restore`。git reset はしない）、全員に `change` で配る。
-  目盛りは右から出して `body.tm-on` の `padding-right`（`--tm-w`）で画面を押し縮める。入りきらなければ `#tmTrack` をスクロールする（1本 `TM_GAP` px。スマホはスワイプでスクロール、押して止めてからなぞると選ぶ。見ている位置は `tmEnsureVisible` で滑らかに追う）。メニューバーは `.tb-edit` を隠して `#tmBar` を出す。
+  目盛りは右から出して `body.tm-on` の `padding-right`（`--tm-w`）で画面を押し縮める。入りきらなければ `#tmTrack` をスクロールする（1本 `TM_GAP` px。スマホはスワイプでスクロール、押して止めてからなぞると選ぶ。見ている位置は `tmEnsureVisible` で滑らかに追う）。日ごとに帯（`.tm-day`）を敷き、目盛りの長さはコミットの変更の数で伸ばし、近づけたあたりを `tmLens` で拡大鏡のように伸ばす。メニューバーは `.tb-edit` を隠して `#tmBar` を出す。
+- PC の画面の配置（`LAYOUTS`・`layoutApply`）: 標準・右にリスト・右にタイムラインの3つ。出すパネル（`settings.preview` / `side` / `timeline`）と合わせて、`.layout` の格子の列・行と各パネルの置き場所を決める。
+  パネルの間のすき間（`#gutV` `#gutH` `#gutC`）で大きさを変え、配置ごとに覚える（標準は前からの `sideWidth`・`tlHeight`）。スマホは今まで通りタブで切り替える（格子は使わない）。
+  プレビューの枠が低くなったら、CSS のコンテナークエリでプリセットをコメント欄の右に並べる。
+- プリセットのキーは各プリセットの `key`（`presetKeyOf` の形。英字は大文字、Shift なら `Shift+`。null で無し）。前に保存した key の無いものは先頭10個を 1〜9, 0 にする。ほかの操作に使っているキー（`PRESET_KEY_RESERVED`）と Ctrl・⌘・Alt との組み合わせは割り当てない（ショートカットを足したらそこにも足す）。
+- イン点・アウト点（`state.range`・`rangeSet`。キー I / O、Alt で消す）は書き出しの範囲の初期値とループ再生（`settings.tlLoop`・`loopFrame`）に使う。覚えない。
 - コメントリストは既定で見えている行だけ作る（`settings.listVirtual`。設定でオフにすると全部の行を作る）。本文は折り返して 10 行まで出す（`.rc` の line-clamp と `LIST_LINES`）。行の高さは本文から見積もって置き、作った行を測って直す（`listPaint`）。行の色（再生位置の行・手で選んだ行 `listPick`・ほかの人の選択）は状態から決めて、作るときと変わったときに当てる（行の要素を直接持ち続けない）。タイムラインも見える範囲のコメントだけ描く（`firstAtOrAfter`）。
 - `css/`・`js/`・`lib/` にファイルを足したら `web.json` の files にも足す（`cargo test` が確かめる）。
 - WebSocket のやりとり（メッセージの形や意味）を変えるときは、取り決めの版数を上げる: `web.json` の protocol、`js/app.js` の `COLLAB_PROTOCOL`、`cli/src/server.rs` の `PROTOCOL` をそろえて上げ、CLI もリリースする。
   版数を変えない変更（画面の改善など）は Web 版（GitHub Pages）を更新するだけで、ホストしている CLI にも次の起動から届く。
   Pages への公開は `pages.yml` が署名してから行う（署名のジョブは承認が要る）。署名の無い Web アプリは CLI が使わない。
-- UI の文言・コメントは日本語。
+- UI の文言・コメントは日本語。画面に出す言葉は `T` で書き、英語の訳を `js/i18n.js` の `EN` に足す（index.html に足した言葉も。使い方を変えたら `HELP_EN` も合わせる）。
+  比べたり読み取りに使ったりする言葉（CSV の見出しなど）は `T` で包まない。
 - ソースファイル（`js/`・`css/`・`cli/` の .rs・`tests/`・`index.html`・インストーラー）の冒頭には `SPDX-FileCopyrightText: 2026 Igarin` と `SPDX-License-Identifier: Apache-2.0` の2行を置く。新しいファイルにも入れる。
 - ほかのプロジェクトのコードやライブラリを取り込んだら、`NOTICE` と README の「ライセンス」に追記する。
 

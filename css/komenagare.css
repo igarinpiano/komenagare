@@ -1,37 +1,114 @@
 /* SPDX-FileCopyrightText: 2026 Igarin
    SPDX-License-Identifier: Apache-2.0 */
+/* 色・大きさの決まり。地は編集室の暗い灰色、パネルは一段明るく。
+   琥珀（--amber）は「決める・書き込む」操作（投稿・作成・保存先を選ぶ OK など）とブランドだけに使い、
+   青（--accent）は選んでいるもの・オンになっているものに使う。段の色（上・流・下）はタイムラインと同じ */
 :root{
-  --bg:#121212;--panel:#1c1c1c;--panel2:#262626;--line:#333;--text:#e9e9e9;--muted:#9a9a9a;
-  --accent:#2f8cff;--accent2:#ffb300;--danger:#ff5a5a;--ok:#4cd28a;
+  color-scheme:dark;
+  --bg:#0e0f11;--panel:#16181b;--panel2:#1e2125;--panel3:#272b30;
+  --line:#272a30;--line2:#363b42;--text:#e8e6e1;--muted:#8e939b;--dim:#5f646c;
+  --accent:#4f8fff;--accent-ink:#d3e3ff;--accent-bg:#1b2d4f;
+  --amber:#ffb300;--amber-ink:#1d1500;--accent2:var(--amber);
+  --danger:#ff5a5a;--ok:#4cd28a;
+  --ue:#2fae78;--naka:#3d7be0;--shita:#d08a2a;
+  --r-sm:5px;--r:7px;--r-lg:11px;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --gut:8px;
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--text);font-family:system-ui,"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;font-size:14px;display:flex;flex-direction:column;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;font-size:14px;line-height:1.4;display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased}
 button,select,input,textarea{font:inherit;color:inherit}
-button{background:var(--panel2);border:1px solid #3a3a3a;border-radius:6px;padding:6px 10px;cursor:pointer;white-space:nowrap}
-button:hover{background:#313131}
-button:disabled{opacity:.45;cursor:not-allowed}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-button.primary:hover{filter:brightness(1.1)}
-select,input[type=text],input[type=number],input:not([type]){background:#111;border:1px solid #3a3a3a;border-radius:6px;padding:5px 8px}
+button{background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r);padding:5px 10px;cursor:pointer;white-space:nowrap;line-height:1.35;transition:background-color .12s,border-color .12s,color .12s}
+button:hover{background:var(--panel3);border-color:#454b53}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:disabled:hover{background:var(--panel2);border-color:var(--line2)}
+button.primary{background:var(--amber);border-color:var(--amber);color:var(--amber-ink);font-weight:650}
+button.primary:hover{background:#ffc233;border-color:#ffc233}
+button.primary:disabled:hover{background:var(--amber);border-color:var(--amber)}
+:where(button,select,input,textarea,[tabindex]):focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+select,input[type=text],input[type=number],input:not([type]){background:#0b0c0e;border:1px solid var(--line2);border-radius:var(--r);padding:5px 8px}
+select:hover,input[type=text]:hover,input[type=number]:hover,input:not([type]):hover{border-color:#454b53}
+input[type=range]{accent-color:var(--accent)}
 [hidden]{display:none!important}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;display:block}
+.spacer{flex:1}
+.muted{color:var(--muted);font-size:12px}
 
 /* ---------- top bar ---------- */
-.topbar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#0b0b0b;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.brand{font-weight:800;letter-spacing:.06em;font-size:17px;margin-right:6px}
-.brand b{color:var(--accent2)}
-.tb-group{display:flex;gap:6px;flex-wrap:wrap}
-.status{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
-.status .dirty{color:var(--accent2)}
+/* メニューバーの地は上の色（--tb-glow）から地の色へのグラデーション。タイムマシンの間は --tb-glow を金色にし、
+   色の変化をゆっくり見せる（@property で色として登録しているので transition が効く。対応していないブラウザではすぐ変わる） */
+@property --tb-glow{syntax:'<color>';inherits:false;initial-value:#0e0f11}
+.topbar{--tb-glow:var(--bg);display:flex;align-items:center;gap:8px;padding:6px 10px;min-height:48px;background:linear-gradient(var(--tb-glow),var(--bg));border-bottom:1px solid var(--line);flex-wrap:wrap;flex:none;
+  transition:--tb-glow .6s ease,border-bottom-color .6s ease}
+/* ロゴ：右から左へ流れるコメントの3本の線（開いたときに1回だけ流れ込む） */
+.brand{display:flex;align-items:center;gap:8px;font-weight:800;letter-spacing:.05em;font-size:16px;margin:0 6px 0 2px;white-space:nowrap;user-select:none}
+.brand b{color:var(--amber)}
+.brand-flow{position:relative;width:24px;height:18px;flex:none;overflow:hidden}
+/* 段違いに並んだクリップ（白。下ほど薄く）と、それを貫く金色の再生位置の縦線。開いたときにクリップが右から流れ込み、
+   マウスを重ねている間は、今の位置から加速して右から左へ流れ続け、離すと減速して元の位置に止まる（js/app.js の brandFlow。線は止まったまま） */
+.brand-flow i{position:absolute;height:3px;border-radius:1.5px;background:var(--text);animation:brand-flow .9s cubic-bezier(.2,.7,.2,1) both}
+.brand-flow i:nth-child(1){top:4px;left:0;width:11px;animation-delay:.05s}
+.brand-flow i:nth-child(2){top:9px;left:5px;width:12px;opacity:.72;animation-delay:.18s}
+.brand-flow i:nth-child(3){top:14px;left:11px;width:12px;opacity:.45;animation-delay:.3s}
+/* 再生位置：上に小さな三角の頭が付いた縦線 */
+.brand-flow::before{content:"";position:absolute;z-index:1;left:12px;top:3px;bottom:0;width:2px;margin-left:-1px;border-radius:1px;background:var(--amber);box-shadow:0 0 0 1px var(--bg)}
+.brand-flow::after{content:"";position:absolute;z-index:1;left:12px;top:0;width:8px;height:5px;margin-left:-4px;background:var(--amber);clip-path:polygon(0 0,100% 0,62% 100%,38% 100%);border-radius:1px}
+@keyframes brand-flow{from{transform:translateX(26px);opacity:0}to{transform:none}}
+.brand-flow.live i{animation:none}
+.tb-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+/* メニューバーのボタン：ふだんは縁なしで、重ねると浮き上がる。同じ仲間はひとまとめの枠に入れる */
+.tb-btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;background:transparent;border-color:transparent;font-size:13px}
+.tb-btn:hover{background:var(--panel3);border-color:transparent}
+.tb-btn.icon-only{width:32px;padding:0;justify-content:center}
+.tb-btn.primary{padding:0 12px}
+.tb-btn .rec{color:#ff5d5d}
+.tb-seg{display:flex;gap:2px;padding:2px;background:var(--panel);border:1px solid var(--line);border-radius:10px;flex-wrap:nowrap}
+.tb-seg .tb-btn{height:28px;border-radius:7px}
+.tb-seg .tb-btn.icon-only{width:30px}
+.topbar .tb-toggle{color:var(--dim)}
+.topbar .tb-toggle.on{color:var(--accent-ink);background:var(--accent-bg)}
+.tb-layout .chev{width:14px;height:14px;color:var(--muted)}
+.tb-layout[aria-expanded="true"]{background:var(--panel3)}
+#btnExport.busy{background:#3a2a10;border-color:#a8741c;color:#ffd58a}
+#btnSave.dirty .lbl::after{content:"";display:inline-block;width:6px;height:6px;margin:0 0 1px 6px;border-radius:50%;background:var(--amber);vertical-align:middle}
+.status{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;min-width:0}
+#videoStatus{max-width:22ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status .dirty{color:var(--amber)}
 .status .clean{color:var(--ok)}
-.collab{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid #3a3a3a;background:#1d1d1d;white-space:nowrap}
+.collab{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line2);background:var(--panel);white-space:nowrap}
 .collab.on{color:#7ee2a8;border-color:#2e6b48}
 .collab.off{color:#ffb35c;border-color:#7a5420}
 .collab.warn,button.warn{color:#ff9b9b;border-color:#7a2d2d;background:#2a1717}
+/* 共同編集のボタンの印（文字の前に小さなアイコン） */
+#projectBtn::before,#termBtn::before,#tmBtn::before{content:"";display:inline-block;width:13px;height:13px;margin:0 5px -2px 0;background:currentColor;-webkit-mask:var(--ico) center/contain no-repeat;mask:var(--ico) center/contain no-repeat}
+#projectBtn{--ico:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z'/%3E%3C/svg%3E")}
+#termBtn{--ico:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7 5 5-5 5M12 18h7'/%3E%3C/svg%3E")}
+#tmBtn{--ico:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12a8 8 0 1 0 2.4-5.7L4 8.7'/%3E%3Cpath d='M4 4v4.7h4.7M12 8v4.5l3 2'/%3E%3C/svg%3E")}
+
+/* 画面の配置のメニュー */
+.lay-menu{position:fixed;z-index:45;width:min(430px,calc(100vw - 16px));padding:12px;background:var(--panel);border:1px solid var(--line2);border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.lay-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.lay-card{display:flex;flex-direction:column;align-items:stretch;gap:7px;padding:8px;border-radius:9px;background:var(--panel2);border:1px solid var(--line2);font-size:12px;text-align:center;white-space:normal;line-height:1.3}
+.lay-card[aria-checked="true"]{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-ink)}
+.lay-card svg{width:100%;height:auto;display:block}
+/* 配置の小さな図（メニューとボタンで同じもの）。プレビューは明るく、タイムラインは段の色の線、リストは横線 */
+.lay-glyph{display:inline-block;width:22px;height:16px;flex:none}
+.lay-glyph svg{width:100%;height:100%;display:block}
+.lg-frame{fill:none;stroke:currentColor;stroke-width:1.2;opacity:.55}
+.lg-p{fill:currentColor;opacity:.85}
+.lg-s{fill:currentColor;opacity:.22}
+.lg-t{fill:currentColor;opacity:.22}
+.lg-clip{fill:var(--amber)}
+.lg-row{fill:currentColor;opacity:.6}
+.lay-panels{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.lay-panels-title{font-size:12px;color:var(--muted)}
+.lay-note{margin:10px 0 0;font-size:11.5px;color:var(--muted);line-height:1.6}
 /* 変更履歴 */
 .hist-note{margin:0;padding:0 12px 6px;font-size:11.5px}
 .hist{flex:1;min-height:0;overflow:auto}
-.hist-item{padding:7px 12px;border-bottom:1px solid #242424;font-size:12.5px}
+.hist-item{padding:7px 12px;border-bottom:1px solid var(--line);font-size:12.5px}
 .hist-item.pending{opacity:.7;border-left:3px solid #ffb35c}
 /* タイムマシン: 見ている時点の変更・ホストの記録より前のコミット */
 .hist-item.tm-cur{box-shadow:inset 3px 0 0 #ffc233;background:rgba(255,194,51,.07)}
@@ -45,11 +122,11 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .hist-op .k.add{background:#173a26;color:#7ee2a8}.hist-op .k.update{background:#1d3150;color:#9cc8ff}.hist-op .k.delete{background:#3a1f1f;color:#ff9b9b}
 .hist-op .from{color:#999;text-decoration:line-through}
 /* 衝突の解決 */
-.cf-item{border:1px solid #3a3a3a;border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.cf-item{border:1px solid var(--line2);border-radius:8px;padding:10px 12px;margin-bottom:10px}
 .cf-title{font-weight:600;margin-bottom:4px;word-break:break-all}
 .cf-why{font-size:12px;color:#ffb35c;margin-bottom:6px}
 .cf-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:8px}
-.cf-table th,.cf-table td{border-top:1px solid #2c2c2c;padding:3px 6px;text-align:left;vertical-align:top;word-break:break-all}
+.cf-table th,.cf-table td{border-top:1px solid var(--line);padding:3px 6px;text-align:left;vertical-align:top;word-break:break-all}
 .cf-table th{color:var(--muted);font-weight:500;width:4.5em}
 .cf-table td.cf-changed{color:#ffd28a;font-weight:600}
 .cf-actions{display:flex;gap:6px;flex-wrap:wrap}
@@ -67,7 +144,7 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .follow-bar button{padding:2px 10px;font-size:12px}
 .player.following{border-color:var(--peer);box-shadow:0 0 0 1px var(--peer)}
 .row.peer-sel{box-shadow:inset 4px 0 0 var(--peer);background:color-mix(in srgb, var(--peer) 14%, transparent)}
-.peer-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-top:1px solid #2c2c2c}
+.peer-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-top:1px solid var(--line)}
 .peer-row:first-child{border-top:0}
 .peer-row.on{background:color-mix(in srgb, var(--peer) 12%, transparent);border-radius:6px}
 .peer-dot{width:12px;height:12px;border-radius:50%;background:var(--peer);flex:none}
@@ -76,24 +153,24 @@ select,input[type=text],input[type=number],input:not([type]){background:#111;bor
 .peer-state{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 /* プロジェクト・ログイン・招待 */
 .collab.proj{color:#cfe3ff;border-color:#35507a;max-width:220px;overflow:hidden;text-overflow:ellipsis}
-.proj-row,.auth-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid #2c2c2c}
+.proj-row,.auth-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid var(--line)}
 .proj-row:first-child{border-top:0}
 .proj-row.on{background:#1d3150;border-radius:6px}
 .proj-info{flex:1;min-width:0}
 .proj-name{font-weight:600;word-break:break-all}
 .proj-peers{font-size:12px;color:var(--muted);word-break:break-all}
-.proj-manage{margin-top:10px;padding-top:10px;border-top:1px solid #2c2c2c}
+.proj-manage{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .proj-new{display:flex;gap:8px}
 .proj-new input{flex:1;min-width:0}
 .proj-restore{margin-top:8px}
-.restore-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid #2c2c2c;cursor:pointer;word-break:break-all}
+.restore-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid var(--line);cursor:pointer;word-break:break-all}
 .restore-row:first-child{border-top:0}
-a.btn{display:inline-block;background:var(--panel2);border:1px solid #3a3a3a;border-radius:6px;padding:6px 10px;color:inherit;text-decoration:none;white-space:nowrap}
+a.btn{display:inline-block;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px 10px;color:inherit;text-decoration:none;white-space:nowrap}
 a.btn:hover{background:#313131}
-.login-code{width:100%;font-size:20px;letter-spacing:.12em;padding:8px 10px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.login-code{width:100%;font-size:20px;letter-spacing:.12em;padding:8px 10px;font-family:var(--mono)}
 .login-err{color:#ff9b9b;min-height:1.2em;margin:8px 0 0;font-size:13px}
 .auth-result{margin:12px 0;padding:12px;border:1px solid #2e6b48;border-radius:8px;background:#14241b}
-.auth-code{font:600 26px/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;user-select:all}
+.auth-code{font:600 26px/1.3 var(--mono);letter-spacing:.12em;user-select:all}
 .auth-link{display:flex;gap:6px;margin-top:8px}
 .auth-link input{flex:1;min-width:0}
 #authLists h4{margin:14px 0 4px;font-size:13px}
@@ -108,116 +185,152 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .term-head{display:flex;align-items:center;gap:8px;padding-top:8px;padding-bottom:8px}
 .term-head span{flex:1;min-width:0}
 .dlg-x{background:none;border:none;color:var(--muted);font-size:22px;line-height:1;padding:4px 10px}
-.dlg-x:hover{background:#2c2c2c;color:var(--text)}
+.dlg-x:hover{background:var(--line);color:var(--text)}
 .term-note{margin:0 0 8px;font-size:12px;flex:none}
 .term-form{flex:none}
-.term-out{flex:0 1 auto;min-height:4.5em;margin:0 0 8px;height:min(52vh,440px);overflow:auto;background:#0b0b0b;border:1px solid #333;border-radius:6px;padding:8px 10px;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#ddd}
+.term-out{flex:0 1 auto;min-height:4.5em;margin:0 0 8px;height:min(52vh,440px);overflow:auto;background:#0a0b0d;border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:12.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-all;color:#ddd}
 .term-out .cmd{color:#7ee2a8;font-weight:600}
 .term-out .err{color:#ff9b9b}
 .term-out .info{color:var(--muted)}
 .term-form{display:flex;gap:6px;align-items:center}
-.term-prompt{font:600 14px ui-monospace,Menlo,Consolas,monospace;color:#7ee2a8}
-.term-form input{flex:1;min-width:0;font-family:ui-monospace,Menlo,Consolas,monospace}
+.term-prompt{font:600 14px var(--mono);color:#7ee2a8}
+.term-form input{flex:1;min-width:0;font-family:var(--mono)}
+
 
 /* ---------- layout ---------- */
-.layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) min(var(--side-w,400px), max(300px, calc(100% - 412px)));grid-template-rows:minmax(0,1fr);gap:12px;padding:12px}
+/* PC の幅では、プレビュー・右のパネル・タイムラインを1つの格子に並べる。
+   列と行・どれをどこに置くかは配置（標準・右にリスト・右にタイムライン）と出すパネルから js/app.js の layoutApply が決める。
+   パネルの間のすき間（--gut）は、大きさを変えるつまみ（.gut）になっている */
+.layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr);padding:var(--gut)}
 .player-col{min-width:0;min-height:0;overflow:auto;display:flex;flex-direction:column}
 /* プレビューは枠いっぱいに広げ、動画と枠の比率が合わない部分は帯（色は設定で変更可）にする */
-.player{flex:1 0 auto;width:100%;min-width:320px;display:flex;flex-direction:column;background:#000;border-radius:8px;overflow:hidden;border:1px solid #2a2a2a}
+.player{flex:1 0 auto;width:100%;min-width:300px;display:flex;flex-direction:column;background:#000;border-radius:var(--r-lg);overflow:hidden;border:1px solid var(--line)}
 .player > :not(.stage){flex:none}
 .stage{position:relative;flex:1 1 0;min-height:100px;width:100%;background:var(--letterbox, #000);overflow:hidden;user-select:none}
 .stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--letterbox, #000)}
 /* コメントは書き出しと同じ 16:9 の範囲に描く（位置と大きさは resizeCanvas で合わせる） */
 .stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;color:#bbb;padding:20px;
-  background:repeating-linear-gradient(45deg,#0c0c0c 0 14px,#101010 14px 28px)}
-.empty-title{font-size:20px;font-weight:700;color:#eee}
-.empty-sub{font-size:13px;line-height:1.7;color:#999}
+  background:radial-gradient(ellipse at 50% 45%,#16191d,#0a0b0c 70%)}
+/* 空のときは、コメントが流れていく様子を線で見せる */
+.empty::before{content:"";position:absolute;inset:18% 8%;opacity:.5;pointer-events:none;
+  background:
+    linear-gradient(90deg,transparent,#3a3f46 30%,transparent) 70% 12%/34% 3px no-repeat,
+    linear-gradient(90deg,transparent,#5a4a1e 25%,transparent) 20% 40%/46% 3px no-repeat,
+    linear-gradient(90deg,transparent,#3a3f46 30%,transparent) 85% 68%/28% 3px no-repeat,
+    linear-gradient(90deg,transparent,#2f3338 30%,transparent) 30% 90%/38% 3px no-repeat}
+.empty > *{position:relative}
+.empty-title{font-size:19px;font-weight:700;color:#eee}
+.empty-sub{font-size:13px;line-height:1.75;color:#9a9ea5}
+
+/* パネルの境目のつまみ（PC の幅のとき）。重ねると線が出る */
+.gut{display:none;position:relative;z-index:3;touch-action:none}
+.gut::after{content:"";position:absolute;border-radius:2px;background:var(--accent);opacity:0;transition:opacity .15s}
+.gut-v{cursor:col-resize}
+.gut-v::after{left:50%;top:50%;width:3px;height:48px;margin:-24px 0 0 -1.5px}
+.gut-h{cursor:row-resize}
+.gut-h::after{top:50%;left:50%;height:3px;width:48px;margin:-1.5px 0 0 -24px}
+.gut-c{cursor:move;z-index:4;margin:-7px;width:calc(100% + 14px);height:calc(100% + 14px)}
+.gut-c::after{left:50%;top:50%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%}
+.gut:hover::after,.gut.on::after{opacity:.9}
 
 /* ---------- controls ---------- */
-.controls{background:#1a1a1a;padding:4px 10px 6px}
+.controls{background:var(--panel);padding:3px 10px 5px}
 .seek{position:relative;height:22px;cursor:pointer;touch-action:none}
 .seek canvas{position:absolute;left:0;right:0;top:0;height:12px;width:100%;pointer-events:none}
-.seek-track{position:absolute;left:0;right:0;top:12px;height:5px;background:#3b3b3b;border-radius:3px}
+.seek-track{position:absolute;left:0;right:0;top:12px;height:5px;background:#33373d;border-radius:3px;transition:height .1s,top .1s}
 .seek:hover .seek-track{height:7px;top:11px}
 .seek-fill{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:3px;width:0}
+/* イン・アウトの範囲（書き出しとループ再生の範囲） */
+.seek-range{position:absolute;top:-3px;bottom:-3px;border-left:2px solid var(--amber);border-right:2px solid var(--amber);background:rgba(255,179,0,.16);pointer-events:none}
 .seek-knob{position:absolute;top:50%;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;background:#fff;border-radius:50%;left:0;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
-.seek-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;pointer-events:none;opacity:0;transition:opacity .1s;white-space:nowrap}
+.seek-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;pointer-events:none;opacity:0;transition:opacity .1s;white-space:nowrap;font-variant-numeric:tabular-nums}
 .seek:hover .seek-tip{opacity:1}
-.ctrl-row{display:flex;align-items:center;gap:8px;margin-top:2px}
-.icon{background:none;border:none;padding:4px;width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px}
-.icon:hover{background:#2c2c2c}
+.ctrl-row{display:flex;align-items:center;gap:6px;margin-top:1px}
+.icon{background:none;border:none;padding:4px;width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r)}
+.icon:hover{background:var(--panel3)}
 .icon svg{width:22px;height:22px;fill:#eee}
 .icon.off svg{fill:#777}
 .time{font-variant-numeric:tabular-nums;font-size:13px;color:#ddd;min-width:96px}
 .vol{display:flex;align-items:center;gap:2px}
-.vol input{width:80px;accent-color:var(--accent)}
-.spacer{flex:1}
+.vol input{width:80px}
 .ccount{font-size:12px;color:var(--muted);white-space:nowrap}
 .ctrl-row select{padding:3px 6px;font-size:12px}
 
 /* ---------- comment bar ---------- */
-.comment-bar{display:flex;gap:6px;align-items:flex-start;padding:8px 10px;background:#222;border-top:1px solid #2e2e2e}
-.cmd-btn{padding:6px 9px;font-size:13px}
-.cmd-btn.on{background:#3a3a3a;border-color:#555}
-.cmd-input{width:150px;font-family:ui-monospace,Consolas,monospace;font-size:13px}
-#textInput{flex:1;min-width:120px;resize:none;background:#fff;color:#111;border:1px solid #555;border-radius:6px;padding:6px 8px;line-height:1.4;max-height:7.2em;overflow-y:auto}
+.comment-bar{display:flex;gap:6px;align-items:flex-start;padding:7px 10px;background:#1a1d21;border-top:1px solid var(--line)}
+.cmd-btn{padding:5px 9px;font-size:13px}
+.cmd-btn.on{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-ink)}
+.cmd-input{width:150px;font-family:var(--mono);font-size:13px}
+/* 入力欄はニコニコのコメント欄のように白く */
+#textInput{flex:1;min-width:120px;resize:none;background:#f5f4f0;color:#111;border:1px solid #555;border-radius:var(--r);padding:5px 8px;line-height:1.4;max-height:7.2em;overflow-y:auto}
 #textInput:disabled{background:#999}
-.char-count{font-size:12px;color:var(--muted);padding-top:8px;min-width:28px;text-align:right;font-variant-numeric:tabular-nums}
-.char-count.warn{color:var(--accent2)}
-.post{background:var(--accent2);border-color:var(--accent2);color:#111;font-weight:700}
-.post:hover{filter:brightness(1.08);background:var(--accent2)}
+.char-count{font-size:12px;color:var(--muted);padding-top:7px;min-width:28px;text-align:right;font-variant-numeric:tabular-nums}
+.char-count.warn{color:var(--amber)}
+.post{background:var(--amber);border-color:var(--amber);color:var(--amber-ink);font-weight:700}
+.post:hover{background:#ffc233;border-color:#ffc233}
 
 /* ---------- palette ---------- */
-.palette{position:fixed;z-index:30;background:#1b1b1b;border:1px solid #3a3a3a;border-radius:8px;box-shadow:0 10px 32px rgba(0,0,0,.6);padding:10px 12px 12px;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:12px;overflow:auto;overscroll-behavior:contain}
+.palette{position:fixed;z-index:30;background:var(--panel);border:1px solid var(--line2);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.6);padding:10px 12px 12px;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:12px;overflow:auto;overscroll-behavior:contain}
 /* ---------- presets ---------- */
-.presets{display:flex;gap:6px;align-items:center;padding:6px 10px 8px;background:#1f1f1f;border-top:1px solid #2a2a2a;overflow-x:auto;scrollbar-width:thin}
-.preset{flex:none;display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;background:#2b2b2b;border:1px solid #3e3e3e;font-size:13px;max-width:200px}
+.presets{display:flex;gap:6px;align-items:center;padding:5px 10px 7px;background:#1a1d21;border-top:1px solid var(--line);overflow-x:auto;scrollbar-width:thin}
+.preset{flex:none;display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;background:var(--panel2);border:1px solid var(--line2);font-size:13px;max-width:200px}
 .preset span.tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.preset:hover{background:#363636;border-color:#555}
+.preset:hover{background:var(--panel3);border-color:#4a5058}
 .preset .sw{flex:none;width:9px;height:9px;border-radius:2px;border:1px solid rgba(255,255,255,.35)}
-.preset kbd{font:10px ui-monospace,Consolas,monospace;color:#999;background:#1a1a1a;border:1px solid #444;border-radius:3px;padding:0 3px}
-.preset-tool{flex:none;padding:4px 9px;font-size:12.5px;border-radius:999px}
-.presets .hint{flex:none;font-size:12px;color:var(--muted);white-space:nowrap}
+.preset kbd{font:10px var(--mono);color:#999;background:#121417;border:1px solid var(--line2);border-radius:3px;padding:0 3px}
+.preset-tool{flex:none;padding:3px 10px;font-size:12.5px;border-radius:999px}
+.presets .hint{flex:0 1 auto;min-width:0;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tlset-grid{grid-template-columns:150px 1fr}
 .tlset-grid label{line-height:1.3}
 .pr-list{display:flex;flex-direction:column;gap:6px}
-.pr-row{display:grid;grid-template-columns:1fr 150px auto auto auto;gap:6px;align-items:center}
+.pr-row{display:grid;grid-template-columns:1fr 140px 92px auto auto auto;gap:6px;align-items:center}
+/* キーの割り当て（押してからキーを押す） */
+.pr-row .pr-key{font:12.5px var(--mono);padding:4px 6px;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.pr-row .pr-key:not([data-key]){color:var(--dim);font-family:inherit}
+.pr-row .pr-key.capturing{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-ink);font-family:inherit}
 .pr-row input{min-width:0;width:100%}
-.pr-row .pr-cmd{font-family:ui-monospace,Consolas,monospace}
+.pr-row .pr-cmd{font-family:var(--mono)}
 .pr-row button{padding:4px 8px}
 .pr-empty{color:var(--muted);font-size:13px;padding:6px 0}
-@media (max-width: 560px){ .pr-row{grid-template-columns:1fr 1fr;} .pr-row .pr-text{grid-column:1 / -1} }
+@media (max-width: 560px){
+  .pr-row{grid-template-columns:1fr auto auto auto;row-gap:4px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .pr-row .pr-text{grid-column:1 / -1}
+  .pr-row .pr-key{grid-column:2 / -1}
+  .pr-row .pr-up{grid-column:2}
+}
 .palette .pl{color:var(--muted);white-space:nowrap}
 .chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
-.chip{padding:3px 8px;font-size:12px;border-radius:999px;background:#2a2a2a;border:1px solid #3c3c3c}
-.chip.active{border-color:var(--accent);background:#17345a}
+.chip{padding:3px 8px;font-size:12px;border-radius:999px;background:var(--panel2);border:1px solid var(--line2)}
+.chip.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-ink)}
 .chip.color{display:inline-flex;align-items:center;gap:5px}
 .chip .sw{width:11px;height:11px;border-radius:3px;border:1px solid rgba(255,255,255,.35)}
 .palette input[type=color]{width:30px;height:24px;padding:0;border:1px solid #444;border-radius:4px;background:none}
 .palette input[type=number]{width:64px;padding:3px 6px;font-size:12px}
 
 /* ---------- side panel ---------- */
-.side{min-height:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid #2a2a2a;border-radius:8px;overflow:hidden}
+.side{min-height:0;min-width:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .side-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 6px}
 .side-title{font-weight:700}
-.side-title span{color:var(--muted);font-weight:400;margin-left:4px;font-size:12px}
+.side-title span{color:var(--muted);font-weight:400;margin-left:6px;font-size:12px;font-variant-numeric:tabular-nums}
 .chk{font-size:12px;color:#ccc;display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.chk input{accent-color:var(--accent)}
 .search{margin:0 12px 8px}
 .list-head{display:grid;grid-template-columns:54px 1fr 92px 22px;gap:6px;padding:4px 12px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--line)}
 .list{flex:1;min-height:72px;overflow-y:auto;position:relative}
-.row{display:grid;grid-template-columns:54px 1fr 92px 22px;gap:6px;padding:4px 12px;font-size:12.5px;border-bottom:1px solid #242424;cursor:pointer;align-items:start}
-.row:hover{background:#262626}
-.row.current{background:#1d3150}
+.row{display:grid;grid-template-columns:54px 1fr 92px 22px;gap:6px;padding:4px 12px;font-size:12.5px;border-bottom:1px solid #1f2226;cursor:pointer;align-items:start}
+.row:hover{background:var(--panel2)}
+.row.current{background:var(--accent-bg);box-shadow:inset 3px 0 0 var(--accent)}
 .row.mine .rc{color:#ffe28a}
 .row.inv .rc{opacity:.45;font-style:italic}
-.rt{font-variant-numeric:tabular-nums;color:#aaa}
+.rt{font-variant-numeric:tabular-nums;color:#a7abb2;font-family:var(--mono);font-size:11.5px;padding-top:1px}
 .rc{word-break:break-all;white-space:pre-wrap;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:10;line-clamp:10;overflow:hidden}
-.rm{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:4px}
+.rm{font-family:var(--mono);font-size:11px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:4px}
 .rm .sw{flex:none;width:9px;height:9px;border-radius:2px;border:1px solid rgba(255,255,255,.3)}
 .del{background:none;border:none;color:#777;padding:0 4px;font-size:15px;line-height:1;visibility:hidden}
 .row:hover .del{visibility:visible}
 .del:hover{color:var(--danger);background:none}
+@media (hover: none){ .del{visibility:visible;opacity:.55} }
 /* 見えている行だけ作るとき（settings.listVirtual）：置く位置を指定する（高さは本文から見積もり、作ったら測って直す） */
 .list.virtual .row{position:absolute;left:0;right:0}
 .list-spacer{width:1px}
@@ -227,7 +340,7 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .settings summary{cursor:pointer;color:#ccc;font-weight:600;padding:2px 0}
 .set-grid{display:grid;grid-template-columns:1fr auto;gap:8px 10px;align-items:center;margin-top:8px}
 .set-grid label{color:#ccc}
-.set-grid input[type=range]{width:120px;accent-color:var(--accent)}
+.set-grid input[type=range]{width:120px}
 .lb-row{display:inline-flex;gap:6px;align-items:center}
 .lb-row input[type=color]{width:34px;height:24px;padding:0 2px;border:1px solid #444;border-radius:4px;background:#222;cursor:pointer}
 .lb-row button{font-size:11.5px;padding:3px 7px}
@@ -239,81 +352,76 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 
 /* ---------- toasts / overlay / dialogs ---------- */
 .toasts{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:50;align-items:center;pointer-events:none}
-.toast{pointer-events:none;background:#2b2b2b;border:1px solid #444;color:#eee;padding:9px 14px;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.5);display:flex;gap:12px;align-items:center;max-width:min(90vw,560px);transition:opacity .3s,transform .3s}
+.toast{pointer-events:none;background:#24282d;border:1px solid var(--line2);color:#eee;padding:9px 14px;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.5);display:flex;gap:12px;align-items:center;max-width:min(90vw,560px);transition:opacity .3s,transform .3s}
 .toast.error{border-color:#7a2d2d;background:#3a1f1f}
 .toast.out{opacity:0;transform:translateY(8px)}
-.toast button{pointer-events:auto;padding:3px 10px;font-size:12px;background:var(--accent);border-color:var(--accent);color:#fff}
-.drop-overlay{position:fixed;inset:0;background:rgba(20,40,80,.55);border:4px dashed var(--accent);display:none;align-items:center;justify-content:center;font-size:26px;font-weight:700;z-index:40;pointer-events:none}
+.toast button{pointer-events:auto;padding:3px 10px;font-size:12px;background:var(--amber);border-color:var(--amber);color:var(--amber-ink);font-weight:650}
+.drop-overlay{position:fixed;inset:0;background:rgba(14,22,40,.6);border:3px dashed var(--accent);display:none;align-items:center;justify-content:center;font-size:24px;font-weight:700;z-index:40;pointer-events:none}
 .drop-overlay.show{display:flex}
-dialog{background:#1e1e1e;color:var(--text);border:1px solid #3a3a3a;border-radius:10px;padding:0;width:min(560px,94vw);box-shadow:0 20px 60px rgba(0,0,0,.6)}
-dialog::backdrop{background:rgba(0,0,0,.6)}
-.dlg-head{padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700;font-size:15px}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line2);border-radius:14px;padding:0;width:min(560px,94vw);box-shadow:0 24px 70px rgba(0,0,0,.65)}
+dialog::backdrop{background:rgba(5,6,8,.62)}
+.dlg-head{padding:14px 18px 12px;border-bottom:1px solid var(--line);font-weight:700;font-size:15px}
 .dlg-body{padding:14px 18px;max-height:70vh;overflow:auto;line-height:1.65}
-.dlg-foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.dlg-foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;background:#14161a;border-radius:0 0 14px 14px}
 .form-grid{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center}
 .form-grid .inline{display:flex;gap:8px;align-items:center}
 .form-grid input[type=text]{width:90px}
-.progress{height:8px;background:#333;border-radius:4px;overflow:hidden;margin:6px 0}
-.progress div{height:100%;width:0;background:var(--accent2);transition:width .2s}
-.help h4{margin:14px 0 6px;font-size:14px;color:var(--accent2)}
+.progress{height:8px;background:#2c3035;border-radius:4px;overflow:hidden;margin:6px 0}
+.progress div{height:100%;width:0;background:var(--amber);transition:width .2s}
+.help h4{margin:16px 0 6px;font-size:14px;color:var(--amber)}
 .help h4:first-child{margin-top:0}
-.help code{background:#111;border:1px solid #333;border-radius:4px;padding:0 4px;font-size:12px}
+.help code{background:#0b0c0e;border:1px solid var(--line2);border-radius:4px;padding:0 4px;font-size:12px}
 .help a{color:var(--accent)}
 .help table{border-collapse:collapse;width:100%;font-size:12.5px}
-.help td{border-bottom:1px solid #2c2c2c;padding:4px 6px;vertical-align:top}
+.help td{border-bottom:1px solid var(--line);padding:4px 6px;vertical-align:top}
 .help td:first-child{white-space:nowrap;color:#ccc}
-.muted{color:var(--muted);font-size:12px}
 .exp-audio{display:flex;flex-direction:column;gap:4px}
 .exp-hint{margin-top:6px;color:#e5c07b}
-.exp-hint code{display:block;margin-top:4px;padding:4px 6px;background:#111;border:1px solid #333;border-radius:4px;color:#ddd;font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;user-select:all}
+.exp-hint code{display:block;margin-top:4px;padding:4px 6px;background:#0b0c0e;border:1px solid var(--line2);border-radius:4px;color:#ddd;font:12px/1.4 var(--mono);white-space:pre-wrap;word-break:break-all;user-select:all}
 #expHint .exp-hint:first-child{margin-top:8px}
-#btnExport.busy{background:#3a2a10;border-color:#a8741c;color:#ffd58a}
 
 /* ---------- side tabs / panes ---------- */
 .side-tabs{display:flex;gap:2px;padding:4px 8px 0;border-bottom:1px solid var(--line);flex:none}
-.stab{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:7px 10px 6px;color:var(--muted);font-size:13px}
+.stab{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:8px 10px 7px;color:var(--muted);font-size:13px}
 .stab:hover{background:none;color:#ddd}
 .stab.on{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
 .pane{flex:1;min-height:0;display:flex;flex-direction:column}
-/* 右のパネルの幅を変えるつまみ（動画との間のすき間。PC の幅のときだけ） */
-.side-resize{display:none;justify-self:start;align-self:stretch;width:12px;margin-left:-12px;cursor:ew-resize;z-index:3;position:relative;touch-action:none}
-.side-resize::after{content:"";position:absolute;top:50%;left:4px;width:3px;height:44px;margin-top:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
-.side-resize:hover::after,.side-resize.on::after{opacity:1}
-/* メニューバーの表示切替（タイムライン・コメントリスト）。出しているときは色を付ける */
-.topbar .tb-toggle.on{background:#17345a;border-color:var(--accent)}
 .mtabs{display:none}
 .m-resize{display:none}
 .danger{color:#ff8a8a;border-color:#6a2c2c}
 .danger:hover{background:#3a1f1f}
 
 /* ---------- timeline ---------- */
-.timeline{flex:none;height:var(--tl-h,260px);display:flex;flex-direction:column;background:#131313;border-top:1px solid var(--line);position:relative;min-height:0}
-/* タイムラインの高さを変えるつまみ。動画・右のパネルとの間のすき間（.layout の下の余白 12px）に置き、
-   線は右のパネルのつまみ（.side-resize）と同じ大きさで、すき間の中の同じ位置に出す（top は .timeline の上の枠線 1px の分も引く） */
-.tl-resize{position:absolute;left:0;right:0;top:-13px;height:17px;cursor:ns-resize;z-index:3;touch-action:none}
-.tl-resize::after{content:"";position:absolute;left:50%;top:4px;width:44px;height:3px;margin-left:-22px;border-radius:2px;background:#555;opacity:0;transition:opacity .15s}
-.tl-resize:hover::after,.tl-resize.on::after{opacity:1}
-/* 動画・右のパネル・タイムラインの境目の交わる所（横の位置は js/app.js の placeTlCorner で、2本の線の真ん中に合わせる）。
-   点の真ん中は、縦の線（すき間の左から 5.5px）と横の線（すき間の上から 5.5px）が交わる所 */
-.tl-corner{display:none;position:absolute;top:-18px;width:22px;height:22px;margin-left:-11px;cursor:move;z-index:4;touch-action:none}
-.tl-corner::after{content:"";position:absolute;left:6.5px;top:6px;width:9px;height:9px;border-radius:50%;background:#555;opacity:0;transition:opacity .15s}
-.tl-corner:hover::after,.tl-corner.on::after{opacity:1}
-.tl-bar{display:flex;align-items:center;gap:6px;padding:6px 10px 5px;flex:none;overflow-x:auto;scrollbar-width:none}
+.timeline{min-height:0;min-width:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;position:relative;container:tl / inline-size}
+/* 操作の帯。仲間ごとにまとめ、間を細い線で区切る。幅が足りなければ、文字を隠してアイコンだけにする */
+.tl-bar{display:flex;align-items:center;gap:4px;padding:5px 8px;flex:none;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line)}
 .tl-bar::-webkit-scrollbar{display:none}
-.tl-bar button{padding:4px 9px;font-size:12.5px}
-.tl-bar button.on{background:#17345a;border-color:var(--accent)}
-.tl-sep{width:1px;align-self:stretch;background:#333;margin:2px;flex:none}
-.tl-zoom{width:96px;accent-color:var(--accent);flex:none}
-.tl-info{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;margin-left:auto;padding-left:8px}
+.tl-grp{display:flex;align-items:center;gap:2px;flex:none;padding-right:6px;margin-right:2px;border-right:1px solid var(--line)}
+.tl-grp:last-child{border-right:0;padding-right:0;margin-right:0}
+.tl-ico{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 7px;font-size:12.5px;background:transparent;border-color:transparent;color:#d6d4cf}
+.tl-ico:hover{background:var(--panel3);border-color:transparent}
+.tl-ico svg.i{width:17px;height:17px}
+.tl-ico.on{background:var(--accent-bg);color:var(--accent-ink)}
+.tl-ico.primary{color:var(--amber-ink)}
+.tl-ico.set{color:var(--amber)}
+#tlLoop.on{background:#3a2c0a;color:#ffd27a}
+/* タイムコード（再生位置）。押すと時刻を打てる */
+.tl-tc{width:10.5ch;font:600 15px/1 var(--mono);color:var(--amber);background:#0a0b0d;border:1px solid var(--line);border-radius:6px;padding:5px 7px;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.tl-tc:focus{color:var(--text);border-color:var(--accent)}
+.tl-zoom{width:96px;flex:none;margin:0 2px}
+.tl-info{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;margin-left:auto;padding:0 8px;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
 .tl-info b{color:#ddd;font-weight:600}
-.tl-ov{flex:none;height:30px;margin:0 10px 5px;position:relative;touch-action:none;border-radius:5px;overflow:hidden;border:1px solid #2a2a2a;cursor:pointer}
+@container tl (max-width: 1020px){ .tl-ico .lbl{display:none} .tl-ico{padding:0 6px} }
+@container tl (max-width: 760px){ .tl-info{display:none} }
+@container tl (max-width: 640px){ .tl-zoom{display:none} }
+.tl-ov{flex:none;height:28px;margin:6px 8px 4px;position:relative;touch-action:none;border-radius:6px;overflow:hidden;border:1px solid var(--line);cursor:pointer}
 .tl-main{flex:1;min-height:0;position:relative;touch-action:none;outline:none;user-select:none;-webkit-user-select:none}
 .tl-ov canvas,.tl-main canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-.tl-vbar{position:absolute;right:0;top:22px;bottom:0;width:13px;background:#181818;border-left:1px solid #2a2a2a;z-index:2;touch-action:none}
-.tl-vthumb{position:absolute;left:2px;right:2px;top:0;min-height:24px;border-radius:5px;background:#4c4c4c;cursor:grab}
-.tl-vbar:hover .tl-vthumb{background:#666}
-.tl-vthumb.drag{background:#888;cursor:grabbing}
-@media (pointer: coarse){ .tl-vbar{width:18px} .tl-vthumb{left:3px;right:3px} }
+.tl-vbar{position:absolute;right:0;top:24px;bottom:0;width:12px;background:#14161a;border-left:1px solid var(--line);z-index:2;touch-action:none}
+.tl-vthumb{position:absolute;left:2px;right:2px;top:0;min-height:24px;border-radius:5px;background:#454a52;cursor:grab}
+.tl-vbar:hover .tl-vthumb{background:#5d636c}
+.tl-vthumb.drag{background:#7d838c;cursor:grabbing}
+@media (pointer: coarse){ .tl-vbar{width:18px} .tl-vthumb{left:3px;right:3px} .tl-ico{height:34px;padding:0 9px} .tl-ico svg.i{width:19px;height:19px} }
 .tl-main:focus-visible{box-shadow:inset 0 0 0 1px var(--accent)}
 
 /* ---------- Vim ---------- */
@@ -359,65 +467,115 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   color:transparent;background:transparent;caret-color:transparent;pointer-events:none;white-space:pre}
 .vim-keys{display:none;gap:4px;padding:6px;background:#181818;border-top:1px solid var(--line);flex:none;overflow-x:auto;scrollbar-width:none}
 .vim-keys::-webkit-scrollbar{display:none}
-.vim-keys button{flex:1 0 auto;min-width:38px;padding:8px 6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+.vim-keys button{flex:1 0 auto;min-width:38px;padding:8px 6px;font-family:var(--mono);font-size:13px}
 .vim-keys button.on{background:var(--accent);border-color:var(--accent)}
 @media (pointer: coarse){ .vim-keys{display:flex} }
 
+
 /* ---------- edit dialog ---------- */
 .ed-grid{grid-template-columns:90px 1fr}
-.ed-grid textarea{width:100%;resize:vertical;background:#fff;color:#111;border:1px solid #555;border-radius:6px;padding:6px 8px;line-height:1.4;font:inherit;color:#111}
-.ed-grid #edTime{width:110px;font-variant-numeric:tabular-nums}
+.ed-grid textarea{width:100%;resize:vertical;background:#f5f4f0;color:#111;border:1px solid #555;border-radius:var(--r);padding:6px 8px;line-height:1.4;font:inherit;color:#111}
+.ed-grid #edTime{width:110px;font-variant-numeric:tabular-nums;font-family:var(--mono)}
 .ed-grid #edDur{width:90px}
-.ed-grid #edCmd{width:100%;font-family:ui-monospace,Consolas,monospace}
+.ed-grid #edCmd{width:100%;font-family:var(--mono)}
 .dlg-foot .spacer{flex:1}
 
+/* ---------- PC の幅 ---------- */
 @media (min-width: 981px){
-  body.tl-off .timeline{display:none}
-  .layout > .side,.side-resize{grid-column:2;grid-row:1}
-  .side-resize{display:block}
-  .tl-corner{display:block}
-  /* 右のパネルを隠したら、動画を横いっぱいにする */
-  body.side-off .layout{grid-template-columns:minmax(0,1fr)}
-  body.side-off .side,body.side-off .side-resize,body.side-off .tl-corner{display:none}
+  .gut{display:block}
+  /* 出さないパネル（メニューバーの切り替え）。格子からも外す（layoutApply） */
+  .lay-off{display:none!important}
+  /* プレビューの下（再生の操作・コメント欄・プリセット）。プレビューの枠が低くなったら、
+     プリセットをコメント欄の右に並べて1段減らし、動画を大きく残す */
+  .player-col{container:pcol / size;overflow:hidden;display:block}
+  .player{display:grid;height:100%;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr) auto auto auto;
+    grid-template-areas:"stage stage" "ctrl ctrl" "bar bar" "pre pre"}
+  .stage{grid-area:stage;min-height:80px}
+  .controls{grid-area:ctrl}
+  .comment-bar{grid-area:bar;min-width:0}
+  .presets{grid-area:pre;min-width:0}
+  @container pcol (max-height: 560px) and (min-width: 880px){
+    .player{grid-template-rows:minmax(0,1fr) auto auto;grid-template-areas:"stage stage" "ctrl ctrl" "bar pre"}
+    .presets{border-left:1px solid var(--line);padding:7px 10px;max-width:min(40cqw,440px);align-self:stretch}
+    .presets .hint{display:none}
+  }
+  @container pcol (max-height: 400px){
+    .seek canvas{display:none}
+    .seek{height:14px}
+    .seek-track{top:5px}
+    .seek:hover .seek-track{top:4px}
+    .controls{padding-top:2px;padding-bottom:2px}
+    .ctrl-row{margin-top:0}
+    .icon{height:28px}
+  }
+  /* プレビューの列が狭いときは、入力欄を1段目にして、コマンドと「コメントする」を2段目に回す（右がはみ出さないように） */
+  @container pcol (max-width: 760px){
+    .comment-bar{flex-wrap:wrap}
+    #textInput{order:-1;flex:1 1 100%}
+    .cmd-input{flex:1;width:auto;min-width:0}
+    .char-count{padding-top:6px}
+  }
+  @container pcol (max-width: 640px){
+    .vol input,.ccount{display:none}
+  }
 }
+@media (min-width: 981px) and (max-width: 1400px){
+  #btnMerge .lbl,#btnSaveAs .lbl,.tb-layout .lbl{display:none}
+  #btnMerge,#btnSaveAs{width:32px;padding:0;justify-content:center}
+  .tb-seg #btnMerge,.tb-seg #btnSaveAs{width:30px}
+}
+@media (min-width: 981px) and (max-width: 1180px){
+  #btnOpenComments .lbl,#videoStatus{display:none}
+  #btnOpenComments{width:30px;padding:0;justify-content:center}
+}
+
+/* ---------- スマホ・狭い画面 ---------- */
 @media (max-width: 980px){
   body{overflow-x:hidden;overflow-y:auto}
-  .topbar{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding:6px 10px;gap:6px;flex:none}
+  .topbar{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding:5px 8px;gap:6px;min-height:44px}
   .topbar::-webkit-scrollbar{display:none}
   .topbar > *,.tb-group > *{flex:none}
   .tb-group{flex-wrap:nowrap}
-  .brand{white-space:nowrap;font-size:15px}
-  .topbar button{padding:5px 8px;font-size:13px}
+  .brand{font-size:15px;margin-right:2px}
+  /* メニューバーはアイコンだけ（「動画を開く」は文字も出す） */
+  .tb-btn .lbl{display:none}
+  .tb-btn{width:36px;height:36px;padding:0;justify-content:center}
+  #btnOpenVideo{width:auto;padding:0 11px}
+  #btnOpenVideo .lbl{display:inline}
+  .tb-seg .tb-btn{height:32px;width:34px}
   .desk-only,#videoStatus,#fileStatus{display:none}
-  .status{margin-left:6px;flex:none}
+  .status{margin-left:2px;flex:none}
   .layout{display:contents}
   .player-col{flex:none;padding:8px 8px 0;overflow:visible}
   /* 動画の高さは画面の高さの --m-video（既定 0.32。タブの上のつまみのドラッグで変える）。
      枠（シークバーやコメント入力欄も含む）の横幅はいつも画面いっぱいで変えず、動画と比率が合わない部分は帯にする */
   .player{flex:none;min-width:0;container-type:inline-size}
   .stage{flex:none;aspect-ratio:16/9;min-height:0;height:min(calc(100cqw * 9 / 16), calc(var(--stable-h, 100vh) * var(--m-video, 0.32)))}
-  .ctrl-row{gap:4px}
-  .time{min-width:0;font-size:12px}
+  .ctrl-row{gap:2px}
+  .ctrl-row .icon{width:30px}
+  .ctrl-row select{padding:3px 2px}
+  .time{flex:none}
+  .time{min-width:0;font-size:12px;white-space:nowrap}
   .vol input,.ccount{display:none}
   .comment-bar{flex-wrap:wrap;padding:6px 8px}
   #textInput{order:-1;flex:1 1 100%}
   .cmd-input{flex:1;width:auto;min-width:0}
   .char-count{padding-top:6px}
-  .mtabs{display:flex;gap:4px;padding:6px 8px 0;flex:none}
-  .mtab{flex:1;padding:7px 4px;font-size:13px}
-  .mtab.on{background:#17345a;border-color:var(--accent)}
+  .mtabs{display:flex;gap:2px;margin:6px 8px 0;padding:3px;flex:none;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+  .mtab{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:7px 2px;font-size:12.5px;background:transparent;border-color:transparent;color:var(--muted);border-radius:7px}
+  .mtab svg.i{width:16px;height:16px}
+  .mtab.on{background:var(--accent-bg);color:var(--accent-ink)}
   .side{flex:1 1 0;min-height:230px;margin:6px 8px 8px}
   .side-tabs{display:none}
-  .timeline{flex:1 1 0;height:auto;min-height:230px;border-top:none;margin-top:6px}
-  .tl-resize{display:none}
+  .timeline{flex:1 1 0;min-height:230px;margin:6px 8px 8px}
   /* 縦向きでは、タブの上のつまみをドラッグして動画の大きさを変え、下の画面（タイムライン・リスト・Vim・履歴）がその残りに広がる */
   .m-resize{display:block;flex:none;position:relative;height:18px;margin:2px 8px -8px;cursor:ns-resize;touch-action:none}
-  .m-resize::after{content:"";position:absolute;left:50%;top:7px;width:44px;height:4px;margin-left:-22px;border-radius:2px;background:#666}
+  .m-resize::after{content:"";position:absolute;left:50%;top:7px;width:40px;height:4px;margin-left:-20px;border-radius:2px;background:#4a4f57}
   .m-resize.on::after{background:var(--accent)}
   body[data-mpane="timeline"] .side{display:none}
   body:not([data-mpane="timeline"]) .timeline{display:none}
-  .time{white-space:nowrap}
   dialog.term-dlg[open]{margin:calc(var(--vv-top, 0px) + 8px) auto auto}
+  .lay-menu{display:none!important}
 }
 /* 横向きのスマホ：左に動画、右にタイムライン等（LumaFusion 風）。
    キーボードが出ると表示領域が横長になるので、CSS の orientation ではなく端末の向きで決める（js/app.js の applyPhoneLandscape） */
@@ -427,83 +585,99 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   html.phone-landscape .player-col{grid-column:1;grid-row:2 / 4;overflow-y:auto;padding:6px 0 6px 6px}
   html.phone-landscape .player{max-width:100%;align-self:stretch}
   html.phone-landscape .stage{height:auto}
-  html.phone-landscape .mtabs{grid-column:2;grid-row:2;padding:6px 6px 0}
-  html.phone-landscape .mtab{padding:5px 4px}
+  html.phone-landscape .mtabs{grid-column:2;grid-row:2;margin:6px 6px 0}
+  html.phone-landscape .mtab{padding:5px 2px}
   html.phone-landscape .side,html.phone-landscape .timeline{grid-column:2;grid-row:3;min-height:0;margin:6px}
-  html.phone-landscape .timeline{margin:4px 0 0}
-  html.phone-landscape .side{margin:6px}
   html.phone-landscape .m-resize{display:none}
 }
 
-/* ---------- タイムマシン（右から目盛りを出して、画面をその分押し縮める） ---------- */
-:root{--tm-w:96px}
-@media (max-width: 980px){ :root{--tm-w:58px} }
-body{transition:padding-right .35s ease}
+/* ---------- タイムマシン（右から目盛りを出して、画面をその分押し縮める） ----------
+   目盛りの帯は、上（昔）ほど深い金色、下（今）は作業場の灰色。色の変わり方はゆっくり（段差が見えないよう、止める所を細かく置く）。
+   1本が1コミット。長さはそのコミットでまとめた変更の数で少し伸び、マウスや指を近づけると、
+   そのあたりの目盛りが拡大鏡のように伸びる（--m。js/app.js の tmLens）。日ごとに薄い帯で区切る */
+:root{--tm-w:104px}
+@media (max-width: 980px){ :root{--tm-w:60px} }
+body{transition:padding-right .35s cubic-bezier(.2,.8,.2,1)}
 body.tm-on{padding-right:var(--tm-w)}
 .tm-rail{position:fixed;top:0;right:0;bottom:0;width:var(--tm-w);z-index:40;display:flex;flex-direction:column;align-items:stretch;
-  background:linear-gradient(to left,rgba(16,16,20,.97),rgba(22,22,28,.92));border-left:1px solid #2c2c34;
-  transform:translateX(100%);transition:transform .35s ease;outline:none;touch-action:none;user-select:none;-webkit-user-select:none}
-body.tm-on .tm-rail{transform:none;box-shadow:-8px 0 24px rgba(0,0,0,.35)}
+  background:radial-gradient(140% 70px at 100% 100%,rgba(255,80,80,.12),transparent 70%),
+    linear-gradient(180deg,#2a1f08 0%,#271d09 10%,#241b0a 20%,#211a0b 30%,#1e180c 40%,#1b170e 50%,#19160f 60%,#171510 70%,#161411 80%,#151412 90%,#141413 100%);
+  border-left:1px solid #4a3a1a;
+  transform:translateX(100%);transition:transform .35s cubic-bezier(.2,.8,.2,1);outline:none;touch-action:none;user-select:none;-webkit-user-select:none}
+body.tm-on .tm-rail{transform:none;box-shadow:-10px 0 30px rgba(0,0,0,.4)}
 .tm-rail:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
-.tm-arrow{flex:none;margin:6px auto;width:30px;height:26px;padding:0;border-radius:999px;font-size:11px;line-height:1;color:#ddd;background:#2a2a32;border-color:#3d3d48}
+.tm-arrow{flex:none;margin:6px auto;width:32px;height:24px;padding:0;border-radius:999px;font-size:10px;line-height:1;color:#ffd28a;background:rgba(58,44,16,.75);border-color:#5a4520}
+.tm-arrow:hover{background:#4a3814;border-color:#7a5c26}
 .tm-arrow:disabled{opacity:.3}
 .tm-track{position:relative;flex:1;min-height:0;margin:2px 0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;overscroll-behavior:contain;touch-action:pan-y}
 .tm-track::-webkit-scrollbar{display:none}
 /* スクロールするときは、上下の端を薄くして続きがあるのを見せる */
 .tm-track.scroll{-webkit-mask-image:linear-gradient(transparent,#000 18px,#000 calc(100% - 18px),transparent);mask-image:linear-gradient(transparent,#000 18px,#000 calc(100% - 18px),transparent)}
 .tm-ticks{position:relative;cursor:pointer}
-.tm-tick{position:absolute;right:10px;width:9px;height:1px;background:#777;pointer-events:none}
-.tm-tick.long{width:20px;height:2px;margin-top:-.5px;background:#d0d0d6}
-.tm-tick.now{background:#ff5a5a}
-.tm-label{position:absolute;right:35px;transform:translateY(-50%);font-size:10px;line-height:1;color:#a8a8b2;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
-.tm-label.now{color:#ff6b6b;font-weight:700}
-.tm-cur{position:absolute;right:4px;width:30px;height:3px;margin-top:-1.5px;border-radius:2px;background:var(--accent2);box-shadow:0 0 8px rgba(255,179,0,.7);pointer-events:none;transition:top .12s ease}
-.tm-hov{position:absolute;right:6px;width:26px;height:1px;background:#fff;pointer-events:none}
-.tm-tip{position:absolute;right:calc(100% + 8px);transform:translateY(-50%);display:flex;flex-direction:column;gap:1px;max-width:min(360px,60vw);
-  padding:5px 10px;border-radius:7px;background:rgba(14,14,18,.92);border:1px solid #3a3a46;box-shadow:0 6px 20px rgba(0,0,0,.5);pointer-events:none;white-space:nowrap}
-.tm-tip b{font-size:12.5px}
-.tm-tip span{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+/* 日ごとの帯（1日おきに少し明るく） */
+.tm-day{position:absolute;left:0;right:0;pointer-events:none;background:rgba(255,206,130,.045);border-top:1px solid rgba(255,206,130,.09)}
+.tm-day.alt{background:transparent}
+.tm-tick{position:absolute;right:10px;width:min(calc(var(--len, 9px) * var(--m, 1)), 29px);height:1px;background:#a8946a;opacity:calc(.62 + (var(--m, 1) - 1) * .3);pointer-events:none;border-radius:1px 0 0 1px;transition:width .09s ease-out}
+.tm-tick.long{height:2px;margin-top:-.5px;background:#f2e4c2}
+.tm-tick.now{background:#ff5a5a;height:2px;opacity:1}
+.tm-label{position:absolute;right:42px;transform:translateY(-50%);font:600 10.5px/1 var(--mono);color:#d2bf93;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tm-label small{font:500 9.5px/1 system-ui,sans-serif;color:#9a8762;margin-left:3px}
+.tm-label.now{z-index:3;font:700 10.5px/1 system-ui,sans-serif;color:#fff;background:#d64545;padding:2px 6px 3px;border-radius:999px;letter-spacing:.04em}
+/* 見ているコミット：琥珀の線と、画面の側を指す小さな三角 */
+.tm-cur{position:absolute;right:3px;width:40px;height:3px;margin-top:-1.5px;border-radius:2px;background:var(--amber);box-shadow:0 0 10px rgba(255,179,0,.75);pointer-events:none;transition:top .14s cubic-bezier(.2,.8,.2,1)}
+.tm-cur::before{content:"";position:absolute;left:-7px;top:50%;margin-top:-5px;border:5px solid transparent;border-right:6px solid var(--amber);border-left:0}
+.tm-hov{position:absolute;right:5px;width:30px;height:1px;background:#fff;pointer-events:none;box-shadow:0 0 6px rgba(255,255,255,.6)}
+.tm-tip{position:absolute;right:calc(100% + 10px);transform:translateY(-50%);display:flex;flex-direction:column;gap:2px;max-width:min(360px,60vw);
+  padding:6px 11px;border-radius:9px;background:rgba(30,23,10,.94);border:1px solid #5a4520;box-shadow:0 8px 26px rgba(0,0,0,.5);pointer-events:none;white-space:nowrap;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.tm-tip b{font-size:12.5px;font-variant-numeric:tabular-nums}
+.tm-tip span{font-size:11.5px;color:#bba984;overflow:hidden;text-overflow:ellipsis}
 /* 指でなぞっている間の日付。後ろをぼかし、右（目盛りの側）から左へ薄くする */
 .tm-scrub{position:fixed;top:0;bottom:0;right:var(--tm-w);width:min(80vw,440px);z-index:39;pointer-events:none;opacity:0;transition:opacity .2s ease}
 .tm-scrub.on{opacity:1}
 .tm-scrub::before{content:"";position:absolute;inset:0;backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);
-  background:linear-gradient(to left,rgba(8,8,12,.78),rgba(8,8,12,.35) 60%,rgba(8,8,12,0));
+  background:linear-gradient(to left,rgba(26,19,6,.82),rgba(26,19,6,.55) 30%,rgba(26,19,6,.3) 60%,rgba(26,19,6,.1) 85%,rgba(26,19,6,0));
   -webkit-mask-image:linear-gradient(to left,#000 30%,transparent);mask-image:linear-gradient(to left,#000 30%,transparent)}
 .tm-scrub-text{position:absolute;right:14px;max-width:calc(100% - 28px);text-align:right;text-shadow:0 1px 6px rgba(0,0,0,.8)}
 #tmScrubDate{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
-#tmScrubSub{font-size:13px;color:#c8c8d0;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tmScrubSub{font-size:13px;color:#d8c9a6;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* メニューバー：タイムマシンの間は、編集の操作の代わりに、見ている時点・前後・復元・終了を出す */
-body.tm-on .topbar{background:linear-gradient(#1d1708,#0b0b0b);border-bottom-color:#5a4520}
+body.tm-on .topbar{--tb-glow:#2a2009;border-bottom-color:#5a4520}
 body.tm-on .tb-edit{display:none}
 .tm-bar{align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:nowrap}
 /* PC ではいつも1段使う（日時の長さで、折り返したり折り返さなかったりしてボタンの位置が変わらないように） */
-@media (min-width: 981px){ .tm-bar{flex-basis:100%;order:10} }
-.tm-title{font-weight:700;color:#ffd28a;white-space:nowrap}
+@media (min-width: 981px){ .tm-bar{flex-basis:100%;order:10;padding:2px 0} }
+.tm-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:#ffd28a;white-space:nowrap}
+.tm-glyph{width:16px;height:16px;background:currentColor;-webkit-mask:var(--ico) center/contain no-repeat;mask:var(--ico) center/contain no-repeat;
+  --ico:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12a8 8 0 1 0 2.4-5.7L4 8.7'/%3E%3Cpath d='M4 4v4.7h4.7M12 8v4.5l3 2'/%3E%3C/svg%3E")}
 .tm-at{display:flex;flex-direction:column;min-width:0;line-height:1.25}
-.tm-at b{font-size:13px;white-space:nowrap}
+.tm-at b{font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums}
 #tmWhat{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:34ch}
 .tm-pos{font-size:11.5px;color:var(--muted);white-space:nowrap}
 .tm-step{display:flex;gap:4px}
+.tm-step button{padding:4px 9px;font-size:11px}
 .tm-chg{display:flex;gap:2px}
 .tm-chg button{padding:4px 8px;font-size:12px;color:#ffd28a;border-color:#7a5420;background:#2a2110}
 .tm-chg button:first-child{border-radius:6px 0 0 6px}.tm-chg button:last-child{border-radius:0 6px 6px 0}.tm-chg button:nth-child(2){border-radius:0}
 /* 見ている時点で変わったコメント */
 .row.tm-new{box-shadow:inset 3px 0 0 #ffc233;background:rgba(255,194,51,.09)}
 .row.tm-new.current{background:#3a3218}
-.tm-step button{padding:4px 9px;font-size:11px}
 #tmBtn.on{color:#ffd28a;border-color:#7a5420;background:#2a2110}
 /* 過去を見ている間は書き込む場所を隠す（再生・タイムライン・リスト・書き出しはそのまま） */
-body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row .del,
-body.tm-on #tlNew,body.tm-on #tlEdit,body.tm-on #tlDelete,body.tm-on #tlUndo,body.tm-on #tlRedo,body.tm-on .tl-bar > .tl-sep:nth-of-type(-n+2){display:none}
+body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row .del,body.tm-on .tl-edit{display:none}
 @media (max-width: 980px){
-  .tm-tick{right:7px;width:7px}
-  .tm-tick.long{width:14px}
-  .tm-label{right:23px;font-size:9px}
-  .tm-cur{width:22px;right:3px}
-  .tm-hov{width:18px;right:4px}
-  .tm-arrow{width:26px;height:24px}
+  .tm-tick{right:6px;width:min(calc(var(--len, 9px) * var(--m, 1) * .62), 17px)}
+  .tm-label{right:26px;font-size:9px}
+  .tm-label small{display:none}
+  .tm-label.now{font-size:9.5px;padding:2px 5px}
+  .tm-cur{width:26px;right:2px}
+  .tm-hov{width:19px;right:3px}
+  .tm-arrow{width:28px;height:24px}
   .tm-bar{flex:none;gap:6px}
   #tmWhat{max-width:20ch}
   .tm-pos{display:none}
+  body.tm-on .ctrl-row #btnLink{display:none}
 }
-@media (prefers-reduced-motion: reduce){ body,.tm-rail,.tm-cur,.tm-scrub{transition:none} }
+@media (prefers-reduced-motion: reduce){
+  body,.tm-rail,.tm-cur,.tm-scrub,.tm-tick,.topbar{transition:none}
+  .brand-flow i{animation:none}
+}

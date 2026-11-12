@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Igarin
 // SPDX-License-Identifier: Apache-2.0
 'use strict';
+// 画面の言葉（js/i18n.js の T。無いとき（Node のテストなど）は日本語のまま）
+var KT = typeof T === 'function' ? T : function (s, ...v){ return Array.isArray(s) ? s.reduce((a, x, i) => a + x + (i < v.length ? v[i] : ''), '') : s; };
 /* =====================================================================
    Vim エンジン（DOM 非依存）
    ===================================================================== */
@@ -1064,7 +1066,7 @@ function createVimEngine(hooks = {}){
         if (n > opts.report) setMsg(`${n} lines indented `);
         return;
       }
-      case '!': err('E: フィルタ (!) はこのエディタでは使えません');
+      case '!': err(KT('E: フィルタ (!) はこのエディタでは使えません'));
     }
   }
   function joinLines(a, count, spaces){
@@ -1941,7 +1943,7 @@ function createVimEngine(hooks = {}){
       case '~': case 'u': case 'U': case 'g~': case 'gu': case 'gU': case 'g?': applyOp(c, vr, reg); return;
       case 'J': case 'gJ': applyOp(c, toLine(), reg); return;
       case '=': case 'gq': case 'gw': applyOp(c, toLine(), reg); return;
-      case '!': err('E: フィルタ (!) はこのエディタでは使えません');
+      case '!': err(KT('E: フィルタ (!) はこのエディタでは使えません'));
       case 'r': {
         let ch = r.arg;
         if (ch === '<Esc>' || ch === '<C-c>') return;
@@ -2315,7 +2317,7 @@ function createVimEngine(hooks = {}){
     switch (full){
       case 'write': case 'update': case 'wall': {
         if (full === 'update' && !E.modified) return;
-        if (a0.startsWith('!')) err('E: 外部コマンドは使えません');
+        if (a0.startsWith('!')) err(KT('E: 外部コマンドは使えません'));
         doWrite(bang); return;
       }
       case 'wq': case 'xit': case 'exit': case 'wqall': case 'xall': {
@@ -2492,7 +2494,7 @@ function createVimEngine(hooks = {}){
         marks[ch === '`' ? "'" : ch] = P(l, 0);
         return;
       }
-      case 'help': E.more = hooks.help?.() || ['ヘルプはありません']; return;
+      case 'help': E.more = hooks.help?.() || [KT('ヘルプはありません')]; return;
       case 'print': case 'list': case 'number': case '#': {
         const [a, b] = lineRange(range);
         for (let l = a; l <= b; l++) out(full === 'print' || full === 'list' ? L[l] : `${String(l + 1).padStart(3)} ${L[l]}`);
@@ -2522,17 +2524,17 @@ function createVimEngine(hooks = {}){
         }
         return;
       }
-      case 'version': setMsg('VIM - Vi IMproved（コメナガレ版・ブラウザ実装）'); return;
+      case 'version': setMsg(KT('VIM - Vi IMproved（コメナガレ版・ブラウザ実装）')); return;
       case 'echo': {
         const v = a0.replace(/^"(.*)"$|^'(.*)'$/, (x, d, q) => d ?? q);
         setMsg(v); return;
       }
-      case 'changes': setMsg(`変更履歴 ${undoStack.length} 件`); return;
+      case 'changes': setMsg(KT`変更履歴 ${undoStack.length} 件`); return;
     }
     err(`E492: Not an editor command: ${name}`);
   }
   function doWrite(force){
-    if (!hooks.write) err('E: 書き込み先がありません');
+    if (!hooks.write) err(KT('E: 書き込み先がありません'));
     const r = hooks.write(L.join('\n'), force);
     if (!r.ok){ setMsg(r.err, true); bell(); return false; }
     savedVer = ver;
@@ -2542,7 +2544,7 @@ function createVimEngine(hooks = {}){
   function exSet(a0){
     if (!a0 || a0 === 'all'){
       const ch = Object.keys(opts).filter(k => a0 === 'all' || opts[k] !== OPT_DEF[k]).map(k => typeof opts[k] === 'boolean' ? (opts[k] ? '  ' : 'no') + k : `  ${k}=${opts[k]}`);
-      E.more = ['--- Options ---', ...(ch.length ? ch : ['  （既定値から変更なし）'])];
+      E.more = ['--- Options ---', ...(ch.length ? ch : [KT('  （既定値から変更なし）')])];
       return;
     }
     const msgs = [], before = JSON.stringify(opts);

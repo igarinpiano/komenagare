@@ -10,25 +10,56 @@
 </head>
 <body>
 
+<!-- アイコン（<use href="#i-…"> で使う。file:// でも動くよう、ページの中に置く） -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></symbol>
+    <symbol id="i-merge" viewBox="0 0 24 24"><path d="M7 3v3.5c0 3.5 5 4.5 5 8.5v6M17 3v3.5c0 3.5-5 4.5-5 8.5"/><path d="m8.5 17.5 3.5 3.5 3.5-3.5"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 3.5v11M7.5 10 12 14.5l4.5-4.5"/><path d="M4 14.5v3A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5v-3"/></symbol>
+    <symbol id="i-save-as" viewBox="0 0 24 24"><path d="M4 14.5v3A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5v-3"/><path d="m14.5 3.5 3 3-7 7H7.5v-3z"/></symbol>
+    <symbol id="i-rec" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.4c-.6.3-1 .8-1 1.5v.5"/><circle cx="12" cy="16.9" r=".9" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-preview" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/><path d="m10.5 8.5 4 2-4 2z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9.5 6.5h10M9.5 12h10M9.5 17.5h10"/><circle cx="5" cy="6.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="5" cy="17.5" r="1.1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-timeline" viewBox="0 0 24 24"><path d="M3 5.5h18" opacity=".5"/><rect x="4" y="8.5" width="8" height="4" rx="1.2"/><rect x="10" y="14.5" width="10" height="4" rx="1.2"/><path d="M15 3v18" stroke-width="1.6"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.5 19.5h4l10-10-4-4-10 10z"/><path d="m12.5 7.5 4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7M9 7V4.5h6V7"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 13.5 4.5 9 9 4.5"/><path d="M4.5 9h10a5.5 5.5 0 0 1 0 11H11"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 13.5 4.5-4.5L15 4.5"/><path d="M19.5 9h-10a5.5 5.5 0 0 0 0 11H13"/></symbol>
+    <symbol id="i-magnet" viewBox="0 0 24 24"><path d="M5.5 4h4.5v7a2 2 0 0 0 4 0V4h4.5v7a6.5 6.5 0 0 1-13 0z"/><path d="M5.5 8h4.5M14 8h4.5"/></symbol>
+    <symbol id="i-follow" viewBox="0 0 24 24"><path d="M12 6v15"/><path d="M9 3h6v2.5L12 8 9 5.5z" fill="currentColor"/><path d="m6 11-3 3 3 3M18 11l3 3-3 3"/></symbol>
+    <symbol id="i-marquee" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.5" stroke-dasharray="3 2.6"/><path d="M8 10h5M8 14h8"/></symbol>
+    <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8M7.6 10.5h5.8"/></symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8M7.6 10.5h5.8M10.5 7.6v5.8"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 5v14M20 5v14M7.5 12h9M10 9l-3 3 3 3M14 9l3 3-3 3"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18 7h2M4 17h3M12 17h8"/><circle cx="15.5" cy="7" r="2.3"/><circle cx="9.5" cy="17" r="2.3"/></symbol>
+    <symbol id="i-in" viewBox="0 0 24 24"><path d="M11 4H7v16h4"/><path d="M14 12h6M17 9l3 3-3 3"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M13 4h4v16h-4"/><path d="M4 12h6M7 9l3 3-3 3"/></symbol>
+    <symbol id="i-loop" viewBox="0 0 24 24"><path d="M4 12V9.5A3.5 3.5 0 0 1 7.5 6H19l-3-3"/><path d="M20 12v2.5a3.5 3.5 0 0 1-3.5 3.5H5l3 3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5.5h3.5v13H7zM13.5 5.5H17v13h-3.5z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-keys" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M9.5 10h.01M12.5 10h.01M15.5 10h.01M18 10h.01M7.5 14h9" stroke-width="2"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.7"/><path d="M4 4v4.7h4.7M12 8v4.5l3 2"/></symbol>
+  </defs>
+</svg>
+
 <header class="topbar">
-  <div class="brand">コメ<b>ナガレ</b></div>
+  <div class="brand" title="コメナガレ"><span class="brand-flow" aria-hidden="true"><i></i><i></i><i></i></span><span class="brand-name">コメ<b>ナガレ</b></span></div>
   <div class="tb-group">
-    <button id="btnOpenVideo" class="primary">🎬 動画を開く</button>
+    <button id="btnOpenVideo" class="primary tb-btn" title="動画ファイルを開く"><svg class="i"><use href="#i-film"/></svg><span class="lbl">動画を開く</span></button>
   </div>
-  <div class="tb-group tb-edit">
-    <button id="btnOpenComments" title="コメントファイルを開く（現在のコメントと置き換え）">📂 コメントを開く</button>
-    <button id="btnMerge" title="複数のコメントファイルを現在のコメントに統合">🔀 マージ</button>
-    <button id="btnSave" title="保存 (Ctrl+S)">💾 保存</button>
-    <button id="btnSaveAs" title="名前を付けて保存 (Ctrl+Shift+S)">名前を付けて保存</button>
-  </div>
-  <div class="tb-group">
-    <button id="btnTimeline" class="desk-only tb-toggle" title="タイムラインの表示切替">🎞 タイムライン</button>
-    <button id="btnSide" class="desk-only tb-toggle" title="右のパネル（コメントリスト・Vim エディタ・変更履歴）の表示切替">☰ コメントリスト</button>
-    <button id="btnExport">⏺ コメ付き書き出し</button>
-    <button id="btnHelp" title="使い方">？</button>
+  <div class="tb-group tb-edit tb-seg" role="group" aria-label="コメントファイル">
+    <button id="btnOpenComments" class="tb-btn" title="コメントファイルを開く（現在のコメントと置き換え）"><svg class="i"><use href="#i-folder"/></svg><span class="lbl">コメントを開く</span></button>
+    <button id="btnMerge" class="tb-btn" title="複数のコメントファイルを現在のコメントに統合"><svg class="i"><use href="#i-merge"/></svg><span class="lbl">マージ</span></button>
+    <button id="btnSave" class="tb-btn" title="保存 (Ctrl+S)"><svg class="i"><use href="#i-save"/></svg><span class="lbl">保存</span></button>
+    <button id="btnSaveAs" class="tb-btn" title="名前を付けて保存 (Ctrl+Shift+S)"><svg class="i"><use href="#i-save-as"/></svg><span class="lbl">名前を付けて保存</span></button>
   </div>
   <div class="tb-group tm-bar" id="tmBar" hidden>
-    <span class="tm-title">🕰 タイムマシン</span>
+    <span class="tm-title"><span class="tm-glyph" aria-hidden="true"></span>タイムマシン</span>
     <!-- 上下のボタンは日時の前に置く（日時の長さで横に動かないように） -->
     <span class="tm-step"><button id="tmUp" title="ひとつ前（古い方）へ">▲</button><button id="tmDown" title="ひとつ後（新しい方）へ">▼</button></span>
     <span class="tm-at"><b id="tmWhen"></b><span id="tmWhat"></span></span>
@@ -42,11 +73,36 @@
     <span id="fileStatus"></span>
     <button id="projectBtn" class="collab proj" hidden title="プロジェクトの一覧（切り替え・新しいタブで開く）"></button>
     <button id="collabStatus" class="collab" hidden></button>
-    <button id="termBtn" class="collab term" hidden title="ホストの作業フォルダでコマンドを打つ">⌨ ターミナル</button>
-    <button id="tmBtn" class="collab term" hidden title="git の履歴をさかのぼって、前のコメントを見る・戻す">🕰 タイムマシン</button>
+    <button id="termBtn" class="collab term" hidden title="ホストの作業フォルダでコマンドを打つ">ターミナル</button>
+    <button id="tmBtn" class="collab term" hidden title="git の履歴をさかのぼって、前のコメントを見る・戻す">タイムマシン</button>
     <button id="conflictBtn" class="collab warn" hidden title="ほかの人の変更と重なった変更を確認する"></button>
   </div>
+  <!-- 画面の配置（PC の幅のときだけ。スマホは下のタブで切り替える） -->
+  <div class="tb-group tb-view desk-only">
+    <div class="tb-seg" role="group" aria-label="出すパネル">
+      <button id="btnPreview" class="tb-btn tb-toggle icon-only" title="プレビュー（動画）を出す・隠す" aria-label="プレビュー"><svg class="i"><use href="#i-preview"/></svg></button>
+      <button id="btnSide" class="tb-btn tb-toggle icon-only" title="コメントリスト（Vim エディタ・変更履歴）を出す・隠す" aria-label="コメントリスト"><svg class="i"><use href="#i-list"/></svg></button>
+      <button id="btnTimeline" class="tb-btn tb-toggle icon-only" title="タイムラインを出す・隠す" aria-label="タイムライン"><svg class="i"><use href="#i-timeline"/></svg></button>
+    </div>
+    <button id="btnLayout" class="tb-btn tb-layout" title="画面の配置を選ぶ" aria-haspopup="true" aria-expanded="false" aria-controls="layoutMenu"><span class="lay-glyph" id="layGlyph" aria-hidden="true"></span><span class="lbl">配置</span><svg class="i chev"><use href="#i-chev"/></svg></button>
+  </div>
+  <div class="tb-group">
+    <button id="btnExport" class="tb-btn" title="コメントを焼き込んだ動画を書き出す"><svg class="i rec"><use href="#i-rec"/></svg><span class="lbl">書き出し</span></button>
+    <button id="btnHelp" class="tb-btn icon-only" title="使い方" aria-label="使い方"><svg class="i"><use href="#i-help"/></svg></button>
+  </div>
 </header>
+
+<!-- 画面の配置のメニュー（btnLayout） -->
+<div class="lay-menu" id="layoutMenu" role="dialog" aria-label="画面の配置" hidden>
+  <div class="lay-cards" id="layCards"></div>
+  <div class="lay-panels">
+    <span class="lay-panels-title">出すもの</span>
+    <label class="chk"><input type="checkbox" data-panel="preview"> プレビュー</label>
+    <label class="chk"><input type="checkbox" data-panel="side"> コメントリスト</label>
+    <label class="chk"><input type="checkbox" data-panel="timeline"> タイムライン</label>
+  </div>
+  <p class="lay-note">境目のすき間をドラッグすると大きさを変えられます（ダブルクリックで元の大きさ）。配置ごとに大きさを覚えています。</p>
+</div>
 
 <main class="layout" id="layout">
   <section class="player-col">
@@ -65,7 +121,7 @@
       <div class="controls">
         <div class="seek" id="seek">
           <canvas id="density"></canvas>
-          <div class="seek-track"><div class="seek-fill" id="seekFill"></div><div class="seek-knob" id="seekKnob"></div></div>
+          <div class="seek-track"><div class="seek-range" id="seekRange" hidden></div><div class="seek-fill" id="seekFill"></div><div class="seek-knob" id="seekKnob"></div></div>
           <div class="peer-marks" id="peerMarks"></div>
           <div class="seek-tip" id="seekTip">0:00</div>
         </div>
@@ -102,13 +158,16 @@
 
   <div class="m-resize" id="mResize" title="ドラッグで動画の大きさを変更（ダブルタップでリセット）"></div>
   <nav class="mtabs" id="mtabs">
-    <button class="mtab" data-mpane="timeline">🎞 タイムライン</button>
-    <button class="mtab" data-mpane="list">☰ リスト</button>
-    <button class="mtab" data-mpane="vim">⌨ Vim</button>
-    <button class="mtab" data-mpane="history">🕘 履歴</button>
+    <button class="mtab" data-mpane="timeline"><svg class="i"><use href="#i-timeline"/></svg>タイムライン</button>
+    <button class="mtab" data-mpane="list"><svg class="i"><use href="#i-list"/></svg>リスト</button>
+    <button class="mtab" data-mpane="vim"><svg class="i"><use href="#i-keys"/></svg>Vim</button>
+    <button class="mtab" data-mpane="history"><svg class="i"><use href="#i-history"/></svg>履歴</button>
   </nav>
 
-  <div class="side-resize" id="sideResize" title="ドラッグで幅を変える（ダブルクリックでリセット）"></div>
+  <!-- パネルの境目のつまみ（PC の幅のとき。置く場所は js/app.js の layoutApply が配置ごとに決める） -->
+  <div class="gut gut-v" id="gutV" title="ドラッグで幅を変える（ダブルクリックで元の幅）"></div>
+  <div class="gut gut-h" id="gutH" title="ドラッグで高さを変える（ダブルクリックで元の高さ）"></div>
+  <div class="gut gut-c" id="gutC" title="ドラッグで幅と高さを同時に変える（ダブルクリックで元の大きさ）"></div>
   <aside class="side" id="side">
     <div class="side-tabs">
       <button class="stab" data-pane="list">コメントリスト</button>
@@ -137,6 +196,8 @@
         <span class="lb-row"><input type="color" id="setLetterbox"><button id="setLetterboxReset" title="黒に戻す">黒に戻す</button></span>
         <label for="setArea">コメントを流す範囲</label>
         <select id="setArea" title="縦長などの 16:9 でない動画で、コメントを流す範囲（書き出しも同じ）"><option value="video">動画に合わせる</option><option value="wide">16:9 に固定（ニコニコ動画と同じ）</option></select>
+        <label for="setLang">言語 / Language</label>
+        <select id="setLang"><option value="ja">日本語</option><option value="en">English</option></select>
       </div>
       <div class="note" id="fsNote"></div>
     </details>
@@ -172,36 +233,49 @@
       </div>
     </div>
   </aside>
-</main>
 
 <section class="timeline" id="timeline">
-  <div class="tl-resize" id="tlResize" title="ドラッグで高さを変更（ダブルクリックでリセット）"></div>
-  <!-- 動画と右のパネルの境目が、タイムラインの上端と交わる所。タイムラインの高さと右のパネルの幅を同時に変える（PC の幅で、両方出しているときだけ） -->
-  <div class="tl-corner" id="tlCorner" title="ドラッグでタイムラインの高さと右のパネルの幅を同時に変更（ダブルクリックでリセット）"></div>
   <div class="tl-bar">
-    <button id="tlNew" class="primary" title="再生位置に新しいコメントを作成">＋ 新規</button>
-    <button id="tlEdit" title="選択中のコメントを編集 (Enter / ダブルクリック)">✎ 編集</button>
-    <button id="tlDelete" title="選択中のコメントを削除 (Delete)">🗑 削除</button>
-    <span class="tl-sep"></span>
-    <button id="tlUndo" title="元に戻す (Ctrl+Z)">↶</button>
-    <button id="tlRedo" title="やり直す (Ctrl+Shift+Z)">↷</button>
-    <span class="tl-sep"></span>
-    <button id="tlSnap" title="スナップ (N)">🧲 スナップ</button>
-    <button id="tlFollow" title="再生中は再生位置に追従">⇥ 追従</button>
-    <button id="tlMarquee" title="オンの間は、空いている所をドラッグして範囲を囲むと、その中のコメントを選びます（⌘ / Ctrl＋ドラッグなら今の選択に足せます）">⬚ 範囲選択</button>
-    <span class="tl-sep"></span>
-    <button id="tlZoomOut" title="縮小 (-)">−</button>
-    <input type="range" id="tlZoom" class="tl-zoom" min="0" max="1000" value="500" title="ズーム">
-    <button id="tlZoomIn" title="拡大 (+)">＋</button>
-    <button id="tlFit" title="全体を表示 (Shift+Z)">全体</button>
-    <button id="tlSettings" title="タイムラインの設定（スクロールの方向など）">⚙</button>
+    <!-- 再生とタイムコード（押すと時刻を打ってそこへ移れる） -->
+    <div class="tl-grp tl-transport">
+      <button id="tlPlay" class="tl-ico" title="再生/一時停止 (Space)" aria-label="再生/一時停止"><svg class="i"><use href="#i-play"/></svg></button>
+      <input id="tlTime" class="tl-tc" value="00:00.00" spellcheck="false" autocomplete="off" inputmode="decimal" aria-label="再生位置（押して時刻を打つと移ります）" title="再生位置。押して時刻（例 1:23.5）を打ち、Enter でそこへ移ります">
+    </div>
+    <div class="tl-grp tl-edit">
+      <button id="tlNew" class="tl-ico primary" title="再生位置に新しいコメントを作成"><svg class="i"><use href="#i-plus"/></svg><span class="lbl">新規</span></button>
+      <button id="tlEdit" class="tl-ico" title="選択中のコメントを編集 (Enter / ダブルクリック)"><svg class="i"><use href="#i-edit"/></svg><span class="lbl">編集</span></button>
+      <button id="tlDelete" class="tl-ico" title="選択中のコメントを削除 (Delete)"><svg class="i"><use href="#i-trash"/></svg><span class="lbl">削除</span></button>
+      <button id="tlUndo" class="tl-ico" title="元に戻す (Ctrl+Z)" aria-label="元に戻す"><svg class="i"><use href="#i-undo"/></svg></button>
+      <button id="tlRedo" class="tl-ico" title="やり直す (Ctrl+Shift+Z)" aria-label="やり直す"><svg class="i"><use href="#i-redo"/></svg></button>
+    </div>
+    <!-- 範囲（イン・アウト）。書き出しの範囲とループ再生に使う -->
+    <div class="tl-grp tl-range">
+      <button id="tlIn" class="tl-ico" title="イン点を再生位置に (I)。書き出しの範囲とループ再生に使います" aria-label="イン点"><svg class="i"><use href="#i-in"/></svg></button>
+      <button id="tlOut" class="tl-ico" title="アウト点を再生位置に (O)" aria-label="アウト点"><svg class="i"><use href="#i-out"/></svg></button>
+      <button id="tlLoop" class="tl-ico" title="ループ再生（イン点からアウト点までをくり返す。範囲が無ければ全体）" aria-label="ループ再生"><svg class="i"><use href="#i-loop"/></svg></button>
+      <button id="tlRangeClear" class="tl-ico" hidden title="範囲を消す (Alt+X)" aria-label="範囲を消す"><svg class="i"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="tl-grp tl-mode">
+      <button id="tlSnap" class="tl-ico" title="スナップ (N)"><svg class="i"><use href="#i-magnet"/></svg><span class="lbl">スナップ</span></button>
+      <button id="tlFollow" class="tl-ico" title="再生中は再生位置に追従"><svg class="i"><use href="#i-follow"/></svg><span class="lbl">追従</span></button>
+      <button id="tlMarquee" class="tl-ico" title="オンの間は、空いている所をドラッグして範囲を囲むと、その中のコメントを選びます（⌘ / Ctrl＋ドラッグなら今の選択に足せます）"><svg class="i"><use href="#i-marquee"/></svg><span class="lbl">範囲選択</span></button>
+    </div>
     <span class="tl-info" id="tlInfo"></span>
+    <div class="tl-grp tl-zoomgrp">
+      <button id="tlZoomOut" class="tl-ico" title="縮小 (-)" aria-label="縮小"><svg class="i"><use href="#i-zoom-out"/></svg></button>
+      <input type="range" id="tlZoom" class="tl-zoom" min="0" max="1000" value="500" title="ズーム" aria-label="ズーム">
+      <button id="tlZoomIn" class="tl-ico" title="拡大 (+)" aria-label="拡大"><svg class="i"><use href="#i-zoom-in"/></svg></button>
+      <button id="tlFit" class="tl-ico" title="全体を表示 (Shift+Z)" aria-label="全体を表示"><svg class="i"><use href="#i-fit"/></svg></button>
+      <button id="tlSettings" class="tl-ico" title="タイムラインの設定（段の高さ・スクロールの方向など）" aria-label="タイムラインの設定"><svg class="i"><use href="#i-sliders"/></svg></button>
+    </div>
   </div>
   <div class="tl-ov" id="tlOv" title="全体表示：枠をドラッグで移動、枠の端をドラッグで拡大縮小"><canvas id="tlOvCanvas"></canvas></div>
   <div class="tl-main" id="tlMain" tabindex="0" aria-label="タイムライン"><canvas id="tlCanvas"></canvas>
     <div class="tl-vbar" id="tlVbar" hidden title="ドラッグで上下にスクロール"><div class="tl-vthumb" id="tlVthumb"></div></div>
   </div>
 </section>
+</main>
+
 
 <div class="toasts" id="toasts"></div>
 <div class="drop-overlay" id="dropOverlay">ドロップして読み込み</div>
@@ -279,6 +353,12 @@
   <div class="dlg-head">タイムラインの設定</div>
   <div class="dlg-body">
     <div class="form-grid tlset-grid">
+      <label for="setLane">段の高さ</label>
+      <select id="setLane">
+        <option value="s">低い（たくさん見る）</option>
+        <option value="m">ふつう</option>
+        <option value="l">高い（本文を読みやすく）</option>
+      </select>
       <label for="setWheelMouse">マウスホイール</label>
       <select id="setWheelMouse">
         <option value="time">横に移動（時間）</option>
@@ -301,7 +381,7 @@
 <dialog id="presetDlg">
   <div class="dlg-head">コメントプリセット</div>
   <div class="dlg-body">
-    <p class="muted" style="margin:0 0 10px">よく使うコメントを好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿されます（Shift+クリックで入力欄に挿入）。コマンドを空にすると入力欄のコマンドが使われます。先頭から10個はキーボードの 1〜9, 0 でも投稿できます。</p>
+    <p class="muted" style="margin:0 0 10px">よく使うコメントを好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿されます（Shift+クリックで入力欄に挿入）。コマンドを空にすると入力欄のコマンドが使われます。キーの欄を押してからキーを押すと、そのキーでも投稿できます（Backspace で外す。Space・矢印・K・C・F・M・I・O など、ほかの操作に使っているキーと、Ctrl・⌘・Alt との組み合わせは使えません）。</p>
     <div class="pr-list" id="prList"></div>
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
       <button id="prAdd">＋ 追加</button>
@@ -459,7 +539,11 @@
       <tr><td>C / F / M</td><td>コメント表示切替 / フルスクリーン / ミュート</td></tr>
       <tr><td>Ctrl+S</td><td>保存（Shift で名前を付けて保存）</td></tr>
       <tr><td>Ctrl+Z / Ctrl+Shift+Z</td><td>コメント編集の取り消し / やり直し</td></tr>
+      <tr><td>I / O</td><td>イン点 / アウト点を再生位置に（Alt+I・Alt+O で消す、Alt+X で両方消す）</td></tr>
     </table>
+
+    <h4>画面の配置</h4>
+    <p class="muted" style="margin:0">PC では、メニューバーの右の「配置」から、パネルの並べ方を選べます。「標準」（上にプレビューとリスト、下にタイムライン）、「右にリスト」（左にプレビューとタイムライン、右にリストを縦いっぱい）、「右にタイムライン」（左にプレビューとリスト、右にタイムラインを縦いっぱい）の3つです。隣の3つのボタン（プレビュー・リスト・タイムライン）でパネルを出したり隠したりでき、タイムラインだけ・プレビューとリストだけのようにもできます。パネルの間のすき間をドラッグすると大きさが変わり（ダブルクリックで元の大きさ）、配置ごとに覚えています。プレビューの枠が低くなると、プリセットのボタンがコメント欄の右に並び、動画をなるべく大きく残します。スマホでは下のタブで切り替えます。</p>
 
     <h4>タイムライン</h4>
     <table>
@@ -470,14 +554,16 @@
       <tr><td>長さを決めて作成</td><td>Shift＋空いている所を横にドラッグすると、その範囲に見えるコメントをその段（上・流・下）に作ります（表示時間はドラッグした長さ。流れるコメントは 1 秒前から見えるので、その分を差し引きます）</td></tr>
       <tr><td>開始・終了の調整</td><td>選択したコメントの左端／右端をドラッグ。表示時間が変わり、流れるコメントはその分速さが変わります（<code>@秒数</code> が自動で付きます）</td></tr>
       <tr><td>作成・本文の変更</td><td>「＋ 新規」、空いている所をダブルクリック（ダブルタップ）で作成。コメントをダブルクリックか Enter で本文や時刻を編集</td></tr>
-      <tr><td>拡大縮小・移動</td><td>Ctrl+ホイール・ピンチ・＋／− で拡大縮小、ホイール・空き部分のドラッグで移動。上下は右のスクロールバー、Shift+ホイール、左の見出し列でのホイールで。ホイールの向きは ⚙ で変更でき、トラックパッドや Magic Mouse では360°自由に動かせます。目盛りをドラッグで再生位置</td></tr>
-      <tr><td>高さ</td><td>タイムラインの上端をドラッグ（ダブルクリックでリセット）。動画と右のパネルの境目がタイムラインと交わる所をドラッグすると、高さと右のパネルの幅を同時に変えられます。メニューバーの「🎞 タイムライン」「☰ コメントリスト」で、それぞれ出す・隠すを切り替えられます。縦向きのスマホでは「タイムライン／リスト／Vim／履歴」のタブの上のつまみをドラッグすると動画の大きさが変わり、残りが下の画面になります</td></tr>
-      <tr><td>追従</td><td>「⇥ 追従」がオンのとき、再生位置が中央まで来るとそこで止まり、タイムラインの方が流れます</td></tr>
+      <tr><td>拡大縮小・移動</td><td>Ctrl+ホイール・ピンチ・＋／− で拡大縮小、ホイール・空き部分のドラッグで移動。上下は右のスクロールバー、Shift+ホイール、左の見出し列でのホイールで。ホイールの向きは ⚙ で変更でき、トラックパッドや Magic Mouse では360°自由に動かせます。目盛りか再生位置の赤い線をドラッグで再生位置（そのときの時刻はマウスの横に出ます）</td></tr>
+      <tr><td>高さ</td><td>タイムラインとほかのパネルの間のすき間をドラッグ（ダブルクリックでリセット）。2本のすき間が交わる所をドラッグすると、高さと幅を同時に変えられます。縦向きのスマホでは「タイムライン／リスト／Vim／履歴」のタブの上のつまみをドラッグすると動画の大きさが変わり、残りが下の画面になります。段の高さは右端の設定（低い・ふつう・高い）で変えられます</td></tr>
+      <tr><td>タイムコード</td><td>左上の数字は再生位置です。押して時刻（<code>1:23.5</code> など）を打ち、Enter でそこへ移ります。横の ▶ で再生・一時停止（プレビューを隠していても使えます）。マウスを重ねると、その位置に細い線と時刻が出ます</td></tr>
+      <tr><td>イン点・アウト点</td><td>「[→」「→]」（キー <code>I</code> <code>O</code>）で再生位置を範囲の始まりと終わりにします。範囲は目盛りとシークバーに琥珀色で出て、書き出しの範囲の初期値になります。「↻」のループ再生をオンにすると、範囲（無ければ全体）をくり返し再生します。「×」で範囲を消します</td></tr>
+      <tr><td>追従</td><td>「追従」がオンのとき、再生位置が中央まで来るとそこで止まり、タイムラインの方が流れます</td></tr>
       <tr><td>キー（タイムライン選択中）</td><td><code>Delete</code> 削除　<code>Enter</code> 編集　<code>,</code> <code>.</code> 0.1秒ずらす（Shift で1秒）　<code>N</code> スナップ　<code>Shift+Z</code> 全体</td></tr>
     </table>
 
     <h4>コメントプリセット</h4>
-    <p class="muted" style="margin:0">入力欄の下の「＋ プリセットを登録」（登録後は「⚙ 編集」）から、よく使うコメント（<code>888</code> など）を好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿、Shift+クリックで入力欄に挿入。先頭10個はキー <code>1</code>〜<code>9</code>, <code>0</code> でも投稿できます。</p>
+    <p class="muted" style="margin:0">入力欄の下の「＋ プリセットを登録」（登録後は「⚙ 編集」）から、よく使うコメント（<code>888</code> など）を好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿、Shift+クリックで入力欄に挿入。プリセットごとに好きなキー（英字・数字・記号・F1 など。Shift との組み合わせも）を割り当てると、そのキーでも投稿できます（最初は <code>1</code>〜<code>9</code>, <code>0</code> が順に付きます）。</p>
 
     <h4>書き出し</h4>
     <p class="muted" style="margin:0">「高速」は動画ファイルを直接デコード・エンコードするので再生より速く、処理中も編集やタブの切り替えができます（「バックグラウンドで続行」でダイアログを閉じても続きます）。形式は MP4 / MOV / WebM / MKV。対応していない環境や動画では「リアルタイム録画」を使ってください。解像度は元動画と同じ大きさ（8K なども）か、それより小さい大きさを選べます。ビットレートは「元動画と同じ」（既定）・「解像度に合わせる」・数値から選べます。Chrome / Edge などでは書き出し開始で保存先を選び、そこへ少しずつ書き込むので、長い動画もメモリをあまり使いません。保存先を選べないブラウザではダウンロードで保存し、一度に書き出せるのは 4 GB までです。8K のような大きな動画は、CLI の <code>komenagare render</code> で書き出すのがおすすめです。</p>
@@ -490,16 +576,19 @@
 
     <h4>みんなで編集する</h4>
     <p class="muted" style="margin:0"><code>komenagare</code> コマンドでホストしたページを開くと、ほかの参加者と同じコメントを同時に編集できます（右上に「共同編集」と表示されます）。変更はホストのフォルダに保存され、git の履歴に残ります。同じコメントの同じ項目を同時に変えたときは先に届いた方が残り、「⚠ 衝突」から自分の変更にする・相手のままにする・両方残すを選べます。「あとで」にした衝突はほかの参加者にも出て、誰でも選べます。接続が切れても編集を続けられ、つながり直したときに送られます。</p>
-    <p class="muted" style="margin:6px 0 0">ホストが複数のプロジェクトを共有しているときは、右上の「📁」からプロジェクトを切り替えたり、新しいタブで開いたりできます（同じプロジェクトを複数のタブで開いてもかまいません）。ホストがワンタイムパスワードを使っているときは、最初に受け取ったワンタイムパスワードでログインします。</p>
+    <p class="muted" style="margin:6px 0 0">ホストが複数のプロジェクトを共有しているときは、右上のプロジェクト名のボタンからプロジェクトを切り替えたり、新しいタブで開いたりできます（同じプロジェクトを複数のタブで開いてもかまいません）。ホストがワンタイムパスワードを使っているときは、最初に受け取ったワンタイムパスワードでログインします。</p>
     <p class="muted" style="margin:6px 0 0">ローカルネットワークの外から使うときは、ホストを <code>komenagare --otp --tunnel tailscale</code>（または <code>cloudflare</code> / <code>ngrok</code>）で起動するか、自分で用意した URL を <code>--public-url</code> で渡します。詳しくは README を見てください。</p>
     <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます。回線が切れても、同じ人がつなぎ直してくれば追いかけ続けます）。参加者が入ったり抜けたりすると、短く知らせます。</p>
     <p class="muted" style="margin:6px 0 0">再生バーの 📣（ここ見て）を押すと、今の再生位置と選んでいるコメントをほかの参加者に知らせます。受け取った人は「見る」でそこへ移れます。🔗 は今の位置へのリンク（コメントを1件選んでいればそのコメントへのリンク）をコピーします。メッセージで送れば、開いた人がそこへ移ります（動画を開く前なら、開いたときに移ります）。</p>
     <p class="muted" style="margin:6px 0 0">動画は各自が手元のファイルを開くので、ほかの人と動画の長さが違うと知らせます（違う動画だと、コメントの出る場面がずれます）。参加者の一覧にも出ます。</p>
-    <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「⌨ ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
-    <p class="muted" style="margin:6px 0 0">同じ人は「🕰 タイムマシン」で、git に残っている前のコメントをさかのぼって見られます。右の目盛り（上が古く、一番下が今）にマウスを重ねると日時が出て、押すとそのときのコメントになります（スマホは指でなぞって離す）。目盛りが多いときはスクロールでき、PC はホイール、スマホは素早くスワイプでスクロールし、押して少し止めてからなぞると選びます。そのコミットで追加・変更したコメントは枠で囲い（メニューバーの「変更 n 件」で順に飛べます）、タイムラインでは最近変えたものほど明るく出します。見ている間も再生・タイムライン・書き出しは使えますが、編集はできません。「この時点に復元…」は、今のコメントからそのときのコメントに戻す変更を新しいコミットとして記録します（履歴は消えません）。</p>
+    <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
+    <p class="muted" style="margin:6px 0 0">同じ人は「タイムマシン」で、git に残っている前のコメントをさかのぼって見られます。右の目盛り（上が古く、一番下が今。日ごとに薄い帯で区切り、1本の長さはそのコミットの変更の多さ）にマウスや指を近づけると、そのあたりの目盛りが拡大鏡のように伸びて日時が出て、押すとそのときのコメントになります（スマホは指でなぞって離す）。目盛りが多いときはスクロールでき、PC はホイール、スマホは素早くスワイプでスクロールし、押して少し止めてからなぞると選びます。そのコミットで追加・変更したコメントは枠で囲い（メニューバーの「変更 n 件」で順に飛べます）、タイムラインでは最近変えたものほど明るく出します。見ている間も再生・タイムライン・書き出しは使えますが、編集はできません。「この時点に復元…」は、今のコメントからそのときのコメントに戻す変更を新しいコミットとして記録します（履歴は消えません）。</p>
 
     <h4>ファイル形式</h4>
     <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。表計算ソフトで数式として動かないよう、<code>= + - @</code> などで始まるセルは先頭に <code>'</code> を付けて書き出します（コメナガレで読み込むと元に戻ります）。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
+
+    <h4>言語</h4>
+    <p class="muted" style="margin:0">URL に <code>?lang=en</code> を付けると英語、<code>?lang=ja</code> で日本語になります（コメントリストの「設定」でも変えられます）。選んだ言葉はこのブラウザで覚えます。ホスト（komenagare コマンド）からのメッセージは日本語のままです。</p>
 
     <h4>ライセンス</h4>
     <p class="muted" style="margin:0">コメナガレ © 2026 Igarin。<a href="https://github.com/igarinpiano/komenagare" target="_blank" rel="noopener">Apache License 2.0</a> で公開しています（コードを使うときは LICENSE と NOTICE を一緒に配ってください）。動画の変換に <a href="https://github.com/Vanilagy/mediabunny" target="_blank" rel="noopener">Mediabunny</a>（MPL-2.0）を使っています。</p>
@@ -507,6 +596,7 @@
   <div class="dlg-foot"><button id="helpClose" class="primary">閉じる</button></div>
 </dialog>
 
+<script src="js/i18n.js"></script>
 <script src="js/vim-engine.js"></script>
 <script src="js/comment-store.js"></script>
 <script src="js/comment-csv.js"></script>
