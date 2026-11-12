@@ -45,12 +45,22 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 /* ロゴ：右から左へ流れるコメントの3本の線（開いたときに1回だけ流れ込む） */
 .brand{display:flex;align-items:center;gap:8px;font-weight:800;letter-spacing:.05em;font-size:16px;margin:0 6px 0 2px;white-space:nowrap;user-select:none}
 .brand b{color:var(--amber)}
-.brand-flow{position:relative;width:20px;height:14px;flex:none}
-.brand-flow i{position:absolute;right:0;height:2.5px;border-radius:2px;background:var(--text);animation:brand-flow .9s cubic-bezier(.2,.7,.2,1) both}
-.brand-flow i:nth-child(1){top:0;width:13px;animation-delay:.05s}
-.brand-flow i:nth-child(2){top:5.75px;width:20px;background:var(--amber);animation-delay:.18s}
-.brand-flow i:nth-child(3){top:11.5px;width:9px;right:5px;animation-delay:.3s}
-@keyframes brand-flow{from{transform:translateX(26px);opacity:0}to{transform:none;opacity:1}}
+.brand-flow{position:relative;width:24px;height:18px;flex:none;overflow:hidden}
+/* 段違いに並んだクリップ（白。下ほど薄く）と、それを貫く金色の再生位置の縦線。開いたときにクリップが右から流れ込み、
+   マウスを重ねている間は、コメントのように右から左へ流れ続ける（線は止まったまま） */
+.brand-flow i{position:absolute;height:3px;border-radius:1.5px;background:var(--text);animation:brand-flow .9s cubic-bezier(.2,.7,.2,1) both}
+.brand-flow i:nth-child(1){top:4px;left:0;width:11px;animation-delay:.05s}
+.brand-flow i:nth-child(2){top:9px;left:5px;width:12px;opacity:.72;animation-delay:.18s}
+.brand-flow i:nth-child(3){top:14px;left:11px;width:12px;opacity:.45;animation-delay:.3s}
+/* 再生位置：上に小さな三角の頭が付いた縦線 */
+.brand-flow::before{content:"";position:absolute;z-index:1;left:12px;top:3px;bottom:0;width:2px;margin-left:-1px;border-radius:1px;background:var(--amber);box-shadow:0 0 0 1px var(--bg)}
+.brand-flow::after{content:"";position:absolute;z-index:1;left:12px;top:0;width:8px;height:5px;margin-left:-4px;background:var(--amber);clip-path:polygon(0 0,100% 0,62% 100%,38% 100%);border-radius:1px}
+@keyframes brand-flow{from{transform:translateX(26px);opacity:0}to{transform:none}}
+.brand:hover .brand-flow i{animation:brand-stream 1.5s linear infinite}
+.brand:hover .brand-flow i:nth-child(1){animation-delay:-.2s}
+.brand:hover .brand-flow i:nth-child(2){animation-delay:-.9s;animation-duration:1.2s}
+.brand:hover .brand-flow i:nth-child(3){animation-delay:-.5s;animation-duration:1.8s}
+@keyframes brand-stream{from{transform:translateX(26px)}to{transform:translateX(-26px)}}
 .tb-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 /* メニューバーのボタン：ふだんは縁なしで、重ねると浮き上がる。同じ仲間はひとまとめの枠に入れる */
 .tb-btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;background:transparent;border-color:transparent;font-size:13px}
@@ -673,5 +683,5 @@ body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row 
 }
 @media (prefers-reduced-motion: reduce){
   body,.tm-rail,.tm-cur,.tm-scrub,.tm-tick,.topbar{transition:none}
-  .brand-flow i{animation:none}
+  .brand-flow i,.brand:hover .brand-flow i{animation:none}
 }
