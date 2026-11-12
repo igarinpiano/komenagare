@@ -235,9 +235,7 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .seek-range{position:absolute;top:-3px;bottom:-3px;border-left:2px solid var(--amber);border-right:2px solid var(--amber);background:rgba(255,179,0,.16);pointer-events:none}
 .seek-knob{position:absolute;top:50%;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;background:#fff;border-radius:50%;left:0;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
 .seek-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;pointer-events:none;opacity:0;transition:opacity .1s;white-space:nowrap;font-variant-numeric:tabular-nums}
-.seek:hover .seek-tip,.seek.drag .seek-tip{opacity:1}
-/* つまんで動かしている間は、マウスや指で隠れないよう上へ離す */
-.seek.drag .seek-tip{bottom:46px;font-size:12px;padding:3px 8px}
+.seek:hover .seek-tip{opacity:1}
 .ctrl-row{display:flex;align-items:center;gap:6px;margin-top:1px}
 .icon{background:none;border:none;padding:4px;width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r)}
 .icon:hover{background:var(--panel3)}

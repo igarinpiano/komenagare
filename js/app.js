@@ -527,8 +527,6 @@ function seekRatio(e){ const r = seekEl.getBoundingClientRect(); return Math.min
 seekEl.addEventListener('pointerdown', (e) => {
   if (!state.videoLoaded) return;
   seekDragging = true; seekEl.setPointerCapture(e.pointerId);
-  // つまんでいる間は、時刻をマウスより上に離して出す（指やマウスで隠れないように）
-  seekEl.classList.add('drag');
   seekTo(seekRatio(e) * video.duration);
 });
 seekEl.addEventListener('pointermove', (e) => {
@@ -537,8 +535,8 @@ seekEl.addEventListener('pointermove', (e) => {
   seekTip.textContent = fmt(r * (video.duration || 0));
   if (seekDragging) seekTo(r * video.duration);
 });
-seekEl.addEventListener('pointerup', () => { seekDragging = false; seekEl.classList.remove('drag'); });
-seekEl.addEventListener('pointercancel', () => { seekDragging = false; seekEl.classList.remove('drag'); });
+seekEl.addEventListener('pointerup', () => { seekDragging = false; });
+seekEl.addEventListener('pointercancel', () => { seekDragging = false; });
 
 function updateTimeUI(t = video.currentTime){
   const d = video.duration, r = isFinite(d) && d > 0 ? Math.min(1, t / d) : 0;
@@ -2724,6 +2722,11 @@ TL.main.addEventListener('pointerdown', (e) => {
     return;
   }
   const hit = tlHit(p.x, p.y, touch);
+  // 再生位置の赤い線をつかむ（コメントの無い所で、線の近く）: 目盛りの上と同じく、動かすと再生位置が動く
+  if (!hit && !e.shiftKey && !e.ctrlKey && !e.metaKey && tlNearPlayhead(p.x, touch)){
+    TL.drag = { ...base, type:'scrub', lastX: p.x, track: true };
+    return;
+  }
   // 複数選択: ⌘（Windows・Linux は Ctrl）＋ドラッグで範囲を囲み、今の選択に足す（コメントの上から始めてもよい。
   // 動かさずに離したら、今まで通りそのコメントを足す・外す）。「範囲選択」ボタンがオンのときは、空いている所のドラッグで囲む
   const multi = e.ctrlKey || e.metaKey;
@@ -2781,11 +2784,16 @@ TL.main.addEventListener('pointermove', (e) => {
 });
 // マウスを重ねているときのカーソル（⌘・Ctrl を押していれば複数選択の十字、Shift なら空いている所でコメントを作る印、
 // Option ならコメントの上で複製の印）
+// 再生位置の赤い線の近くか（線の左右この px 以内。指なら広く）
+function tlNearPlayhead(x, touch){
+  const px = tx(video.currentTime || 0);
+  return state.videoLoaded && px >= TL_HEAD && Math.abs(x - px) <= (touch ? 12 : 5);
+}
 function tlCursor(mods){
   const p = TL.hover;
   if (!p || TL.drag) return;
   const hit = p.y < TL_RULER ? null : tlHit(p.x, p.y, false);
-  TL.main.style.cursor = p.y < TL_RULER ? 'col-resize'
+  TL.main.style.cursor = p.y < TL_RULER || !hit && !mods.shiftKey && !mods.ctrlKey && !mods.metaKey && tlNearPlayhead(p.x, false) ? 'col-resize'
     : mods.altKey && hit && hit.zone === 'move' && !mods.ctrlKey && !mods.metaKey ? 'copy'
     : p.x >= TL_HEAD && (mods.ctrlKey || mods.metaKey || !hit && TL.marqueeMode) ? 'crosshair'
     : p.x >= TL_HEAD && mods.shiftKey && !hit && tlGroupAt(p.y) != null ? 'copy'
@@ -2823,7 +2831,8 @@ function tlPointerEnd(e, cancel){
   const p = tlLocal(e), now = performance.now();
   const dbl = !!TL.lastTap && now - TL.lastTap.time < 380 && Math.hypot(p.x - TL.lastTap.x, p.y - TL.lastTap.y) < 24;
   TL.lastTap = dbl ? null : { time: now, x: p.x, y: p.y };
-  if (d.type === 'scrub') return;
+  // 目盛りの上のクリックは再生位置を動かすだけ。線の近くのクリック（動かさずに離した）は、空いている所のクリックと同じ（ダブルクリックで作成など）
+  if (d.type === 'scrub' && !d.track) return;
   // ⌘（Ctrl）＋クリック: そのコメントを選択に足す・外す（空いている所なら何もしない。選択はそのまま）
   if (d.type === 'marquee' && d.multi){
     if (d.toggle){ if (TL.sel.has(d.toggle)) TL.sel.delete(d.toggle); else TL.sel.add(d.toggle); tlSelChanged(); TL.dirty = true; }
