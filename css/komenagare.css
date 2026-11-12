@@ -37,7 +37,11 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .muted{color:var(--muted);font-size:12px}
 
 /* ---------- top bar ---------- */
-.topbar{display:flex;align-items:center;gap:8px;padding:6px 10px;min-height:48px;background:var(--bg);border-bottom:1px solid var(--line);flex-wrap:wrap;flex:none}
+/* メニューバーの地は上の色（--tb-glow）から地の色へのグラデーション。タイムマシンの間は --tb-glow を金色にし、
+   色の変化をゆっくり見せる（@property で色として登録しているので transition が効く。対応していないブラウザではすぐ変わる） */
+@property --tb-glow{syntax:'<color>';inherits:false;initial-value:#0e0f11}
+.topbar{--tb-glow:var(--bg);display:flex;align-items:center;gap:8px;padding:6px 10px;min-height:48px;background:linear-gradient(var(--tb-glow),var(--bg));border-bottom:1px solid var(--line);flex-wrap:wrap;flex:none;
+  transition:--tb-glow .6s ease,border-bottom-color .6s ease}
 /* ロゴ：右から左へ流れるコメントの3本の線（開いたときに1回だけ流れ込む） */
 .brand{display:flex;align-items:center;gap:8px;font-weight:800;letter-spacing:.05em;font-size:16px;margin:0 6px 0 2px;white-space:nowrap;user-select:none}
 .brand b{color:var(--amber)}
@@ -631,8 +635,7 @@ body.tm-on .tm-rail{transform:none;box-shadow:-10px 0 30px rgba(0,0,0,.4)}
 #tmScrubDate{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
 #tmScrubSub{font-size:13px;color:#d8c9a6;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* メニューバー：タイムマシンの間は、編集の操作の代わりに、見ている時点・前後・復元・終了を出す */
-/* 上から下へ、金色から地の色へゆっくり変える（止める所を細かく置いて、段差が見えないように） */
-body.tm-on .topbar{background:linear-gradient(180deg,#2b2009 0%,#281e0a 12%,#251c0b 24%,#21190c 36%,#1d170d 48%,#19150e 60%,#16130f 72%,#131210 84%,var(--bg) 100%);border-bottom-color:#5a4520}
+body.tm-on .topbar{--tb-glow:#2a2009;border-bottom-color:#5a4520}
 body.tm-on .tb-edit{display:none}
 .tm-bar{align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:nowrap}
 /* PC ではいつも1段使う（日時の長さで、折り返したり折り返さなかったりしてボタンの位置が変わらないように） */
@@ -669,6 +672,6 @@ body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row 
   body.tm-on .ctrl-row #btnLink{display:none}
 }
 @media (prefers-reduced-motion: reduce){
-  body,.tm-rail,.tm-cur,.tm-scrub,.tm-tick{transition:none}
+  body,.tm-rail,.tm-cur,.tm-scrub,.tm-tick,.topbar{transition:none}
   .brand-flow i{animation:none}
 }
