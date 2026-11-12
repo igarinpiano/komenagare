@@ -63,7 +63,7 @@ var HELP_EN = `
 </table>
 
 <h4>Comment presets</h4>
-<p class="muted" style="margin:0">Add frequent comments (like <code>888</code>) with “＋ Add presets” below the input (“⚙ Edit” afterwards). Pressing a preset posts it at the playhead; Shift+click inserts it into the input. The first ten can also be posted with keys <code>1</code>–<code>9</code>, <code>0</code>.</p>
+<p class="muted" style="margin:0">Add frequent comments (like <code>888</code>) with “＋ Add presets” below the input (“⚙ Edit” afterwards). Pressing a preset posts it at the playhead; Shift+click inserts it into the input. Give each preset any key you like (letters, digits, symbols, F1 and so on, also with Shift) to post it from the keyboard (new presets get <code>1</code>–<code>9</code>, <code>0</code> in order at first).</p>
 
 <h4>Export</h4>
 <p class="muted" style="margin:0">“Fast” decodes and encodes the video file directly, so it is faster than real time, and you can keep editing or switch tabs while it runs (“Continue in background” closes the dialog and keeps going). Formats: MP4 / MOV / WebM / MKV. If your browser or video doesn’t support it, use “Real-time recording”. Resolution can be the source size (even 8K) or smaller. Bitrate can be “Same as source” (default), “Match resolution”, or a number. In Chrome / Edge you choose where to save when starting, and the file is written gradually, so long videos use little memory. Browsers that can’t choose a save location download the result, up to 4 GB at a time. For very large videos such as 8K, the CLI’s <code>komenagare render</code> is recommended. When in and out points are set, they become the export range.</p>
@@ -270,8 +270,13 @@ var I18N = (function (){
     'キャンセル': 'Cancel', '流れる速さ ×{0}': 'Flow speed ×{0}', '開始時刻を 1:23.45 のような形式で入力してください': 'Enter the start time like 1:23.45',
     '本文を入力してください': 'Enter the text', '同じ時刻・内容のコメントが既にあります': 'An identical comment already exists at this time',
     'コメントプリセット': 'Comment presets',
-    'よく使うコメントを好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿されます（Shift+クリックで入力欄に挿入）。コマンドを空にすると入力欄のコマンドが使われます。先頭から10個はキーボードの 1〜9, 0 でも投稿できます。': 'Save as many frequent comments as you like. Pressing one posts it at the playhead right away (Shift+click inserts it into the input). With an empty command, the input’s command is used. The first ten can also be posted with keys 1–9 and 0.',
-    '＋ 追加': '＋ Add', 'コメント入力欄の本文とコマンドをプリセットに追加': 'Add the input’s text and command as a preset', '入力欄の内容を追加': 'Add from input',
+    '＋ 追加': '＋ Add',
+    'よく使うコメントを好きなだけ登録できます。ボタンを押すと再生位置にすぐ投稿されます（Shift+クリックで入力欄に挿入）。コマンドを空にすると入力欄のコマンドが使われます。キーの欄を押してからキーを押すと、そのキーでも投稿できます（Backspace で外す。Space・矢印・K・C・F・M・I・O など、ほかの操作に使っているキーと、Ctrl・⌘・Alt との組み合わせは使えません）。': 'Save as many frequent comments as you like. Pressing one posts it at the playhead right away (Shift+click inserts it into the input). With an empty command, the input’s command is used. Click the key field and press a key to post with that key too (Backspace removes it). Keys used by other actions — Space, arrows, K, C, F, M, I, O and so on — and combinations with Ctrl, ⌘ or Alt can’t be used.',
+    'キーなし': 'No key', 'キーを押す…': 'Press a key…',
+    '押してからキーを押すと、そのキーで投稿できます（Backspace で外す・Esc でやめる）': 'Click, then press a key to post with it (Backspace removes, Esc cancels)',
+    'Ctrl・⌘・Alt との組み合わせは割り当てられません': 'Combinations with Ctrl, ⌘ or Alt can’t be assigned',
+    '{0} はほかの操作に使っているので割り当てられません': '{0} is used by another action and can’t be assigned',
+    '{0} をほかのプリセットから付け替えました': 'Moved {0} from another preset', 'コメント入力欄の本文とコマンドをプリセットに追加': 'Add the input’s text and command as a preset', '入力欄の内容を追加': 'Add from input',
     // ---------- Vim ----------
     ':w で反映 · :q で閉じる · :help で一覧': ':w apply · :q close · :help list', 'ノーマルモードに戻る (Esc)': 'Back to normal mode (Esc)',
     'バッファをコメントに反映 (:w)': 'Apply the buffer to the comments (:w)', '反映 :w': 'Apply :w', 'コメントから読み直し (:e!)': 'Reload from the comments (:e!)', '読み直し :e!': 'Reload :e!', 'ヘルプ (:help)': 'Help (:help)',

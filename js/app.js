@@ -659,6 +659,28 @@ function postComment(){
 if (!Array.isArray(settings.presets)) settings.presets = [];
 const presetBar = $('#presets');
 function presetCmd(p){ return normCmd(p.cmd) || cmdInput.value; }
+/* ---------- プリセットのキー ----------
+   プリセットごとに好きなキーを1つ割り当てられる（p.key。null なら無し）。前は先頭10個が 1〜9, 0 に決まっていたので、
+   key を持たないもの（前に保存したもの）はその割り当てにしておく。
+   キーは e.key から作る: 英字は大文字にして、Shift を押していれば「Shift+」を付ける。数字・記号は Shift で文字が変わるのでそのまま。
+   Ctrl・⌘・Alt との組み合わせ（ブラウザや OS が使う）と、ほかの操作に使っているキーは割り当てない */
+const PRESET_KEY_RESERVED = new Set([' ', 'K', 'C', 'F', 'M', 'I', 'O', 'N', '=', '+', '-', '_', ',', '.', '<', '>', 'Shift+Z', 'Shift+A',
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', 'Escape', 'Tab', 'Delete', 'Backspace', 'Home', 'End', 'PageUp', 'PageDown']);
+function presetKeyOf(e){
+  const k = e.key;
+  if (!k || ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Process', 'Dead', 'Unidentified', 'Compose'].includes(k) || e.isComposing) return null;
+  if (k.length === 1) return /^[a-z]$/i.test(k) ? (e.shiftKey ? 'Shift+' : '') + k.toUpperCase() : k;
+  return (e.shiftKey ? 'Shift+' : '') + k;
+}
+const presetKeyReserved = (key) => PRESET_KEY_RESERVED.has(key) || PRESET_KEY_RESERVED.has(key.replace(/^Shift\+/, ''));
+// 画面に出す形（Shift は ⇧）
+const presetKeyLabel = (key) => key == null ? '' : key.replace(/^Shift\+/, '⇧');
+// 前に保存したプリセット（key を持たない）は、先頭10個を 1〜9, 0 にする
+settings.presets.forEach((p, i) => { if (p && !('key' in p)) p.key = i < 10 ? String((i + 1) % 10) : null; });
+function presetForKey(e){
+  const key = presetKeyOf(e);
+  return key ? settings.presets.find(p => p.key === key) : null;
+}
 function usePreset(p, insert){
   if (insert){
     const a = textInput.selectionStart ?? textInput.value.length, b = textInput.selectionEnd ?? a;
@@ -675,12 +697,12 @@ function renderPresets(){
   settings.presets.forEach((p, i) => {
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'preset';
-    b.title = T`${p.text}${normCmd(p.cmd) ? T`　[${normCmd(p.cmd)}]` : ''}\nクリックで投稿 / Shift+クリックで入力欄に挿入` + (i < 10 ? T`\nキー: ${(i + 1) % 10}` : '');
+    b.title = T`${p.text}${normCmd(p.cmd) ? T`　[${normCmd(p.cmd)}]` : ''}\nクリックで投稿 / Shift+クリックで入力欄に挿入` + (p.key ? T`\nキー: ${presetKeyLabel(p.key)}` : '');
     const o = parseCmd(normCmd(p.cmd));
     if (normCmd(p.cmd) && o.color !== '#FFFFFF'){ const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = o.color; b.append(sw); }
     const tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = p.text.replace(/\n/g, ' ⏎ ');
     b.append(tx);
-    if (i < 10){ const k = document.createElement('kbd'); k.textContent = (i + 1) % 10; b.append(k); }
+    if (p.key){ const k = document.createElement('kbd'); k.textContent = presetKeyLabel(p.key); b.append(k); }
     b.onclick = (e) => usePreset(p, e.shiftKey);
     presetBar.append(b);
   });
@@ -697,13 +719,51 @@ function renderPresets(){
   presetBar.append(add);
 }
 const presetDlg = $('#presetDlg');
-function prRow(p = { text:'', cmd:'' }){
+// 新しく足すプリセットのキー：1〜9, 0 のうち、まだ使っていないもの
+function prFreeDigit(){
+  const used = new Set([...$('#prList').querySelectorAll('.pr-key')].map(b => b.dataset.key));
+  return ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].find(d => !used.has(d)) ?? null;
+}
+// キーの割り当てボタン：押してからキーを押すと割り当てる（Esc でやめる、Backspace・Delete で外す）
+function prKeyButton(key){
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'pr-key';
+  const show = () => {
+    b.classList.remove('capturing');
+    b.textContent = b.dataset.key ? presetKeyLabel(b.dataset.key) : T('キーなし');
+    b.title = T('押してからキーを押すと、そのキーで投稿できます（Backspace で外す・Esc でやめる）');
+  };
+  if (key) b.dataset.key = key;
+  show();
+  b.onclick = () => { b.classList.add('capturing'); b.textContent = T('キーを押す…'); };
+  b.addEventListener('blur', show);
+  b.addEventListener('keydown', (e) => {
+    if (!b.classList.contains('capturing')) return;
+    if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Escape' || e.isComposing || e.keyCode === 229){ show(); return; }
+    if (e.key === 'Backspace' || e.key === 'Delete'){ delete b.dataset.key; show(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey){ toast(T('Ctrl・⌘・Alt との組み合わせは割り当てられません'), { timeout:2500 }); return; }
+    const key = presetKeyOf(e);
+    if (!key) return;
+    if (presetKeyReserved(key)){ toast(T`${presetKeyLabel(key)} はほかの操作に使っているので割り当てられません`, { timeout:2800 }); return; }
+    // ほかのプリセットに付いていたら、こちらへ付け替える
+    for (const o of $('#prList').querySelectorAll('.pr-key')){
+      if (o !== b && o.dataset.key === key){ delete o.dataset.key; o.textContent = T('キーなし'); toast(T`${presetKeyLabel(key)} をほかのプリセットから付け替えました`, { timeout:2200 }); }
+    }
+    b.dataset.key = key;
+    show();
+  });
+  return b;
+}
+function prRow(p = { text:'', cmd:'', key: prFreeDigit() }){
   const row = document.createElement('div'); row.className = 'pr-row';
   const t = document.createElement('input'); t.className = 'pr-text'; t.placeholder = T('本文（例: 888）'); t.value = p.text.replace(/\n/g, '\\n');
   const c = document.createElement('input'); c.className = 'pr-cmd'; c.placeholder = T('コマンド（任意）'); c.value = p.cmd || ''; c.spellcheck = false;
   const mk = (label, title, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title; b.onclick = fn; return b; };
-  row.append(t, c,
-    mk('↑', T('上へ'), () => { if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); }),
+  const up = mk('↑', T('上へ'), () => { if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); });
+  up.className = 'pr-up';
+  row.append(t, c, prKeyButton(p.key), up,
     mk('↓', T('下へ'), () => { if (row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); }),
     mk('✕', T('削除'), () => { row.remove(); prEmpty(); }));
   return row;
@@ -723,18 +783,19 @@ $('#prAdd').onclick = () => { const r = prRow(); $('#prList').append(r); prEmpty
 $('#prAddCurrent').onclick = () => {
   const text = textInput.value.replace(/\s+$/, '');
   if (!text.trim()){ toast(T('コメント入力欄が空です')); return; }
-  const r = prRow({ text, cmd: normCmd(cmdInput.value) }); $('#prList').append(r); prEmpty();
+  const r = prRow({ text, cmd: normCmd(cmdInput.value), key: prFreeDigit() }); $('#prList').append(r); prEmpty();
 };
 $('#prCancel').onclick = () => presetDlg.close();
 $('#prSave').onclick = () => {
   settings.presets = [...$('#prList').querySelectorAll('.pr-row')].map(r => ({
     text: r.querySelector('.pr-text').value.replace(/\\n/g, '\n').replace(/\s+$/, ''),
     cmd: normCmd(r.querySelector('.pr-cmd').value),
+    key: r.querySelector('.pr-key').dataset.key || null,
   })).filter(p => p.text.trim());
   saveSettings(); renderPresets(); presetDlg.close();
   toast(T`プリセットを保存しました（${settings.presets.length} 件）`);
 };
-$('#prList').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229){ e.preventDefault(); $('#prSave').click(); } });
+$('#prList').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && !e.isComposing && e.keyCode !== 229){ e.preventDefault(); $('#prSave').click(); } });
 
 /* ---------- コマンドパレット ---------- */
 const PALETTE = [
@@ -6051,8 +6112,8 @@ document.addEventListener('keydown', (e) => {
     case 'm': case 'M': video.muted = !video.muted; break;
     case 'Enter': e.preventDefault(); textInput.focus(); break;
     default:
-      if (/^[0-9]$/.test(e.key) && !e.shiftKey){
-        const p = settings.presets[e.key === '0' ? 9 : +e.key - 1];
+      {
+        const p = presetForKey(e);
         if (p){ e.preventDefault(); usePreset(p, false); }
       }
   }
