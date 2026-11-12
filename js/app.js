@@ -6141,6 +6141,82 @@ if (document.fonts && document.fonts.ready){
   document.fonts.ready.then(() => { metricCache.clear(); displayRenderer.reset(); if (state.comments.length) relayout(); });
 }
 
+/* ---------- ロゴの印：マウスを重ねるとクリップが流れる ----------
+   クリップごとに位置 u（左へ進むほど小さい。元の位置は W の倍数）と速さ v を持ち、毎フレーム動かす。
+   重ねている間は v を一定の速さへなめらかに近づけ（加速）、離したら、無理なく止まれる所より先の元の位置を決めて、
+   そこまではいつもの速さで流し、止まるのに要る距離まで来たら一定の割合で減速してちょうど止める
+   （速さがほとんど無いときは、近い元の位置へばねで戻す）。
+   どの途中で重ねたり離したりしても、今の位置と速さから続けるので飛ばない。画面の幅（24px）を出たら右から戻る */
+(() => {
+  const box = document.querySelector('.brand-flow'), brand = document.querySelector('.brand');
+  if (!box || !brand) return;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const BOX_W = 24, SPEED = [30, 40, 24], ACCEL_TAU = 0.35, DECEL = 45, OMEGA = 6;
+  const bars = [...box.children].map((el, i) => {
+    const cs = getComputedStyle(el), w = parseFloat(cs.width) || 12, left = parseFloat(cs.left) || 0;
+    // 左へ出きる所（-(left + w + 1)）から、右の外（BOX_W - left + 1）までで1周
+    return { el, W: BOX_W + w + 2, out: left + w + 1, u: 0, v: 0, speed: SPEED[i] || 30, target: null };
+  });
+  let hover = false, raf = 0, last = 0;
+  // 左へ出きったら、右の外から戻す（1周分ずらす。目指す位置も一緒に）
+  const wrap = (b) => { while (b.u < -b.out){ b.u += b.W; if (b.target != null) b.target += b.W; } };
+  const frame = (now) => {
+    const dt = Math.min(0.05, (now - last) / 1000 || 0.016); last = now;
+    let moving = false;
+    for (const b of bars){
+      if (hover){
+        b.v += (-b.speed - b.v) * (1 - Math.exp(-dt / ACCEL_TAU));
+      } else {
+        const d = b.u - b.target;
+        // 残りの距離でちょうど止まる減速（毎フレーム計算し直すので、ずれても合う）。着いたら止める
+        if (!b.spring){
+          if (d <= 0.05 || b.v > -0.2 && b.braking){ b.u = b.target; b.v = 0; }
+          else {
+            const brake = b.v * b.v / (2 * d);
+            if (b.braking || brake >= DECEL){ b.braking = true; b.v = Math.min(-0.2, b.v + brake * dt); }
+            else b.v += (-b.speed - b.v) * (1 - Math.exp(-dt / ACCEL_TAU));
+          }
+        }
+        // 離したときに速さがほとんど無かったら、ばねで近い元の位置へ
+        else b.v += (OMEGA * OMEGA * (b.target - b.u) - 2 * OMEGA * b.v) * dt;
+      }
+      b.u += b.v * dt;
+      if (!hover && b.u < b.target) b.u = b.target; // 行き過ぎない
+      wrap(b);
+      if (!hover && Math.abs(b.target - b.u) < 0.05 && Math.abs(b.v) < 0.5){ b.u = 0; b.v = 0; b.target = null; }
+      else moving = true;
+      b.el.style.transform = b.u ? `translateX(${b.u.toFixed(2)}px)` : '';
+    }
+    raf = moving ? requestAnimationFrame(frame) : 0;
+  };
+  const start = () => { if (!raf){ last = performance.now(); raf = requestAnimationFrame(frame); } };
+  brand.addEventListener('pointerenter', (e) => {
+    if (e.pointerType !== 'mouse' || reduce.matches) return;
+    if (!box.classList.contains('live')){
+      // 開いたときの流れ込みの途中なら、そこから続ける
+      for (const b of bars){
+        const m = new DOMMatrixReadOnly(getComputedStyle(b.el).transform);
+        b.u = m.m41 || 0; b.v = 0;
+        b.el.style.transform = b.u ? `translateX(${b.u}px)` : '';
+      }
+      box.classList.add('live');
+    }
+    hover = true;
+    start();
+  });
+  brand.addEventListener('pointerleave', (e) => {
+    if (!hover) return;
+    hover = false;
+    for (const b of bars){
+      // 今の速さから無理なく（DECEL 以下の減速で）止まれる所より先の、いちばん近い元の位置（W の倍数）を目指す
+      const reach = b.u - b.v * b.v / (2 * DECEL);
+      b.spring = b.v > -3; b.braking = false;
+      b.target = b.spring ? Math.round(b.u / b.W) * b.W : Math.floor(reach / b.W) * b.W;
+    }
+    start();
+  });
+})();
+
 resizeCanvas();
 renderList();
 updateStatus();
