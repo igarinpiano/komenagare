@@ -13,9 +13,19 @@ const hasFS = typeof window.showOpenFilePicker === 'function' && typeof window.s
 const SIDE_W = 400; // 右のパネルの既定の幅（ドラッグで変えられる）
 const TL_H = 270; // タイムラインの既定の高さ（PC）
 const M_VIDEO = 0.32; // 縦向きのスマホで、動画の高さが画面の高さに占める割合の既定（タイムラインの上端をドラッグして変える）
+// 画面の配置（PC）。標準: 上にプレビューと右のパネル、下にタイムライン（横いっぱい）。
+// 右にリスト: 左にプレビューとタイムライン、右にパネル（縦いっぱい）。右にタイムライン: 左にプレビューとパネル、右にタイムライン。
+// 大きさ（右の列の幅 w・左下の行の高さ h）は配置ごとに覚える（標準は前からの sideWidth・tlHeight）
+const LAYOUTS = {
+  std: { name: T('標準'), top: ['player', 'side'], bottom: 'tl', w: 'sideWidth', h: 'tlHeight', dw: SIDE_W, dh: TL_H },
+  split: { name: T('右にリスト'), left: ['player', 'tl'], right: 'side', w: 'splitW', h: 'splitH', dw: SIDE_W, dh: 320 },
+  splitTl: { name: T('右にタイムライン'), left: ['player', 'side'], right: 'tl', w: 'splitTlW', h: 'splitTlH', dw: 620, dh: 300 },
+};
 const settings = Object.assign(
   { show:true, opacity:1, pauseOnInput:false, mineBorder:true, autosave:true, saveFormat:'json', volume:1, muted:false,
-    listVirtual:true, timeline:true, side:true, tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W, sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video' },
+    listVirtual:true, timeline:true, side:true, preview:true, layout:'std', tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W,
+    splitW:LAYOUTS.split.dw, splitH:LAYOUTS.split.dh, splitTlW:LAYOUTS.splitTl.dw, splitTlH:LAYOUTS.splitTl.dh,
+    sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, tlLane:'m', tlLoop:false, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video' },
   (() => { try { return JSON.parse(localStorage.getItem('komenagare.settings') || '{}'); } catch { return {}; } })()
 );
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
@@ -32,6 +42,7 @@ const state = {
   fileHandle: null, fileName: null, dirty: false,
   videoName: null, videoUrl: null, videoLoaded: false, needsDraw: true, needsRelayout: false, version: 0,
   stage: STAGE, // コメントを描く範囲（基準ステージの単位。updateStage で動画に合わせる）
+  range: { in: null, out: null }, // イン点・アウト点（秒。書き出しの範囲とループ再生に使う。覚えない）
 };
 // タイムマシン（共同編集で、ホストの --remote で許された人が、git の履歴をさかのぼって見る・戻す）。
 // 過去を見ている間は view にそのときのコメントを入れて、画面（リスト・タイムライン・描画・書き出し）はそちらを出す。
@@ -40,6 +51,7 @@ const tm = {
   on: false, list: [], idx: -1, // list: 古い順のコミット（{ id, time, author, subject }）。最後は「今」（id: null）。idx: 見ている位置
   view: null, cache: new Map(), want: null, timer: 0, refresh: 0, loading: false, restoring: false,
   hover: -1, scrub: null, h: 0, // h: 目盛りの並びの高さ（px）
+  ticks: [], lensOn: [], // 描いた目盛り（{ el, y }。上から順）と、拡大鏡で伸ばしている目盛り
   // 見ている時点のコミット（今なら最新のコミット）で変わったコメントの id（時刻順。画面で目立たせて、順に飛べる）と、
   // 各コメントを最後に変えたコミット（id → { commit, time, author }）と明るさ（タイムラインで、最近変えたものほど明るい）
   changed: new Set(), changedList: [], chgPos: -1, edit: new Map(), alpha: new Map(), wantEdits: null,
@@ -51,7 +63,7 @@ const shown = () => tm.view || store;
 // タイムマシンで見ている間は編集させない（true なら止める）
 function tmLocked(){
   if (!tm.on) return false;
-  toast('タイムマシンで見ている間は編集できません（「終了」で今に戻ります）', { type:'error' });
+  toast(T('タイムマシンで見ている間は編集できません（「終了」で今に戻ります）'), { type:'error' });
   return true;
 }
 
@@ -189,7 +201,7 @@ function commitOps(ops, { undoable = true, save = true, atomic = false, send = t
   if (!ops.length) return null;
   if (send && tmLocked()) return null;
   const { applied, conflicts } = store.apply({ id: uuidv7(), ops }, { atomic });
-  if (conflicts.length){ if (out) out.push(...conflicts); else console.warn('変更の衝突', conflicts); }
+  if (conflicts.length){ if (out) out.push(...conflicts); else console.warn(T('変更の衝突'), conflicts); }
   if (!applied) return null;
   if (undoable) pushUndo(applied);
   if (record) recordChange(applied);
@@ -256,7 +268,7 @@ function commentsChanged(){
   relayout();
   renderList();
   drawDensity();
-  $('#commentCount').textContent = `コメント ${state.comments.length}`;
+  $('#commentCount').textContent = T`コメント ${state.comments.length}`;
   state.needsDraw = true;
   tlRelane();
   vimCommentsChanged();
@@ -395,6 +407,7 @@ function loop(){
   const playing = !video.paused && !video.ended;
   const t = video.currentTime || 0;
   if (playing || state.needsDraw || state.needsRelayout) drawComments(t);
+  loopFrame(playing, t);
   tlFrame(playing, t);
   vimFrame(playing, t);
   presenceFrame();
@@ -417,7 +430,10 @@ const ICON = {
 $('#btnFull').innerHTML = ICON.full;
 $('#btnLink').innerHTML = ICON.link;
 $('#btnCall').innerHTML = ICON.call;
-function updatePlayIcon(){ $('#btnPlay').innerHTML = video.paused ? ICON.play : ICON.pause; }
+function updatePlayIcon(){
+  $('#btnPlay').innerHTML = video.paused ? ICON.play : ICON.pause;
+  $('#tlPlay use').setAttribute('href', video.paused ? '#i-play' : '#i-pause');
+}
 function updateVolIcon(){ $('#btnMute').innerHTML = (video.muted || video.volume === 0) ? ICON.mute : ICON.vol; }
 function updateCommentIcon(){
   const b = $('#btnToggleComments');
@@ -464,7 +480,7 @@ video.addEventListener('loadedmetadata', () => {
 });
 video.addEventListener('error', () => {
   if (!video.src) return;
-  toast('この動画は再生できません（ブラウザが形式に対応していない可能性があります）', { type:'error', timeout:6000 });
+  toast(T('この動画は再生できません（ブラウザが形式に対応していない可能性があります）'), { type:'error', timeout:6000 });
 });
 // 再生中に映像の大きさが変わる動画もある
 video.addEventListener('resize', () => { if (state.videoLoaded) updateStage(); });
@@ -527,8 +543,58 @@ function updateTimeUI(t = video.currentTime){
   seekFill.style.width = (r * 100) + '%';
   seekKnob.style.left = (r * 100) + '%';
   $('#timeText').textContent = `${fmt(t)} / ${fmt(d)}`;
+  // タイムラインの帯のタイムコード（打っている間は書き換えない）
+  const tc = $('#tlTime'), s = fmtPrecise(t || 0);
+  if (document.activeElement !== tc && tc.value !== s) tc.value = s;
   highlightCurrent(t);
 }
+
+/* ---------- イン点・アウト点とループ再生（動画編集ソフトの I / O と同じ） ----------
+   範囲は書き出しの範囲の初期値と、ループ再生のくり返す範囲に使う。シークバーとタイムラインの目盛りに出す */
+// 範囲（片方だけなら、もう片方は動画の始まり・終わり）。どちらも無ければ null
+function rangeSpan(){
+  const r = state.range, d = isFinite(video.duration) && video.duration > 0 ? video.duration : tlDuration();
+  if (r.in == null && r.out == null) return null;
+  const s = r.in ?? 0, e = r.out ?? d;
+  return e > s + 0.05 ? { s, e } : null;
+}
+function rangeSet(which, t = video.currentTime || 0){
+  t = Math.max(0, t);
+  state.range[which] = t;
+  // 逆になったら、もう片方を外す（Premiere と同じ）
+  const r = state.range;
+  if (r.in != null && r.out != null && r.out <= r.in + 0.05) r[which === 'in' ? 'out' : 'in'] = null;
+  rangeUI();
+  toast(`${which === 'in' ? T('イン点') : T('アウト点')}: ${fmtPrecise(t)}`, { timeout:1200 });
+}
+function rangeClear(which){
+  if (which) state.range[which] = null; else state.range = { in: null, out: null };
+  rangeUI();
+}
+function rangeUI(){
+  const sp = rangeSpan(), d = video.duration, el = $('#seekRange');
+  el.hidden = !sp || !(isFinite(d) && d > 0);
+  if (!el.hidden){ el.style.left = (sp.s / d * 100) + '%'; el.style.width = ((sp.e - sp.s) / d * 100) + '%'; }
+  $('#tlIn').classList.toggle('set', state.range.in != null);
+  $('#tlOut').classList.toggle('set', state.range.out != null);
+  $('#tlRangeClear').hidden = state.range.in == null && state.range.out == null;
+  $('#tlLoop').classList.toggle('on', !!settings.tlLoop);
+  TL.dirty = true;
+}
+// 再生中に範囲の終わりまで来たら始まりへ戻す（範囲が無ければ動画全体をくり返す）。リアルタイム録画の書き出し中はしない
+function loopFrame(playing, t){
+  const on = !!settings.tlLoop && !exportUsesPlayer(), sp = on ? rangeSpan() : null;
+  const whole = on && !sp;
+  if (video.loop !== whole) video.loop = whole;
+  if (!playing || !sp) return;
+  if (t >= sp.e - 0.03) seekTo(sp.s);
+}
+video.addEventListener('play', () => {
+  // ループ再生で範囲の外から再生したら、範囲の始まりから
+  const sp = settings.tlLoop && !exportUsesPlayer() ? rangeSpan() : null;
+  if (sp && (video.currentTime < sp.s - 0.05 || video.currentTime >= sp.e - 0.03)) seekTo(sp.s);
+});
+video.addEventListener('loadedmetadata', rangeUI);
 
 function drawDensity(){
   const cv = $('#density'), r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -575,9 +641,9 @@ $('#btnPost').onclick = postComment;
 // 再生位置にコメントを投稿する（成功したら true）
 function postAtCurrentTime(text, cmd){
   if (tmLocked()) return false;
-  if (!state.videoLoaded){ toast('先に動画を開いてください'); return false; }
+  if (!state.videoLoaded){ toast(T('先に動画を開いてください')); return false; }
   const c = makeComment(video.currentTime, cmd, text, true);
-  if (store.hasKey(c.key)){ toast('同じ時刻に同じコメントが既にあります'); return false; }
+  if (store.hasKey(c.key)){ toast(T('同じ時刻に同じコメントが既にあります')); return false; }
   commitOps([addOp(c)]);
   return true;
 }
@@ -602,14 +668,14 @@ function usePreset(p, insert){
     textInput.selectionStart = textInput.selectionEnd = a + p.text.length;
     return;
   }
-  if (postAtCurrentTime(p.text, presetCmd(p))) toast(`「${p.text}」を投稿しました`, { timeout:1200 });
+  if (postAtCurrentTime(p.text, presetCmd(p))) toast(T`「${p.text}」を投稿しました`, { timeout:1200 });
 }
 function renderPresets(){
   presetBar.replaceChildren();
   settings.presets.forEach((p, i) => {
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'preset';
-    b.title = `${p.text}${normCmd(p.cmd) ? `　[${normCmd(p.cmd)}]` : ''}\nクリックで投稿 / Shift+クリックで入力欄に挿入` + (i < 10 ? `\nキー: ${(i + 1) % 10}` : '');
+    b.title = T`${p.text}${normCmd(p.cmd) ? T`　[${normCmd(p.cmd)}]` : ''}\nクリックで投稿 / Shift+クリックで入力欄に挿入` + (i < 10 ? T`\nキー: ${(i + 1) % 10}` : '');
     const o = parseCmd(normCmd(p.cmd));
     if (normCmd(p.cmd) && o.color !== '#FFFFFF'){ const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = o.color; b.append(sw); }
     const tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = p.text.replace(/\n/g, ' ⏎ ');
@@ -620,32 +686,32 @@ function renderPresets(){
   });
   if (!settings.presets.length){
     const h = document.createElement('span'); h.className = 'hint';
-    h.textContent = 'よく使うコメント（888 など）を登録すると、ワンタップで投稿できます';
+    h.textContent = T('よく使うコメント（888 など）を登録すると、ワンタップで投稿できます');
     presetBar.append(h);
   }
   const add = document.createElement('button');
   add.type = 'button'; add.className = 'preset-tool';
-  add.textContent = settings.presets.length ? '⚙ 編集' : '＋ プリセットを登録';
-  add.title = 'コメントプリセットの追加・編集';
+  add.textContent = settings.presets.length ? T('⚙ 編集') : T('＋ プリセットを登録');
+  add.title = T('コメントプリセットの追加・編集');
   add.onclick = openPresetDialog;
   presetBar.append(add);
 }
 const presetDlg = $('#presetDlg');
 function prRow(p = { text:'', cmd:'' }){
   const row = document.createElement('div'); row.className = 'pr-row';
-  const t = document.createElement('input'); t.className = 'pr-text'; t.placeholder = '本文（例: 888）'; t.value = p.text.replace(/\n/g, '\\n');
-  const c = document.createElement('input'); c.className = 'pr-cmd'; c.placeholder = 'コマンド（任意）'; c.value = p.cmd || ''; c.spellcheck = false;
+  const t = document.createElement('input'); t.className = 'pr-text'; t.placeholder = T('本文（例: 888）'); t.value = p.text.replace(/\n/g, '\\n');
+  const c = document.createElement('input'); c.className = 'pr-cmd'; c.placeholder = T('コマンド（任意）'); c.value = p.cmd || ''; c.spellcheck = false;
   const mk = (label, title, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title; b.onclick = fn; return b; };
   row.append(t, c,
-    mk('↑', '上へ', () => { if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); }),
-    mk('↓', '下へ', () => { if (row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); }),
-    mk('✕', '削除', () => { row.remove(); prEmpty(); }));
+    mk('↑', T('上へ'), () => { if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); }),
+    mk('↓', T('下へ'), () => { if (row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); }),
+    mk('✕', T('削除'), () => { row.remove(); prEmpty(); }));
   return row;
 }
 function prEmpty(){
   const list = $('#prList');
   list.querySelector('.pr-empty')?.remove();
-  if (!list.querySelector('.pr-row')){ const e = document.createElement('div'); e.className = 'pr-empty'; e.textContent = 'まだ登録されていません。「＋ 追加」から登録してください。'; list.append(e); }
+  if (!list.querySelector('.pr-row')){ const e = document.createElement('div'); e.className = 'pr-empty'; e.textContent = T('まだ登録されていません。「＋ 追加」から登録してください。'); list.append(e); }
 }
 function openPresetDialog(){
   const list = $('#prList');
@@ -656,7 +722,7 @@ function openPresetDialog(){
 $('#prAdd').onclick = () => { const r = prRow(); $('#prList').append(r); prEmpty(); r.querySelector('input').focus(); };
 $('#prAddCurrent').onclick = () => {
   const text = textInput.value.replace(/\s+$/, '');
-  if (!text.trim()){ toast('コメント入力欄が空です'); return; }
+  if (!text.trim()){ toast(T('コメント入力欄が空です')); return; }
   const r = prRow({ text, cmd: normCmd(cmdInput.value) }); $('#prList').append(r); prEmpty();
 };
 $('#prCancel').onclick = () => presetDlg.close();
@@ -666,18 +732,18 @@ $('#prSave').onclick = () => {
     cmd: normCmd(r.querySelector('.pr-cmd').value),
   })).filter(p => p.text.trim());
   saveSettings(); renderPresets(); presetDlg.close();
-  toast(`プリセットを保存しました（${settings.presets.length} 件）`);
+  toast(T`プリセットを保存しました（${settings.presets.length} 件）`);
 };
 $('#prList').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229){ e.preventDefault(); $('#prSave').click(); } });
 
 /* ---------- コマンドパレット ---------- */
 const PALETTE = [
-  { label:'位置', tokens:['naka','ue','shita'] },
-  { label:'サイズ', tokens:['medium','big','small'] },
-  { label:'色', tokens:['white','red','pink','orange','yellow','green','cyan','blue','purple','black'] },
-  { label:'色2', tokens:['white2','red2','pink2','orange2','yellow2','green2','cyan2','blue2','purple2','black2'] },
-  { label:'フォント', tokens:['defont','gothic','mincho'] },
-  { label:'特殊', tokens:['invisible','full','ender','_live'] },
+  { label:T('位置'), tokens:['naka','ue','shita'] },
+  { label:T('サイズ'), tokens:['medium','big','small'] },
+  { label:T('色'), tokens:['white','red','pink','orange','yellow','green','cyan','blue','purple','black'] },
+  { label:T('色2'), tokens:['white2','red2','pink2','orange2','yellow2','green2','cyan2','blue2','purple2','black2'] },
+  { label:T('フォント'), tokens:['defont','gothic','mincho'] },
+  { label:T('特殊'), tokens:['invisible','full','ender','_live'] },
 ];
 const DEFAULT_TOKEN = { pos:'naka', size:'medium', color:'white', font:'defont' };
 const palette = $('#palette');
@@ -697,14 +763,14 @@ const palette = $('#palette');
       b.onclick = () => toggleToken(tok);
       chips.append(b);
     }
-    if (grp.label === '色2'){
-      const picker = document.createElement('input'); picker.type = 'color'; picker.title = '任意の色 (#RRGGBB)';
+    if (grp.label === T('色2')){
+      const picker = document.createElement('input'); picker.type = 'color'; picker.title = T('任意の色 (#RRGGBB)');
       picker.oninput = () => setGroupToken('color', picker.value.toUpperCase());
       chips.append(picker);
     }
-    if (grp.label === '特殊'){
+    if (grp.label === T('特殊')){
       const num = document.createElement('input'); num.type = 'number'; num.min = '1'; num.max = '600'; num.step = '1';
-      num.placeholder = '@秒'; num.title = '表示時間（秒）'; num.id = 'longInput';
+      num.placeholder = T('@秒'); num.title = T('表示時間（秒）'); num.id = 'longInput';
       num.oninput = () => setGroupToken('long', +num.value > 0 ? '@' + (+num.value) : null);
       chips.append(num);
     }
@@ -799,7 +865,7 @@ function listMakeRow(i){
   const rm = document.createElement('span'); rm.className = 'rm'; rm.title = c.cmd;
   if (o.color !== '#FFFFFF'){ const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = o.color; rm.append(sw); }
   rm.append(c.cmd);
-  const del = document.createElement('button'); del.className = 'del'; del.title = '削除'; del.textContent = '×';
+  const del = document.createElement('button'); del.className = 'del'; del.title = T('削除'); del.textContent = '×';
   row.append(rt, rc, rm, del);
   const peer = listPeerSel.get(c.id);
   if (peer){ row.classList.add('peer-sel'); row.style.setProperty('--peer', peer); }
@@ -834,18 +900,18 @@ function renderList(){
   }
   if (!listItems.length){
     const em = document.createElement('div'); em.className = 'list-empty';
-    em.textContent = q ? '該当するコメントはありません' : 'コメントはまだありません。\n動画を再生しながら下の入力欄から書き込めます。';
+    em.textContent = q ? T('該当するコメントはありません') : T('コメントはまだありません。\n動画を再生しながら下の入力欄から書き込めます。');
     em.style.whiteSpace = 'pre-line';
     list.append(em);
   }
-  $('#listCount').textContent = q ? `${listItems.length} / ${state.comments.length}件` : `${state.comments.length}件`;
+  $('#listCount').textContent = q ? T`${listItems.length} / ${state.comments.length}件` : T`${state.comments.length}件`;
   lastHL = Math.floor(t * 4);
   listMarkPeers();
 }
 // 行の高さの見積もりに使う大きさを測る（1行だけの行の高さ・本文の1行の高さ・本文の欄の幅）
 function listMeasureRow(){
   const probe = document.createElement('div'); probe.className = 'row'; probe.style.visibility = 'hidden';
-  probe.innerHTML = '<span class="rt">00:00</span><span class="rc">あ</span><span class="rm">ue</span><button class="del">×</button>';
+  probe.innerHTML = T('<span class="rt">00:00</span><span class="rc">あ</span><span class="rm">ue</span><button class="del">×</button>');
   list.classList.add('virtual'); list.append(probe);
   const rc = probe.querySelector('.rc');
   listRowH = probe.getBoundingClientRect().height || 25;
@@ -988,7 +1054,7 @@ function highlightCurrent(t){
 function deleteComment(c){
   if (!store.has(c.id)) return;
   const ch = commitOps([deleteOp(c)]);
-  if (ch) toast('コメントを削除しました', { action:{ label:'元に戻す', fn:() => revertChange(ch) } });
+  if (ch) toast(T('コメントを削除しました'), { action:{ label:T('元に戻す'), fn:() => revertChange(ch) } });
 }
 
 /* =====================================================================
@@ -1006,7 +1072,7 @@ function parseCommentText(text, name = ''){
   const head = text.trimStart();
   if (/\.xml$/i.test(name) || head.startsWith('<')){
     const doc = new DOMParser().parseFromString(text, 'application/xml');
-    if (doc.querySelector('parsererror')) throw new Error('XML の解析に失敗しました');
+    if (doc.querySelector('parsererror')) throw new Error(T('XML の解析に失敗しました'));
     return [...doc.getElementsByTagName('chat')].map(ch => {
       const v = Number(ch.getAttribute('vpos'));
       return isFinite(v) ? makeComment(v / 100, ch.getAttribute('mail') || '', ch.textContent || '') : null;
@@ -1014,12 +1080,12 @@ function parseCommentText(text, name = ''){
   }
   if (/\.json$/i.test(name) || head.startsWith('{') || head.startsWith('[')){
     let data;
-    try { data = JSON.parse(text); } catch (e) { throw new Error('JSON の解析に失敗しました'); }
+    try { data = JSON.parse(text); } catch (e) { throw new Error(T('JSON の解析に失敗しました')); }
     let arr = null;
     if (Array.isArray(data)) arr = data;
     else if (data && Array.isArray(data.comments)) arr = data.comments;
     else if (data && (data.data?.threads || data.threads)) arr = (data.data?.threads || data.threads).flatMap(th => th.comments || []);
-    if (!arr) throw new Error('コメントの配列が見つかりません');
+    if (!arr) throw new Error(T('コメントの配列が見つかりません'));
     return arr.map(it => (it && it.chat) ? it.chat : it).filter(it => it && typeof it === 'object').map(it => {
       let t = it.t ?? it.time ?? (it.vposMs != null ? it.vposMs / 1000 : (it.vpos != null ? it.vpos / 100 : null));
       if (typeof t === 'string') t = parseTime(t);
@@ -1058,20 +1124,21 @@ function defaultFileName(ext){
   return `${b}.${ext}`;
 }
 function updateStatus(){
-  $('#videoStatus').textContent = '動画: ' + (state.videoName || 'なし');
+  $('#videoStatus').textContent = T('動画: ') + (state.videoName || T('なし'));
   const fs = $('#fileStatus');
   fs.replaceChildren();
   const name = document.createElement('span');
-  name.textContent = 'コメント: ' + (state.collab ? '共同編集（ホストに保存）' : (state.fileName || '新規'));
+  name.textContent = state.collab ? '' : T('コメント: ') + (state.fileName || T('新規'));
   fs.append(name, ' ');
   const st = document.createElement('span');
-  if (state.dirty){ st.className = 'dirty'; st.textContent = '● 未保存'; }
-  else if (state.fileName){ st.className = 'clean'; st.textContent = '✓ 保存済み'; }
+  if (state.dirty){ st.className = 'dirty'; st.textContent = T('● 未保存'); }
+  else if (state.fileName){ st.className = 'clean'; st.textContent = T('✓ 保存済み'); }
   fs.append(st);
-  if (state.fileHandle && settings.autosave){ fs.append(' · 自動保存'); }
+  if (state.fileHandle && settings.autosave){ fs.append(T(' · 自動保存')); }
+  $('#btnSave').classList.toggle('dirty', !!state.dirty);
   $('#fsNote').textContent = hasFS
-    ? 'このブラウザは開いたコメントファイルへの直接保存に対応しています。保存時にはファイル側に増えたコメントも取り込んでから書き込みます。'
-    : 'このブラウザはファイルへの直接保存に非対応のため、保存はダウンロードになります（Chrome / Edge 推奨）。';
+    ? T('このブラウザは開いたコメントファイルへの直接保存に対応しています。保存時にはファイル側に増えたコメントも取り込んでから書き込みます。')
+    : T('このブラウザはファイルへの直接保存に非対応のため、保存はダウンロードになります（Chrome / Edge 推奨）。');
 }
 
 async function ensurePerm(h){
@@ -1083,14 +1150,14 @@ async function ensurePerm(h){
   return true;
 }
 async function writeHandle(h, mergeFirst){
-  if (!(await ensurePerm(h))) throw new Error('ファイルへの書き込みが許可されませんでした');
+  if (!(await ensurePerm(h))) throw new Error(T('ファイルへの書き込みが許可されませんでした'));
   if (mergeFirst){
     try {
       const f = await h.getFile();
       const txt = await f.text();
       if (txt.trim()){
         const r = addComments(parseCommentText(txt, f.name), { skipDeleted:true, undoable:false, save:false });
-        if (r.added) toast(`ファイル側にあった新しいコメント ${r.added} 件を取り込みました`);
+        if (r.added) toast(T`ファイル側にあった新しいコメント ${r.added} 件を取り込みました`);
       }
     } catch (e) { console.warn('re-read failed', e); }
   }
@@ -1109,14 +1176,14 @@ async function save({ saveAs = false } = {}){
       h = await window.showSaveFilePicker({
         suggestedName: defaultFileName(settings.saveFormat),
         types: [
-          { description:'コメントファイル (JSON)', accept:{ 'application/json':['.json'] } },
-          { description:'コメントファイル (CSV)', accept:{ 'text/csv':['.csv'] } },
+          { description:T('コメントファイル (JSON)'), accept:{ 'application/json':['.json'] } },
+          { description:T('コメントファイル (CSV)'), accept:{ 'text/csv':['.csv'] } },
         ],
       });
     } catch (e) { if (e.name === 'AbortError') return false; throw e; }
     state.fileHandle = h;
     await writeHandle(h, false);
-    toast(`${h.name} に保存しました`);
+    toast(T`${h.name} に保存しました`);
     return true;
   }
   const fmt = settings.saveFormat;
@@ -1124,17 +1191,17 @@ async function save({ saveAs = false } = {}){
   download(serialize(fmt), name, fmt === 'csv' ? 'text/csv' : 'application/json');
   state.fileName = name;
   markClean();
-  toast(`${name} をダウンロードしました`);
+  toast(T`${name} をダウンロードしました`);
   return true;
 }
-function doSave(opts){ save(opts).catch(e => toast('保存に失敗しました: ' + e.message, { type:'error' })); }
+function doSave(opts){ save(opts).catch(e => toast(T('保存に失敗しました: ') + e.message, { type:'error' })); }
 
 let saving = null, savePending = false;
 function autosave(){
   if (!settings.autosave || !state.fileHandle) return;
   if (saving){ savePending = true; return; }
   saving = writeHandle(state.fileHandle, true)
-    .catch(e => toast('自動保存に失敗しました: ' + e.message, { type:'error' }))
+    .catch(e => toast(T('自動保存に失敗しました: ') + e.message, { type:'error' }))
     .finally(() => { saving = null; if (savePending){ savePending = false; autosave(); } });
 }
 
@@ -1145,7 +1212,7 @@ function loadReplace(text, name, handle){
   if (state.collab){
     // 共同編集中は全体を入れ替えず、ほかの人のコメントを残したまま追加する
     const r = addComments(items);
-    toast(`${name} から ${r.added} 件のコメントを追加しました（共同編集中は置き換えずに追加します）` + (r.dup ? `　重複 ${r.dup} 件は除外` : ''), { timeout:6000 });
+    toast(T`${name} から ${r.added} 件のコメントを追加しました（共同編集中は置き換えずに追加します）` + (r.dup ? T`　重複 ${r.dup} 件は除外` : ''), { timeout:6000 });
     return;
   }
   store.reset();
@@ -1161,7 +1228,7 @@ function loadReplace(text, name, handle){
   state.fileName = /\.(json|csv)$/i.test(name) ? name : null;
   markClean();
   if (!/\.(json|csv)$/i.test(name)) state.dirty = r.added > 0, updateStatus();
-  toast(`${name} から ${r.added} 件のコメントを読み込みました` + (r.dup ? `（重複 ${r.dup} 件を除外）` : ''));
+  toast(T`${name} から ${r.added} 件のコメントを読み込みました` + (r.dup ? T`（重複 ${r.dup} 件を除外）` : ''));
   vimReload(true);
 }
 async function mergeFiles(files){
@@ -1173,22 +1240,22 @@ async function mergeFiles(files){
   }
   if (!ok) return;
   const { added, dup, skipped } = addComments(items, { skipDeleted:true });
-  let msg = `${ok} ファイルをマージ: ${added} 件追加`;
-  if (dup) msg += ` / 重複 ${dup} 件`;
-  if (skipped) msg += ` / この作業中に削除したもの ${skipped} 件は除外`;
+  let msg = T`${ok} ファイルをマージ: ${added} 件追加`;
+  if (dup) msg += T` / 重複 ${dup} 件`;
+  if (skipped) msg += T` / この作業中に削除したもの ${skipped} 件は除外`;
   toast(msg, { timeout:5000 });
 }
 
-const COMMENT_TYPES = [{ description:'コメントファイル', accept:{ 'application/json':['.json'], 'text/csv':['.csv'], 'text/xml':['.xml'] } }];
+const COMMENT_TYPES = [{ description:T('コメントファイル'), accept:{ 'application/json':['.json'], 'text/csv':['.csv'], 'text/xml':['.xml'] } }];
 $('#btnOpenComments').onclick = async () => {
   if (state.dirty && state.comments.length &&
-      !confirm('未保存のコメントがあります。破棄して別のファイルを開きますか？\n（今のコメントに追加したい場合は「マージ」を使ってください）')) return;
+      !confirm(T('未保存のコメントがあります。破棄して別のファイルを開きますか？\n（今のコメントに追加したい場合は「マージ」を使ってください）'))) return;
   if (hasFS){
     try {
       const [h] = await window.showOpenFilePicker({ types: COMMENT_TYPES });
       const f = await h.getFile();
       loadReplace(await f.text(), f.name, h);
-    } catch (e) { if (e.name !== 'AbortError') toast('開けませんでした: ' + e.message, { type:'error' }); }
+    } catch (e) { if (e.name !== 'AbortError') toast(T('開けませんでした: ') + e.message, { type:'error' }); }
   } else $('#fileComments').click();
 };
 $('#fileComments').onchange = async (e) => {
@@ -1200,7 +1267,7 @@ $('#btnMerge').onclick = async () => {
     try {
       const hs = await window.showOpenFilePicker({ types: COMMENT_TYPES, multiple:true });
       mergeFiles(await Promise.all(hs.map(h => h.getFile())));
-    } catch (e) { if (e.name !== 'AbortError') toast('開けませんでした: ' + e.message, { type:'error' }); }
+    } catch (e) { if (e.name !== 'AbortError') toast(T('開けませんでした: ') + e.message, { type:'error' }); }
   } else $('#fileMerge').click();
 };
 $('#fileMerge').onchange = (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) mergeFiles(fs); };
@@ -1234,7 +1301,7 @@ async function handleDropped(entries){
   const vids = entries.filter(x => x.file && isVideoFile(x.file));
   const cmts = entries.filter(x => x.file && !isVideoFile(x.file) && isCommentFile(x.file));
   if (vids.length) loadVideo(vids[0].file);
-  if (!cmts.length){ if (!vids.length) toast('対応していないファイルです', { type:'error' }); return; }
+  if (!cmts.length){ if (!vids.length) toast(T('対応していないファイルです'), { type:'error' }); return; }
   if (cmts.length === 1 && !state.comments.length){
     const h = await cmts[0].handleP;
     loadReplace(await cmts[0].file.text(), cmts[0].file.name, h && h.kind === 'file' ? h : null);
@@ -1300,13 +1367,13 @@ function expSetBusy(on){
   $('#expForm').style.opacity = on ? .5 : 1;
   const b = $('#btnExport');
   b.classList.toggle('busy', on && exportState.mode === 'fast');
-  if (!on) b.textContent = '⏺ コメ付き書き出し';
+  if (!on) b.querySelector('.lbl').textContent = T('書き出し');
 }
 function expProgress(p, text){
   exportState.progress = p;
   $('#expBar').style.width = (p * 100).toFixed(1) + '%';
   $('#expText').textContent = text;
-  if (exportState.running && exportState.mode === 'fast') $('#btnExport').textContent = `⏺ 書き出し中 ${Math.floor(p * 100)}%`;
+  if (exportState.running && exportState.mode === 'fast') $('#btnExport').querySelector('.lbl').textContent = T`書き出し中 ${Math.floor(p * 100)}%`;
 }
 // 解像度の選択肢（短い辺の長さ）。元動画と同じ大きさ・それより小さい標準の大きさ・1080p 以下
 const EXP_RES = [[4320, '8K'], [2160, '4K'], [1440, '1440p'], [1080, '1080p'], [720, '720p'], [480, '480p']];
@@ -1333,7 +1400,7 @@ async function expProbeSource(){
     if (expSrc.file !== file) return;
     expSrc.fps = fps > 0 && isFinite(fps) ? fps : 0;
     if (dur > 0) expSrc.vbps = Math.max(0, file.size * 8 / dur - (abps || 0));
-  } catch (e){ console.warn('動画の情報を読めませんでした', e); }
+  } catch (e){ console.warn(T('動画の情報を読めませんでした'), e); }
   if (expSrc.file === file) expSrc.done = true;
   if (expSrc.file === file && exportDlg.open && !exportState.running){ expFillBitrate(); expSyncForm(); }
 }
@@ -1351,9 +1418,9 @@ function expFillBitrate(){
   sel.replaceChildren();
   const add = (v, l) => { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); };
   // 元動画と同じ（既定）。調べ終わるまでは「調べています」と出し、その間に始めたら解像度に合わせる。調べられなければ出さない
-  if (expSrc.vbps > 0) add('src', `元動画と同じ（約 ${fmtMbps(expSrc.vbps)}）`);
-  else if (!(expSrc.done && expSrc.file === state.videoFile)) add('src', '元動画と同じ（調べています…）');
-  add('auto', `解像度に合わせる（${fmtMbps(expRecommendBps(W, H, expFpsOf()))}）`);
+  if (expSrc.vbps > 0) add('src', T`元動画と同じ（約 ${fmtMbps(expSrc.vbps)}）`);
+  else if (!(expSrc.done && expSrc.file === state.videoFile)) add('src', T('元動画と同じ（調べています…）'));
+  add('auto', T`解像度に合わせる（${fmtMbps(expRecommendBps(W, H, expFpsOf()))}）`);
   for (const m of [2, 4, 8, 16, 30, 50, 80, 120]) add(m, `${m} Mbps`);
   sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'auto';
 }
@@ -1375,8 +1442,8 @@ function expCliCmd(o){
 function expCliHint(o){
   const d = document.createElement('div'); d.className = 'exp-hint';
   const c = document.createElement('code'); c.textContent = expCliCmd(o);
-  d.append('大きな動画は、CLI の komenagare render で書き出すのがおすすめです（ffmpeg で書き出すので、ブラウザのメモリやエンコーダーの制限を受けません）。'
-    + (state.collab ? '作業フォルダで: ' : 'コメントを JSON で保存してから、同じフォルダで: '), c);
+  d.append(T('大きな動画は、CLI の komenagare render で書き出すのがおすすめです（ffmpeg で書き出すので、ブラウザのメモリやエンコーダーの制限を受けません）。')
+    + (state.collab ? T('作業フォルダで: ') : T('コメントを JSON で保存してから、同じフォルダで: ')), c);
   return d;
 }
 const expWarn = (text) => { const d = document.createElement('div'); d.className = 'exp-hint'; d.textContent = text; return d; };
@@ -1396,24 +1463,24 @@ function expSyncForm(){
   const notes = [];
   let ok = true, out;
   if (fast){
-    out = `${CONTAINERS[cont.value].label}（確かめています…）`;
-    notes.push('動画ファイルを直接読み込んで変換するので、再生するより速く書き出せます。'
-      + (fastExportInWorker() ? '処理はバックグラウンドで行うため、書き出し中もほかの作業やタブの切り替えができます。' : 'ファイルを直接開いているため、このタブで処理します（書き出し中はタブを開いたままにしてください）。')
-      + 'フレームレートを動画より高くすると、映像は元のコマのまま、コメントだけが指定したフレームレートで滑らかに動きます。'
-      + (canSaveStream() ? '書き出し開始で保存先を選ぶと、そこへ少しずつ書き込みます（長い動画もメモリをあまり使いません）。' : ''));
+    out = T`${CONTAINERS[cont.value].label}（確かめています…）`;
+    notes.push(T('動画ファイルを直接読み込んで変換するので、再生するより速く書き出せます。')
+      + (fastExportInWorker() ? T('処理はバックグラウンドで行うため、書き出し中もほかの作業やタブの切り替えができます。') : T('ファイルを直接開いているため、このタブで処理します（書き出し中はタブを開いたままにしてください）。'))
+      + T('フレームレートを動画より高くすると、映像は元のコマのまま、コメントだけが指定したフレームレートで滑らかに動きます。')
+      + (canSaveStream() ? T('書き出し開始で保存先を選ぶと、そこへ少しずつ書き込みます（長い動画もメモリをあまり使いません）。') : ''));
   } else {
     const mime = pickMime(cont.value);
     const canCapture = typeof HTMLCanvasElement.prototype.captureStream === 'function';
     ok = !!(mime && canCapture);
-    out = ok ? mime : 'このブラウザはこの形式での録画に対応していません';
-    notes.push('動画を実際に等倍で再生しながら録画するため、動画の長さと同じ時間がかかります。録画中はこのタブを前面に表示したままにしてください。パソコンの処理が追いつかないと、指定したフレームレートより粗くなることがあります。高速書き出しが使えない動画や環境向けです。');
-    if (o.fps > 60) notes.push('等倍の録画は画面の描き換え（多くの画面で 1 秒に 60 回）に合わせて描くため、60 fps を超えるフレームレートにしても同じコマが続くことがあります。滑らかな 120 fps には高速書き出しを使ってください。');
+    out = ok ? mime : T('このブラウザはこの形式での録画に対応していません');
+    notes.push(T('動画を実際に等倍で再生しながら録画するため、動画の長さと同じ時間がかかります。録画中はこのタブを前面に表示したままにしてください。パソコンの処理が追いつかないと、指定したフレームレートより粗くなることがあります。高速書き出しが使えない動画や環境向けです。'));
+    if (o.fps > 60) notes.push(T('等倍の録画は画面の描き換え（多くの画面で 1 秒に 60 回）に合わせて描くため、60 fps を超えるフレームレートにしても同じコマが続くことがあります。滑らかな 120 fps には高速書き出しを使ってください。'));
   }
   const nodes = notes.map(t => document.createTextNode(t));
   if (fast && !canSaveStream() && est > EXP_MEM_MAX * 0.9)
-    nodes.push(expWarn(`見込みの大きさ（約 ${fmtBytes(est)}）が、このブラウザで一度に書き出せる 4 GB を超えそうです。ビットレートを下げるか、範囲を分けて書き出してください（Chrome / Edge なら保存先へ直接書き出せるので、この制限はありません）。`));
+    nodes.push(expWarn(T`見込みの大きさ（約 ${fmtBytes(est)}）が、このブラウザで一度に書き出せる 4 GB を超えそうです。ビットレートを下げるか、範囲を分けて書き出してください（Chrome / Edge なら保存先へ直接書き出せるので、この制限はありません）。`));
   if (expLarge(o.W, o.H)){
-    nodes.push(expWarn(`この大きさ（${o.W}×${o.H}）はブラウザでの書き出しに時間がかかり、パソコンによっては途中で失敗することがあります。`));
+    nodes.push(expWarn(T`この大きさ（${o.W}×${o.H}）はブラウザでの書き出しに時間がかかり、パソコンによっては途中で失敗することがあります。`));
     nodes.push(expCliHint(o));
   }
   $('#expNote').replaceChildren(...nodes);
@@ -1425,7 +1492,7 @@ function expSyncForm(){
 async function expCheckCodec(o, est){
   const seq = ++expCheckSeq;
   const CODEC = { avc:'H.264', hevc:'H.265', vp9:'VP9', vp8:'VP8', av1:'AV1' };
-  const size = `・見込み 約 ${fmtBytes(est)}`;
+  const size = T`・見込み 約 ${fmtBytes(est)}`;
   let codec = null, others = [];
   try {
     const MB = await loadMediabunny();
@@ -1434,16 +1501,16 @@ async function expCheckCodec(o, est){
   } catch (e){ console.warn(e); if (seq === expCheckSeq) $('#expFormat').textContent = `${CONTAINERS[o.container].label}${size}`; return; }
   if (seq !== expCheckSeq || exportState.running) return;
   if (codec){
-    $('#expFormat').textContent = `${CONTAINERS[o.container].label}・${CODEC[codec] || codec}${size}`
-      + ((o.container === 'mp4' || o.container === 'mkv') && codec !== 'avc' ? `（この大きさ・環境では H.264 が使えないため ${CODEC[codec] || codec}。古いプレーヤーでは再生できないことがあります）` : '');
+    $('#expFormat').textContent = T`${CONTAINERS[o.container].label}・${CODEC[codec] || codec}${size}`
+      + ((o.container === 'mp4' || o.container === 'mkv') && codec !== 'avc' ? T`（この大きさ・環境では H.264 が使えないため ${CODEC[codec] || codec}。古いプレーヤーでは再生できないことがあります）` : '');
     // H.264 のソフトウェアエンコーダー（OpenH264）は 60fps までしか見込まないので、それより上ではビットレートが指定より大きくなる
     if (codec === 'avc' && (o.fps || expSrc.fps) > 60.5)
-      $('#expNote').append(expWarn('60 fps を超える H.264 は、パソコンによっては（ソフトウェアで変換するとき）指定したビットレートの 2 倍ほどになり、見込みより大きくなることがあります。大きさを抑えたいときは、ビットレートを下げるか WebM（VP9）を選んでください。'));
+      $('#expNote').append(expWarn(T('60 fps を超える H.264 は、パソコンによっては（ソフトウェアで変換するとき）指定したビットレートの 2 倍ほどになり、見込みより大きくなることがあります。大きさを抑えたいときは、ビットレートを下げるか WebM（VP9）を選んでください。')));
     $('#expStartBtn').disabled = false;
     return;
   }
-  $('#expFormat').textContent = `このブラウザでは、この大きさ（${o.W}×${o.H}）を ${CONTAINERS[o.container].label} で書き出せません。`
-    + (others.length ? `${others.join(' / ')} なら書き出せます。` : '解像度を下げてください。');
+  $('#expFormat').textContent = T`このブラウザでは、この大きさ（${o.W}×${o.H}）を ${CONTAINERS[o.container].label} で書き出せません。`
+    + (others.length ? T`${others.join(' / ')} なら書き出せます。` : T('解像度を下げてください。'));
   $('#expStartBtn').disabled = true;
   if (!expLarge(o.W, o.H)) $('#expNote').append(expCliHint(o));
 }
@@ -1456,20 +1523,22 @@ for (const id of ['#expStart', '#expEnd']) $(id).addEventListener('change', expS
 $('#expAudio').addEventListener('change', expSyncForm);
 $('#btnExport').onclick = () => {
   if (exportState.running){ exportDlg.showModal(); return; }
-  if (!state.videoLoaded){ toast('先に動画を開いてください'); return; }
+  if (!state.videoLoaded){ toast(T('先に動画を開いてください')); return; }
   // 解像度は短い辺の長さで選ぶ（縦長なら幅。1080p なら 1080×1920）
   const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
   const same = state.stage.w >= state.stage.h ? vh : vw;
   const res = $('#expRes'); res.replaceChildren();
-  const label = (v, name) => { const { W, H } = exportSize(v); return `${name} (${W}×${H})` + (expLarge(W, H) ? ' ※大きい' : ''); };
-  const opts = [[same, label(same, '元動画と同じ')]];
+  const label = (v, name) => { const { W, H } = exportSize(v); return `${name} (${W}×${H})` + (expLarge(W, H) ? T(' ※大きい') : ''); };
+  const opts = [[same, label(same, T('元動画と同じ'))]];
   for (const [v, name] of EXP_RES) if (v !== same && (v < same || v <= 1080)) opts.push([v, label(v, name)]);
   for (const [v, l] of opts){ const o = document.createElement('option'); o.value = v; o.textContent = l; res.append(o); }
   // 元動画が大きいときは、大きくない中でいちばん大きいものを選んでおく（元動画と同じも選べる）
   const fit = opts.find(([v]) => { const { W, H } = exportSize(v); return !expLarge(W, H); });
   res.value = fit ? fit[0] : same;
-  $('#expStart').value = '0:00';
-  $('#expEnd').value = fmt(video.duration);
+  // イン点・アウト点があれば、その範囲を書き出す
+  const sp = rangeSpan();
+  $('#expStart').value = sp ? fmtPrecise(sp.s) : '0:00';
+  $('#expEnd').value = sp ? fmtPrecise(Math.min(sp.e, video.duration)) : fmt(video.duration);
   const fastOk = canFastExport();
   $('#expMode').options[0].disabled = !fastOk;
   $('#expMode').value = fastOk ? 'fast' : 'realtime';
@@ -1483,7 +1552,7 @@ $('#btnExport').onclick = () => {
   expProbeSource();
 };
 $('#expClose').onclick = () => { if (!exportUsesPlayer()) exportDlg.close(); };
-$('#expBg').onclick = () => { exportDlg.close(); toast('書き出しをバックグラウンドで続けます（上の「書き出し中」ボタンで進み具合を確認できます）', { timeout:5000 }); };
+$('#expBg').onclick = () => { exportDlg.close(); toast(T('書き出しをバックグラウンドで続けます（上の「書き出し中」ボタンで進み具合を確認できます）'), { timeout:5000 }); };
 exportDlg.addEventListener('cancel', (e) => { if (exportUsesPlayer()) e.preventDefault(); });
 $('#expCancel').onclick = () => {
   exportState.cancel = true;
@@ -1499,14 +1568,14 @@ $('#expStartBtn').onclick = () => {
   run().catch(e => {
     console.error(e);
     expSetBusy(false);
-    expProgress(0, '失敗しました: ' + e.message);
+    expProgress(0, T('失敗しました: ') + e.message);
     const hint = [];
     if (expMemError(e)) hint.push(expWarn(canSaveStream()
-      ? 'メモリが足りなかったようです。ビットレートや解像度を下げるか、範囲を分けて書き出してください。'
-      : 'メモリが足りないか、出力が大きすぎたようです（このブラウザでは一度に 4 GB まで）。ビットレートを下げるか範囲を分けるか、Chrome / Edge（保存先へ直接書き出せる）を使ってください。'));
+      ? T('メモリが足りなかったようです。ビットレートや解像度を下げるか、範囲を分けて書き出してください。')
+      : T('メモリが足りないか、出力が大きすぎたようです（このブラウザでは一度に 4 GB まで）。ビットレートを下げるか範囲を分けるか、Chrome / Edge（保存先へ直接書き出せる）を使ってください。')));
     if (expMemError(e) || expLarge(o.W, o.H) || e.code === 'unencodable') hint.push(expCliHint(o));
     $('#expHint').replaceChildren(...hint);
-    toast('書き出しに失敗しました: ' + e.message, { type:'error', timeout:8000 });
+    toast(T('書き出しに失敗しました: ') + e.message, { type:'error', timeout:8000 });
   });
 };
 // 書き出す大きさ（コメントを流す範囲と同じ縦横比。short は短い辺）
@@ -1528,11 +1597,11 @@ async function expPickSaveFile(container){
   if (!canSaveStream()) return null;
   try {
     return await window.showSaveFilePicker({ suggestedName: exportFileName(container),
-      types: [{ description: `${CONTAINERS[container].label} 動画`, accept: { [EXP_MIME[container]]: ['.' + container] } }] });
+      types: [{ description: T`${CONTAINERS[container].label} 動画`, accept: { [EXP_MIME[container]]: ['.' + container] } }] });
   } catch (e){
     if (e.name === 'AbortError') return false;
     // 保存先の画面を開けない環境（埋め込み表示など）では、今までどおりダウンロードで書き出す
-    console.warn('保存先を選べないため、ダウンロードで書き出します', e);
+    console.warn(T('保存先を選べないため、ダウンロードで書き出します'), e);
     return null;
   }
 }
@@ -1550,8 +1619,8 @@ function loadMediabunny(){
   return mediabunnyLoading = mediabunnyLoading || new Promise((resolve, reject) => {
     const sc = document.createElement('script');
     sc.src = MB_URL;
-    sc.onload = () => window.Mediabunny ? resolve(window.Mediabunny) : reject(new Error('変換ライブラリを読み込めませんでした'));
-    sc.onerror = () => reject(new Error('変換ライブラリ（lib/' + MB_URL.split('/').pop() + '）が見つかりません。index.html と同じ場所に lib フォルダを置いてください'));
+    sc.onload = () => window.Mediabunny ? resolve(window.Mediabunny) : reject(new Error(T('変換ライブラリを読み込めませんでした')));
+    sc.onerror = () => reject(new Error(T('変換ライブラリ（lib/') + MB_URL.split('/').pop() + T('）が見つかりません。index.html と同じ場所に lib フォルダを置いてください')));
     document.head.append(sc);
   }).catch(e => { mediabunnyLoading = null; throw e; });
 }
@@ -1578,7 +1647,7 @@ async function exportViaPlayerWith(MB, d, ctl, { input, format, output, vcodec, 
   let i0 = 0;
   while (i0 + 1 < times.length && times[i0 + 1] <= d.start) i0++;
   times = times.slice(i0).filter(t => t < d.end);
-  if (!times.length) throw new Error('書き出し範囲に映像のコマが見つかりません');
+  if (!times.length) throw new Error(T('書き出し範囲に映像のコマが見つかりません'));
   const typical = times.length > 1 ? (times[times.length - 1] - times[0]) / (times.length - 1) : 1 / 30;
   const nextOf = (j) => j + 1 < times.length ? times[j + 1] : times[j] + typical;
   // 再生中の時刻 → コマ番号（その時刻に表示されているコマ）
@@ -1691,23 +1760,23 @@ function snapshotLayouts(start, end){
 const fastExportInWorker = () => location.protocol !== 'file:';
 async function runFastExport(){
   const o = readExportOptions();
-  if (o.end - o.start < 0.5){ toast('書き出し範囲が短すぎます', { type:'error' }); return; }
-  if (!state.videoFile) throw new Error('動画ファイルが見つかりません');
+  if (o.end - o.start < 0.5){ toast(T('書き出し範囲が短すぎます'), { type:'error' }); return; }
+  if (!state.videoFile) throw new Error(T('動画ファイルが見つかりません'));
   const handle = await expPickSaveFile(o.container);
   if (handle === false) return;
   if (!handle && expEstimate(o) > EXP_MEM_MAX * 0.9
-    && !confirm(`見込みの大きさ（約 ${fmtBytes(expEstimate(o))}）が、このブラウザで一度に書き出せる 4 GB を超えそうです。途中で失敗することがありますが、書き出しますか？`)) return;
+    && !confirm(T`見込みの大きさ（約 ${fmtBytes(expEstimate(o))}）が、このブラウザで一度に書き出せる 4 GB を超えそうです。途中で失敗することがありますが、書き出しますか？`)) return;
   const d = { type: 'start', lib: MB_URL, file: state.videoFile, layouts: snapshotLayouts(o.start, o.end), ...o, handle };
   exportState.mode = 'fast'; exportState.cancel = false;
   expSetBusy(true);
-  expProgress(0, '準備中…');
+  expProgress(0, T('準備中…'));
   let t0 = performance.now();
   const span = o.end - o.start;
   const onProgress = (p, t) => {
     const el = (performance.now() - t0) / 1000;
     const speed = t > 0 ? (t / el) : 0;
     const left = p > 0.02 ? el * (1 - p) / p : NaN;
-    expProgress(p, (exportState.mode === 'seek' ? 'プレーヤーから読み込みながら書き出し中（このタブを前面に表示したままにしてください）… ' : '書き出し中… ') + `${Math.floor(p * 100)}%` + (speed ? `（再生速度の約 ${speed.toFixed(1)} 倍` + (isFinite(left) ? `・残り約 ${fmt(left)}` : '') + '）' : ''));
+    expProgress(p, (exportState.mode === 'seek' ? T('プレーヤーから読み込みながら書き出し中（このタブを前面に表示したままにしてください）… ') : T('書き出し中… ')) + `${Math.floor(p * 100)}%` + (speed ? T`（再生速度の約 ${speed.toFixed(1)} 倍` + (isFinite(left) ? T`・残り約 ${fmt(left)}` : '') + T('）') : ''));
   };
   let done = false;
   const onDone = (m) => {
@@ -1716,11 +1785,11 @@ async function runFastExport(){
     if (m.buffer) download(new Blob([m.buffer], { type: m.mime }), name);
     const el = (performance.now() - t0) / 1000;
     const CODEC = { avc:'H.264', hevc:'H.265', vp9:'VP9', vp8:'VP8', av1:'AV1' };
-    expProgress(1, `完了: ${name}（${CODEC[m.codec] || m.codec}・${o.fps ? o.fps + 'fps' : '元動画と同じfps'}・${fmtBytes(m.size)}・${fmt(span)} 分を ${fmt(el)} で書き出し）`
-      + ((o.container === 'mp4' || o.container === 'mkv') && m.codec !== 'avc' ? '　※この環境では H.264 が使えないため ' + (CODEC[m.codec] || m.codec) + ' で書き出しました（古いプレーヤーでは再生できないことがあります）' : '')
-      + (m.audioDropped ? '　※音声はこの形式に変換できなかったため含まれていません' : '')
-      + (m.viaPlayer ? '　※このブラウザでは元動画を直接デコードできないため、プレーヤーで1コマずつ読み込んで書き出しました' : ''));
-    toast(handle ? `${name} に書き出しました` : `${name} を書き出しました`, { timeout:6000 });
+    expProgress(1, T`完了: ${name}（${CODEC[m.codec] || m.codec}・${o.fps ? o.fps + 'fps' : T('元動画と同じfps')}・${fmtBytes(m.size)}・${fmt(span)} 分を ${fmt(el)} で書き出し）`
+      + ((o.container === 'mp4' || o.container === 'mkv') && m.codec !== 'avc' ? T('　※この環境では H.264 が使えないため ') + (CODEC[m.codec] || m.codec) + T(' で書き出しました（古いプレーヤーでは再生できないことがあります）') : '')
+      + (m.audioDropped ? T('　※音声はこの形式に変換できなかったため含まれていません') : '')
+      + (m.viaPlayer ? T('　※このブラウザでは元動画を直接デコードできないため、プレーヤーで1コマずつ読み込んで書き出しました') : ''));
+    toast(handle ? T`${name} に書き出しました` : T`${name} を書き出しました`, { timeout:6000 });
   };
   // このタブで変換する（ファイルを直接開いているとき・プレーヤーから映像を取り出すとき）
   const inTab = async (convert) => {
@@ -1730,22 +1799,22 @@ async function runFastExport(){
       const MB = await loadMediabunny();
       onDone(await convert(MB, d, ctl));
     } catch (e){
-      if (ctl.canceled) expProgress(0, '中止しました'); else throw e;
+      if (ctl.canceled) expProgress(0, T('中止しました')); else throw e;
     } finally { exportState.ctl = null; }
   };
   try {
     try {
       if (fastExportInWorker()){
-        const worker = new Worker(new URL('js/export-worker.js', location.href));
+        const worker = new Worker(new URL('js/export-worker.js?lang=' + I18N.lang, location.href));
         exportState.worker = worker;
         try {
           await new Promise((resolve, reject) => {
-            worker.onerror = (e) => reject(new Error(e.message || 'ワーカーの起動に失敗しました'));
+            worker.onerror = (e) => reject(new Error(e.message || T('ワーカーの起動に失敗しました')));
             worker.onmessage = (ev) => {
               const m = ev.data;
               if (m.type === 'progress') onProgress(m.p, m.t);
               else if (m.type === 'done'){ onDone(m); resolve(); }
-              else if (m.type === 'canceled'){ expProgress(0, '中止しました'); resolve(); }
+              else if (m.type === 'canceled'){ expProgress(0, T('中止しました')); resolve(); }
               else if (m.type === 'error') reject(Object.assign(new Error(m.message), { code: m.code }));
             };
             worker.postMessage(d);
@@ -1763,7 +1832,7 @@ async function runFastExport(){
       t0 = performance.now();
       expSetBusy(true);
       if (!exportDlg.open) exportDlg.showModal();
-      expProgress(0, e.message + '。プレーヤーで1コマずつ読み込みながら書き出します…');
+      expProgress(0, e.message + T('。プレーヤーで1コマずつ読み込みながら書き出します…'));
       await inTab(exportViaPlayer);
     }
   } finally {
@@ -1777,7 +1846,7 @@ async function runRealtimeExport(){
   const o = readExportOptions();
   const mime = pickMime(o.container); if (!mime) return;
   const { W, H, start, end } = o, fps = o.fps || 30, vbps = o.vbps;
-  if (end - start < 0.5){ toast('書き出し範囲が短すぎます', { type:'error' }); return; }
+  if (end - start < 0.5){ toast(T('書き出し範囲が短すぎます'), { type:'error' }); return; }
   // 保存先を選べるブラウザでは、録画したものを少しずつそこへ書く
   const handle = await expPickSaveFile(o.container);
   if (handle === false) return;
@@ -1798,7 +1867,7 @@ async function runRealtimeExport(){
 
   exportState.mode = 'realtime'; exportState.cancel = false;
   expSetBusy(true);
-  expProgress(0, '準備中…');
+  expProgress(0, T('準備中…'));
 
   let rec = null, sink = null, done = false;
   try {
@@ -1830,7 +1899,7 @@ async function runRealtimeExport(){
         const t = video.currentTime;
         if (exportState.cancel || video.ended || t >= end){ resolve(); return; }
         draw();
-        expProgress((t - start) / (end - start), `録画中… ${fmt(t - start)} / ${fmt(end - start)}（等倍で進みます）`);
+        expProgress((t - start) / (end - start), T`録画中… ${fmt(t - start)} / ${fmt(end - start)}（等倍で進みます）`);
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
@@ -1844,17 +1913,17 @@ async function runRealtimeExport(){
     if (!exportState.cancel){
       if (sink){
         await sink.close(); sink = null; done = true;
-        expProgress(1, `完了: ${handle.name} に書き出しました（${fmtBytes((await handle.getFile()).size)}）`);
-        toast(`${handle.name} に書き出しました`);
+        expProgress(1, T`完了: ${handle.name} に書き出しました（${fmtBytes((await handle.getFile()).size)}）`);
+        toast(T`${handle.name} に書き出しました`);
       } else {
         const name = exportFileName(o.container);
         download(new Blob(chunks, { type: mime.split(';')[0] }), name);
         done = true;
-        expProgress(1, `完了: ${name} をダウンロードしました`);
-        toast(`${name} を書き出しました`);
+        expProgress(1, T`完了: ${name} をダウンロードしました`);
+        toast(T`${name} を書き出しました`);
       }
     } else {
-      expProgress(0, '中止しました');
+      expProgress(0, T('中止しました'));
     }
   } finally {
     if (rec && rec.state !== 'inactive') try { rec.stop(); } catch {}
@@ -1883,19 +1952,19 @@ function pushUndo(ch){
 function applyHistory(ch){
   if (tmLocked()) return false;
   const { applied, conflicts } = store.apply(ch, { atomic: true });
-  if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return false; }
+  if (conflicts.length){ toast(T('その後の変更と重なるため元に戻せません'), { type:'error' }); return false; }
   if (applied){ recordChange(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
   return true;
 }
 function undo(){
-  if (!history.undo.length){ toast('これ以上元に戻せません'); return; }
+  if (!history.undo.length){ toast(T('これ以上元に戻せません')); return; }
   const ch = history.undo[history.undo.length - 1];
   if (!applyHistory(invertChange(ch))) return;
   history.redo.push(history.undo.pop());
   updateUndoUI();
 }
 function redo(){
-  if (!history.redo.length){ toast('これ以上やり直せません'); return; }
+  if (!history.redo.length){ toast(T('これ以上やり直せません')); return; }
   const ch = history.redo[history.redo.length - 1];
   if (!applyHistory({ ...ch, id: uuidv7() })) return;
   history.undo.push(history.redo.pop());
@@ -1905,7 +1974,7 @@ function redo(){
 function revertChange(ch){
   if (tmLocked()) return null;
   const { applied, conflicts } = store.apply(invertChange(ch), { atomic: true });
-  if (conflicts.length){ toast('その後の変更と重なるため元に戻せません', { type:'error' }); return null; }
+  if (conflicts.length){ toast(T('その後の変更と重なるため元に戻せません'), { type:'error' }); return null; }
   if (applied){ pushUndo(applied); recordChange(applied); commentsChanged(); collabSend(applied); markDirty(); autosave(); tlSelChanged(); }
   return applied;
 }
@@ -1917,15 +1986,18 @@ function updateUndoUI(){
 /* =====================================================================
    タイムライン
    ===================================================================== */
-const TL_RULER = 22, TL_HEAD = 30, TL_GAP = 6, TL_MIN_DUR = 0.1;
+// 見出し列の幅は、英語の段の名前（Top・Flow・Btm）が入るよう少し広く
+const TL_RULER = 22, TL_HEAD = I18N.lang === 'en' ? 40 : 30, TL_GAP = 6, TL_MIN_DUR = 0.1;
 const TL_GROUPS = [
-  { pos:'ue', label:'上', color:'#2e9e6b' },
-  { pos:'naka', label:'流', color:'#3b74d6' },
-  { pos:'shita', label:'下', color:'#c47f22' },
+  { pos:'ue', label:T('上'), color:'#2fae78' },
+  { pos:'naka', label:T('流'), color:'#3d7be0' },
+  { pos:'shita', label:T('下'), color:'#d08a2a' },
 ];
 const TL_GI = { ue:0, naka:1, shita:2 };
 const coarse = matchMedia('(pointer: coarse)');
-const laneH = () => coarse.matches ? 32 : 24;
+// 段の高さ（設定で 低い・ふつう・高い。指で触る画面では少し高く）
+const LANE_H = { s: [20, 26], m: [24, 32], l: [34, 42] };
+const laneH = () => (LANE_H[settings.tlLane] || LANE_H.m)[coarse.matches ? 1 : 0];
 const TL = {
   main: $('#tlMain'), cv: $('#tlCanvas'), ovBox: $('#tlOv'), ov: $('#tlOvCanvas'),
   W: 1, H: 1, ovW: 1, ovH: 1, dpr: 1, t0: -1, pps: 40, scrollY: 0, inited: false,
@@ -2091,6 +2163,8 @@ function tlDrawClip(g, c, sp, y, lh, gi){
   g.globalAlpha = (sp.o.invisible ? 0.4 : 1) * dim;
   g.fillStyle = sel ? shade(TL_GROUPS[gi].color, 1.3) : TL_GROUPS[gi].color;
   rr(g, x0 + 0.5, top, w - 1, h, 4); g.fill();
+  // 上の縁を少し明るく（立体に見せる）
+  if (w > 6){ g.fillStyle = 'rgba(255,255,255,.16)'; g.fillRect(x0 + 3, top + 1, w - 6, 1); }
   if (colored && w > 6){ g.fillStyle = sp.o.color; g.fillRect(x0 + 2, top + 2, 3, h - 4); }
   if (sp.lead > 0){
     const xv = tx(c.t);
@@ -2125,7 +2199,7 @@ function tlDrawClip(g, c, sp, y, lh, gi){
 function tlDraw(){
   const g = TL.g, W = TL.W, H = TL.H, lh = laneH();
   g.setTransform(TL.dpr, 0, 0, TL.dpr, 0, 0);
-  g.fillStyle = '#141414'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#121417'; g.fillRect(0, 0, W, H);
   const t1 = xt(W), D = tlDuration(), hasDur = isFinite(video.duration) && video.duration > 0;
   const step = rulerStep(), minor = step.major / step.div;
   // トラック
@@ -2134,7 +2208,7 @@ function tlDraw(){
     for (let ln = 0; ln < G.n; ln++){
       const y = laneTop(gi, ln);
       if (y > H || y + lh < TL_RULER) continue;
-      g.fillStyle = ln % 2 ? '#1a1a1a' : '#1e1e1e';
+      g.fillStyle = ln % 2 ? '#181b1f' : '#1c1f23';
       g.fillRect(TL_HEAD, y, W - TL_HEAD, lh);
     }
   });
@@ -2143,6 +2217,15 @@ function tlDraw(){
   g.fillStyle = 'rgba(0,0,0,.5)';
   if (tx(0) > TL_HEAD) g.fillRect(TL_HEAD, TL_RULER, tx(0) - TL_HEAD, H);
   if (hasDur && tx(D) < W) g.fillRect(tx(D), TL_RULER, W - tx(D), H);
+  // イン点〜アウト点の範囲（外を少し暗く）
+  const rg = rangeSpan();
+  if (rg){
+    g.fillStyle = 'rgba(0,0,0,.28)';
+    if (tx(rg.s) > TL_HEAD) g.fillRect(TL_HEAD, TL_RULER, tx(rg.s) - TL_HEAD, H);
+    if (tx(rg.e) < W) g.fillRect(tx(rg.e), TL_RULER, W - tx(rg.e), H);
+    g.fillStyle = 'rgba(255,179,0,.5)';
+    for (const x of [tx(rg.s), tx(rg.e)]) if (x >= TL_HEAD && x <= W) g.fillRect(Math.round(x) - 0.5, TL_RULER, 1, H);
+  }
   g.font = TL_FONT; g.textBaseline = 'middle';
   const drawOne = (c) => {
     const pos = TL.laneOf.get(c.id);
@@ -2177,7 +2260,7 @@ function tlDraw(){
     const s = tlCreateSpan(md), x0 = tx(s.ta), x1 = tx(s.tb), y = laneTop(md.gi, md.lane);
     g.fillStyle = TL.groups[md.gi].color; g.globalAlpha = 0.35; g.fillRect(x0, y + 2, x1 - x0, lh - 4); g.globalAlpha = 1;
     g.strokeStyle = '#fff'; g.lineWidth = 1; g.setLineDash([4, 3]); g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5); g.setLineDash([]);
-    g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(`＋ ${fmtPrecise(s.t)}・${s.dur.toFixed(1)}秒`, Math.max(x0, TL_HEAD) + 6, y + lh / 2);
+    g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(T`＋ ${fmtPrecise(s.t)}・${s.dur.toFixed(1)}秒`, Math.max(x0, TL_HEAD) + 6, y + lh / 2);
   }
   if (md && md.type === 'marquee' && md.started && md.lastX != null){
     const r = tlMarqueeRect(md), x0 = tx(r.ta), x1 = tx(r.tb), y0 = r.ya - TL.scrollY, y1 = r.yb - TL.scrollY;
@@ -2187,35 +2270,58 @@ function tlDraw(){
   }
   g.restore();
   // 見出し列
-  g.fillStyle = '#101010'; g.fillRect(0, TL_RULER, TL_HEAD, H);
+  g.fillStyle = '#0f1114'; g.fillRect(0, TL_RULER, TL_HEAD, H);
+  g.fillStyle = '#23262b'; g.fillRect(TL_HEAD - 1, TL_RULER, 1, H);
   g.save(); g.beginPath(); g.rect(0, TL_RULER, TL_HEAD, H - TL_RULER); g.clip();
   g.font = '600 12px system-ui,sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   TL.groups.forEach((G, gi) => {
     const y0 = laneTop(gi, 0), h = G.n * lh;
     if (y0 > H || y0 + h < TL_RULER) return;
-    g.fillStyle = G.color; g.fillRect(4, y0 + 2, 3, h - 4);
+    g.fillStyle = G.color; rr(g, 4, y0 + 3, 3, h - 6, 1.5); g.fill();
     const vy0 = Math.max(y0, TL_RULER), vy1 = Math.min(y0 + h, H);
-    g.fillStyle = '#c8c8c8'; g.fillText(G.label, TL_HEAD / 2 + 3, (vy0 + vy1) / 2);
-    g.fillStyle = '#262626'; g.fillRect(0, y0 + h + TL_GAP / 2 - 0.5, W, 1);
+    g.fillStyle = '#d4d2cc'; g.fillText(G.label, TL_HEAD / 2 + 3, (vy0 + vy1) / 2);
+    g.fillStyle = '#25282d'; g.fillRect(0, y0 + h + TL_GAP / 2 - 0.5, W, 1);
   });
   g.restore();
   // 目盛り
-  g.fillStyle = '#1f1f1f'; g.fillRect(0, 0, W, TL_RULER);
-  g.fillStyle = '#333'; g.fillRect(0, TL_RULER - 1, W, 1);
+  g.fillStyle = '#1a1d21'; g.fillRect(0, 0, W, TL_RULER);
+  g.fillStyle = '#2c3036'; g.fillRect(0, TL_RULER - 1, W, 1);
+  // 目盛りの上のイン点〜アウト点（琥珀の帯と、両端のかぎ）
+  if (rg){
+    const a = Math.max(TL_HEAD, tx(rg.s)), b = Math.min(W, tx(rg.e));
+    if (b > a){
+      g.fillStyle = 'rgba(255,179,0,.2)'; g.fillRect(a, 0, b - a, TL_RULER - 1);
+      g.fillStyle = '#ffb300';
+      const xa = tx(rg.s), xb = tx(rg.e);
+      if (xa >= TL_HEAD - 1){ g.fillRect(Math.round(xa) - 1, 0, 2, TL_RULER - 1); g.fillRect(Math.round(xa) - 1, 0, 6, 2); g.fillRect(Math.round(xa) - 1, TL_RULER - 3, 6, 2); }
+      if (xb <= W + 1){ g.fillRect(Math.round(xb) - 1, 0, 2, TL_RULER - 1); g.fillRect(Math.round(xb) - 5, 0, 6, 2); g.fillRect(Math.round(xb) - 5, TL_RULER - 3, 6, 2); }
+    }
+  }
   g.save(); g.beginPath(); g.rect(TL_HEAD, 0, W - TL_HEAD, TL_RULER); g.clip();
   g.font = '11px system-ui,sans-serif'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
   for (let k = Math.ceil(TL.t0 / minor), n = 0; k * minor <= t1 && n < TL_TICKS_MAX; k++, n++){
     const x = Math.round(tx(k * minor));
     if (k % step.div === 0){
-      g.fillStyle = '#8a8a8a'; g.fillRect(x, TL_RULER - 9, 1, 8);
-      g.fillStyle = '#bdbdbd'; g.fillText(fmtRuler(k * minor, step.major), x + 3, 11);
-    } else { g.fillStyle = '#555'; g.fillRect(x, TL_RULER - 5, 1, 4); }
+      g.fillStyle = '#7d828a'; g.fillRect(x, TL_RULER - 9, 1, 8);
+      g.fillStyle = '#b9bcc2'; g.fillText(fmtRuler(k * minor, step.major), x + 3, 11);
+    } else { g.fillStyle = '#4a4f56'; g.fillRect(x, TL_RULER - 5, 1, 4); }
   }
   g.restore();
+  // マウスを重ねている位置（Final Cut Pro のスキマーのように、細い線とその時刻を出す。ドラッグ中は出さない）
+  const hv = TL.hover;
+  if (hv && !TL.drag && hv.x >= TL_HEAD && hv.x <= W){
+    const hx = Math.round(hv.x) + 0.5;
+    g.fillStyle = 'rgba(255,255,255,.28)'; g.fillRect(hx - 0.5, TL_RULER, 1, H);
+    const label = fmtPrecise(Math.max(0, xt(hv.x)));
+    g.font = '600 10.5px ' + 'ui-monospace,Menlo,Consolas,monospace'; g.textBaseline = 'middle';
+    const tw = g.measureText(label).width + 10, lx = clamp(hx - tw / 2, TL_HEAD, W - tw);
+    g.fillStyle = '#e8e6e1'; rr(g, lx, 2, tw, TL_RULER - 5, 3); g.fill();
+    g.fillStyle = '#121417'; g.textAlign = 'center'; g.fillText(label, lx + tw / 2, TL_RULER / 2 - 0.5);
+  }
   // 再生位置
   const px = tx(video.currentTime || 0);
   if (px >= TL_HEAD - 7 && px <= W + 7){
-    g.fillStyle = '#ff4d4d';
+    g.fillStyle = '#ff4d5e';
     g.fillRect(Math.round(px) - 0.5, 0, 1.5, H);
     g.beginPath(); g.moveTo(px - 6, 0); g.lineTo(px + 6, 0); g.lineTo(px + 6, 8); g.lineTo(px, 14); g.lineTo(px - 6, 8); g.closePath(); g.fill();
   }
@@ -2274,9 +2380,9 @@ function tlDrawOverview(){
     cv.width = TL.ov.width; cv.height = TL.ov.height;
     const c2 = cv.getContext('2d');
     c2.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c2.fillStyle = '#0d0d0d'; c2.fillRect(0, 0, W, H);
+    c2.fillStyle = '#0d0f12'; c2.fillRect(0, 0, W, H);
     const k = ovK(), rh = (H - 4) / 3;
-    if (isFinite(video.duration)){ c2.fillStyle = '#161616'; c2.fillRect(ovX(0), 0, video.duration * k, H); }
+    if (isFinite(video.duration)){ c2.fillStyle = '#181b20'; c2.fillRect(ovX(0), 0, video.duration * k, H); }
     c2.globalAlpha = 0.7;
     for (const c of state.comments){
       const sp = spanOf(c), gi = TL_GI[sp.o.pos];
@@ -2353,16 +2459,16 @@ function tlSelChanged(){
   TL.dirty = true; state.needsDraw = true;
   presenceDirty();
   if (n === 1) tlShowInfo(tlSelected()[0]);
-  else $('#tlInfo').textContent = n ? `${n} 件選択中` : (tm.on ? '' : 'ダブルクリックで作成・編集');
+  else $('#tlInfo').textContent = n ? T`${n} 件選択中` : (tm.on ? '' : T('ダブルクリックで作成・編集'));
 }
 function tlShowInfo(c){
   if (!c){ $('#tlInfo').textContent = ''; return; }
   const sp = spanOf(c);
-  const speed = sp.lead ? `　速さ <b>×${((DEFAULT_DURATION + NAKA_LEAD) / (sp.dur + NAKA_LEAD)).toFixed(2)}</b>` : '';
-  $('#tlInfo').innerHTML = `開始 <b>${fmtPrecise(c.t)}</b>　表示 <b>${sp.dur.toFixed(2)}秒</b>${speed}`;
+  const speed = sp.lead ? T`　速さ <b>×${((DEFAULT_DURATION + NAKA_LEAD) / (sp.dur + NAKA_LEAD)).toFixed(2)}</b>` : '';
+  $('#tlInfo').innerHTML = T`開始 <b>${fmtPrecise(c.t)}</b>　表示 <b>${sp.dur.toFixed(2)}秒</b>${speed}`;
   // タイムマシンでは、最後に変えた日時と人も出す
   const e = tm.on && tm.edit.get(c.id);
-  if (e) $('#tlInfo').append('　', e.commit === 'now' ? '最後の変更: 今（まだコミット前）' : `最後の変更: ${tmDate(e.time)}・${e.author}`);
+  if (e) $('#tlInfo').append(T('　'), e.commit === 'now' ? T('最後の変更: 今（まだコミット前）') : T`最後の変更: ${tmDate(e.time)}・${e.author}`);
 }
 function deleteSelected(){
   const list = tlSelected();
@@ -2370,7 +2476,7 @@ function deleteSelected(){
   TL.sel.clear();
   const ch = commitOps(list.map(deleteOp));
   tlSelChanged();
-  if (ch) toast(`${list.length} 件のコメントを削除しました`, { action:{ label:'元に戻す', fn:() => revertChange(ch) } });
+  if (ch) toast(T`${list.length} 件のコメントを削除しました`, { action:{ label:T('元に戻す'), fn:() => revertChange(ch) } });
 }
 function nudgeSelected(dt){
   const list = tlSelected();
@@ -2378,7 +2484,7 @@ function nudgeSelected(dt){
   dt = Math.max(dt, -Math.min(...list.map(c => c.t)));
   if (!dt) return;
   const { ops, failed } = updateOps(list.map(c => ({ c, t: c.t + dt })));
-  if (failed) toast('同じ時刻・内容のコメントがあるため一部を動かせませんでした');
+  if (failed) toast(T('同じ時刻・内容のコメントがあるため一部を動かせませんでした'));
   commitOps(ops);
   tlSelChanged();
 }
@@ -2476,7 +2582,7 @@ function tlDragCommit(d){
   TL.snapT = null;
   if (!changes.length){ relayout(); return; }
   const { ops, failed } = updateOps(changes);
-  if (failed) toast('同じ時刻・内容のコメントがあるため一部を変更できませんでした');
+  if (failed) toast(T('同じ時刻・内容のコメントがあるため一部を変更できませんでした'));
   if (!commitOps(ops)) relayout();
   tlSelChanged();
 }
@@ -2489,10 +2595,10 @@ function tlDragCommitCopy(d){
   if (!copies.length){ relayout(); return; }
   const r = newComments(copies);
   const ch = r.items.length ? commitOps(r.items.map(addOp)) : null;
-  if (!ch){ relayout(); toast('同じ時刻・内容のコメントがあるため複製できませんでした'); return; }
+  if (!ch){ relayout(); toast(T('同じ時刻・内容のコメントがあるため複製できませんでした')); return; }
   TL.sel = new Set(r.items.map(c => c.id));
   tlSelChanged();
-  toast(`${r.items.length} 件を複製しました` + (r.dup ? `（同じ時刻・内容のものがある ${r.dup} 件は除きました）` : ''), { action: { label: '元に戻す', fn: () => revertChange(ch) } });
+  toast(T`${r.items.length} 件を複製しました` + (r.dup ? T`（同じ時刻・内容のものがある ${r.dup} 件は除きました）` : ''), { action: { label: T('元に戻す'), fn: () => revertChange(ch) } });
 }
 function tlCancelDrag(){
   const d = TL.drag;
@@ -2588,7 +2694,7 @@ TL.main.addEventListener('pointermove', (e) => {
   if (TL.pinch){ tlPinchMove(); return; }
   const d = TL.drag;
   if (!d){
-    if (e.pointerType === 'mouse'){ TL.hover = p; tlCursor(e); }
+    if (e.pointerType === 'mouse'){ TL.hover = p; tlCursor(e); TL.dirty = true; }
     return;
   }
   if (d.id !== e.pointerId) return;
@@ -2618,7 +2724,7 @@ function tlCursor(mods){
     : p.x >= TL_HEAD && mods.shiftKey && !hit && tlGroupAt(p.y) != null ? 'copy'
     : !hit ? 'default' : hit.zone === 'move' ? 'grab' : 'ew-resize';
 }
-TL.main.addEventListener('pointerleave', () => { TL.hover = null; });
+TL.main.addEventListener('pointerleave', () => { TL.hover = null; TL.dirty = true; });
 // 押しているキーが変わったら、マウスを動かさなくてもカーソルを変える
 for (const ev of ['keydown', 'keyup']) window.addEventListener(ev, (e) => { if (['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) tlCursor(e); });
 window.addEventListener('blur', () => tlCursor({}));
@@ -2696,7 +2802,7 @@ function tlWheel(e, centerX){
   if (e.deltaMode === 1){ dx *= 16; dy *= 16; } else if (e.deltaMode === 2){ dx *= TL.W; dy *= TL.H; }
   if (e.ctrlKey || e.metaKey){ tlZoomAt(Math.exp(-dy * 0.0025), centerX); return; }
   const pad = isTrackpadWheel(e);
-  const kind = $('#tlWheelKind'); if (kind) kind.textContent = pad ? 'トラックパッド（360°）' : 'マウスホイール';
+  const kind = $('#tlWheelKind'); if (kind) kind.textContent = pad ? T('トラックパッド（360°）') : T('マウスホイール');
   const onHead = e.currentTarget === TL.main && tlLocal(e).x < TL_HEAD;
   if (pad && !onHead){
     // 360°: 横成分は時間、縦成分は段。Shift で入れ替え
@@ -2767,7 +2873,7 @@ TL.ovBox.addEventListener('pointermove', (e) => {
 for (const ev of ['pointerup', 'pointercancel']) TL.ovBox.addEventListener(ev, (e) => { if (TL.ovDrag && TL.ovDrag.id === e.pointerId) TL.ovDrag = null; });
 
 /* ---------- ツールバー ---------- */
-function toggleSnap(){ TL.snap = settings.tlSnap = !TL.snap; saveSettings(); $('#tlSnap').classList.toggle('on', TL.snap); toast(TL.snap ? 'スナップ オン' : 'スナップ オフ', { timeout:1200 }); }
+function toggleSnap(){ TL.snap = settings.tlSnap = !TL.snap; saveSettings(); $('#tlSnap').classList.toggle('on', TL.snap); toast(TL.snap ? T('スナップ オン') : T('スナップ オフ'), { timeout:1200 }); }
 $('#tlSnap').classList.toggle('on', TL.snap);
 $('#tlFollow').classList.toggle('on', TL.follow);
 $('#tlSnap').onclick = toggleSnap;
@@ -2779,6 +2885,29 @@ $('#tlEdit').onclick = () => { const s = tlSelected(); if (s.length === 1) openE
 $('#tlDelete').onclick = deleteSelected;
 $('#tlUndo').onclick = undo;
 $('#tlRedo').onclick = redo;
+$('#tlPlay').onclick = () => { if (!state.videoLoaded){ toast(T('先に動画を開いてください')); return; } togglePlay(); };
+$('#tlIn').onclick = () => rangeSet('in');
+$('#tlOut').onclick = () => rangeSet('out');
+$('#tlRangeClear').onclick = () => rangeClear();
+$('#tlLoop').onclick = () => { settings.tlLoop = !settings.tlLoop; saveSettings(); rangeUI(); toast(settings.tlLoop ? (rangeSpan() ? T('ループ再生 オン（イン点〜アウト点）') : T('ループ再生 オン（全体）')) : T('ループ再生 オフ'), { timeout:1400 }); };
+// タイムコード：押して時刻を打ち、Enter でそこへ移る（Esc でやめる）
+(() => {
+  const tc = $('#tlTime');
+  tc.addEventListener('focus', () => setTimeout(() => tc.select(), 0));
+  tc.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing){
+      e.preventDefault();
+      const t = parseTime(tc.value);
+      if (isFinite(t) && t >= 0) seekTo(t); else toast(T('時刻は 1:23.5 や 83.5 のように打ってください'), { timeout:2500 });
+      tc.blur();
+    } else if (e.key === 'Escape'){ e.preventDefault(); tc.blur(); }
+    e.stopPropagation();
+  });
+  tc.addEventListener('blur', () => { tc.value = fmtPrecise(video.currentTime || 0); });
+})();
+$('#setLane').value = LANE_H[settings.tlLane] ? settings.tlLane : 'm';
+$('#setLane').onchange = (e) => { settings.tlLane = e.target.value; saveSettings(); tlRelane(); };
+rangeUI();
 $('#tlZoomIn').onclick = () => tlZoomAt(1.5, tlZoomCenterX());
 $('#tlZoomOut').onclick = () => tlZoomAt(1 / 1.5, tlZoomCenterX());
 $('#tlFit').onclick = tlFit;
@@ -2792,78 +2921,61 @@ $('#tlZoom').oninput = (e) => {
   const b = tlBounds();
   tlZoomAt(b.minPps * Math.pow(b.maxPps / b.minPps, e.target.value / 1000) / TL.pps, tlZoomCenterX());
 };
-// 高さを変えるつまみ（ダブルクリックで元に戻す）。PC ではタイムラインの上端でタイムラインの高さを、
-// 縦向きのスマホではタブの上で動画の大きさを変えて、下の画面（タイムライン・リスト・Vim・履歴）がその残りに広がる
-for (const h of [$('#tlResize'), $('#mResize')]) {
+// 縦向きのスマホ：タブの上のつまみで動画の大きさを変え、下の画面（タイムライン・リスト・Vim・履歴）がその残りに広がる（ダブルタップで元に戻す）
+(() => {
+  const h = $('#mResize');
   let st = null;
-  // 縦向きのスマホで動画をどこまで大きくできるか（枠の横幅いっぱいまで）
+  // 動画をどこまで大きくできるか（枠の横幅いっぱいまで）
   const mVideoMax = () => Math.max(0.12, Math.min(0.6, $('#player').clientWidth * 9 / 16 / stableH));
   h.addEventListener('pointerdown', (e) => {
-    st = mq.matches ? { y: e.clientY, f: Math.min(settings.mVideo, mVideoMax()), mobile: true } : { y: e.clientY, h: Math.min(settings.tlHeight, tlMaxHeight()) };
+    st = { y: e.clientY, f: Math.min(settings.mVideo, mVideoMax()) };
     h.setPointerCapture(e.pointerId); h.classList.add('on');
   });
   h.addEventListener('pointermove', (e) => {
     if (!st) return;
-    const dy = e.clientY - st.y;
-    if (st.mobile) settings.mVideo = Math.round(clamp(st.f + dy / stableH, 0.12, mVideoMax()) * 1000) / 1000;
-    else settings.tlHeight = Math.round(clamp(st.h - dy, 140, tlMaxHeight()));
+    settings.mVideo = Math.round(clamp(st.f + (e.clientY - st.y) / stableH, 0.12, mVideoMax()) * 1000) / 1000;
     applyLayoutVars();
   });
   const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
   h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
-  h.addEventListener('dblclick', () => { if (mq.matches) settings.mVideo = M_VIDEO; else settings.tlHeight = TL_H; applyLayoutVars(); saveSettings(); });
-}
-// 右のパネルの幅の上限。動画の列に 400px 残す（css/komenagare.css の .layout と同じ）
-function sideMaxW(){
-  const l = $('#layout'), cs = getComputedStyle(l);
-  return Math.max(300, l.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - parseFloat(cs.columnGap) - 400);
-}
-// 右のパネルの幅：左端をドラッグして変える（ダブルクリックで元に戻す）
-(() => {
-  const h = $('#sideResize');
-  let st = null;
-  h.addEventListener('pointerdown', (e) => {
-    // 今の見た目の幅から始める（画面が狭くて縮んでいるときも飛ばないように）
-    st = { x: e.clientX, w: $('#side').getBoundingClientRect().width };
-    h.setPointerCapture(e.pointerId); h.classList.add('on');
-  });
-  h.addEventListener('pointermove', (e) => {
-    if (!st) return;
-    settings.sideWidth = Math.round(clamp(st.w - (e.clientX - st.x), 300, sideMaxW()));
-    applyLayoutVars();
-  });
-  const end = () => { if (st){ st = null; h.classList.remove('on'); saveSettings(); } };
-  h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
-  h.addEventListener('dblclick', () => { settings.sideWidth = SIDE_W; applyLayoutVars(); saveSettings(); });
+  h.addEventListener('dblclick', () => { settings.mVideo = M_VIDEO; applyLayoutVars(); saveSettings(); });
 })();
-// 動画・右のパネル・タイムラインの境目が交わる所：ドラッグで、タイムラインの高さと右のパネルの幅を同時に変える
-//（ダブルクリックで両方をリセット）。横の位置は、右のパネルのつまみの線（.side-resize::after。つまみの左から 4〜7px）の真ん中に合わせる
-function placeTlCorner(){
-  const h = $('#sideResize');
-  if (!h.offsetParent || !$('#timeline').offsetParent) return;
-  $('#tlCorner').style.left = (h.getBoundingClientRect().left + 5.5 - $('#timeline').getBoundingClientRect().left) + 'px';
-}
-new ResizeObserver(placeTlCorner).observe($('#side'));
-new ResizeObserver(placeTlCorner).observe($('#timeline'));
+// PC：パネルの境目のつまみ。縦のすき間（gutV）で右の列の幅、横のすき間（gutH）で下の行の高さ、
+// 2本が交わる所（gutC）で両方を変える。ダブルクリックで、その配置の元の大きさに戻す
 (() => {
-  const h = $('#tlCorner'), marks = [h, $('#sideResize'), $('#tlResize')];
-  let st = null;
-  const mark = (on) => { for (const m of marks) m.classList.toggle('on', on); };
-  h.addEventListener('pointerenter', () => mark(true));
-  h.addEventListener('pointerleave', () => { if (!st) mark(false); });
-  h.addEventListener('pointerdown', (e) => {
-    st = { x: e.clientX, y: e.clientY, w: $('#side').getBoundingClientRect().width, h: Math.min(settings.tlHeight, tlMaxHeight()) };
-    h.setPointerCapture(e.pointerId); mark(true);
-  });
-  h.addEventListener('pointermove', (e) => {
-    if (!st) return;
-    settings.sideWidth = Math.round(clamp(st.w - (e.clientX - st.x), 300, sideMaxW()));
-    settings.tlHeight = Math.round(clamp(st.h - (e.clientY - st.y), 140, tlMaxHeight()));
-    applyLayoutVars();
-  });
-  const end = (e) => { if (st){ st = null; saveSettings(); if (e.type === 'pointercancel' || !h.matches(':hover')) mark(false); } };
-  h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
-  h.addEventListener('dblclick', () => { settings.sideWidth = SIDE_W; settings.tlHeight = TL_H; applyLayoutVars(); saveSettings(); });
+  const V = $('#gutV'), H = $('#gutH'), C = $('#gutC');
+  for (const [h, dw, dh] of [[V, 1, 0], [H, 0, 1], [C, 1, 1]]){
+    let st = null;
+    const marks = h === C ? [C, V, H] : [h];
+    const mark = (on) => { for (const m of marks) m.classList.toggle('on', on); };
+    if (h === C){
+      h.addEventListener('pointerenter', () => mark(true));
+      h.addEventListener('pointerleave', () => { if (!st) mark(false); });
+    }
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button > 0) return;
+      const L = layoutCur(), sz = layoutSize();
+      st = { x: e.clientX, y: e.clientY, w: sz.w, h: sz.h, L };
+      h.setPointerCapture(e.pointerId); mark(true);
+      e.preventDefault();
+    });
+    h.addEventListener('pointermove', (e) => {
+      if (!st) return;
+      if (dw) settings[st.L.w] = Math.round(st.w - (e.clientX - st.x));
+      if (dh) settings[st.L.h] = Math.round(st.h - (e.clientY - st.y));
+      const sz = layoutSize(); // 範囲に収めた大きさで覚える
+      settings[st.L.w] = sz.w; settings[st.L.h] = sz.h;
+      applyLayoutVars();
+    });
+    const end = (e) => { if (st){ st = null; saveSettings(); if (e.type === 'pointercancel' || !h.matches(':hover') || h !== C) mark(false); } };
+    h.addEventListener('pointerup', end); h.addEventListener('pointercancel', end);
+    h.addEventListener('dblclick', () => {
+      const L = layoutCur();
+      if (dw) settings[L.w] = L.dw;
+      if (dh) settings[L.h] = L.dh;
+      applyLayoutVars(); saveSettings();
+    });
+  }
 })();
 
 /* =====================================================================
@@ -2878,13 +2990,13 @@ function edSync(){
   $('#edPos').value = o.pos;
   if (document.activeElement !== $('#edDur')) $('#edDur').value = o.long ?? DEFAULT_DURATION;
   const d = o.long ?? DEFAULT_DURATION;
-  $('#edSpeed').textContent = o.pos === 'naka' ? `流れる速さ ×${((DEFAULT_DURATION + NAKA_LEAD) / (d + NAKA_LEAD)).toFixed(2)}` : '';
+  $('#edSpeed').textContent = o.pos === 'naka' ? T`流れる速さ ×${((DEFAULT_DURATION + NAKA_LEAD) / (d + NAKA_LEAD)).toFixed(2)}` : '';
 }
 function openEditDialog(c){
   if (tmLocked()) return;
   editTarget = c;
   editBase = pickFields(c);
-  $('#edTitle').textContent = 'コメントを編集';
+  $('#edTitle').textContent = T('コメントを編集');
   $('#edText').value = c.text;
   $('#edTime').value = fmtPrecise(c.t);
   $('#edCmd').value = c.cmd;
@@ -2896,7 +3008,7 @@ function openEditDialog(c){
 function openNewDialog(t, pos, dur){
   if (tmLocked()) return;
   editTarget = null;
-  $('#edTitle').textContent = '新しいコメント';
+  $('#edTitle').textContent = T('新しいコメント');
   $('#edText').value = '';
   $('#edTime').value = fmtPrecise(t);
   $('#edCmd').value = pos ? setCmdPos(cmdInput.value, pos) : normCmd(cmdInput.value);
@@ -2918,9 +3030,9 @@ $('#edText').addEventListener('keydown', (e) => {
 $('#edOk').onclick = edCommit;
 function edCommit(){
   const t = parseTime($('#edTime').value);
-  if (!isFinite(t) || t < 0){ toast('開始時刻を 1:23.45 のような形式で入力してください', { type:'error' }); $('#edTime').focus(); return; }
+  if (!isFinite(t) || t < 0){ toast(T('開始時刻を 1:23.45 のような形式で入力してください'), { type:'error' }); $('#edTime').focus(); return; }
   const text = $('#edText').value.replace(/\s+$/, '');
-  if (!text.trim()){ toast('本文を入力してください', { type:'error' }); $('#edText').focus(); return; }
+  if (!text.trim()){ toast(T('本文を入力してください'), { type:'error' }); $('#edText').focus(); return; }
   const cmd = normCmd($('#edCmd').value);
   let conflict = null;
   if (editTarget){
@@ -2932,7 +3044,7 @@ function edCommit(){
     if (changed.length){
       if (cur){
         const m = { ...pickFields(cur), ...pickFields(f, changed) }, key = commentKey(m.t, m.cmd, m.text);
-        if (key !== cur.key && store.hasKey(key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+        if (key !== cur.key && store.hasKey(key)){ toast(T('同じ時刻・内容のコメントが既にあります'), { type:'error' }); return; }
       }
       const conflicts = [];
       commitOps([{ type:'update', id, before: pickFields(base, changed), after: pickFields(f, changed) }], { conflicts });
@@ -2941,7 +3053,7 @@ function edCommit(){
     if (store.has(id)) TL.sel = new Set([id]);
   } else {
     const c = makeComment(t, cmd, text, true);
-    if (store.hasKey(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+    if (store.hasKey(c.key)){ toast(T('同じ時刻・内容のコメントが既にあります'), { type:'error' }); return; }
     commitOps([addOp(c)]);
     TL.sel = new Set([c.id]);
     tlEnsureVisible(c);
@@ -2964,8 +3076,8 @@ editDlg.addEventListener('close', () => { editTarget = null; TL.main.focus({ pre
    Vim エディタ（画面）
    ===================================================================== */
 const VIM_HEADER = [
-  '" コメナガレ ― 1行 = 1コメント   書式: 時刻 コマンド | 本文   （本文中の改行は \\n）',
-  '" :w 反映  :q 閉じる  :e! 読み直し  :seek 再生位置へ  :now 再生位置に追加  :help ヘルプ',
+  T('" コメナガレ ― 1行 = 1コメント   書式: 時刻 コマンド | 本文   （本文中の改行は \\n）'),
+  T('" :w 反映  :q 閉じる  :e! 読み直し  :seek 再生位置へ  :now 再生位置に追加  :help ヘルプ'),
 ];
 const VIM_TIME_RE = /^\d+(?::\d+){0,2}(?:\.\d+)?$/;
 const KNOWN_FLAGS = new Set(['invisible', 'full', 'ender', '_live']);
@@ -2979,20 +3091,20 @@ function vimBufferText(){ return VIM_HEADER.concat(state.comments.map(commentToL
 function parseVimLine(ln){
   if (!ln.trim() || /^\s*"/.test(ln)) return null;
   const m = /^\s*([0-9][0-9:.]*)(?=\s|\||$)(.*)$/.exec(ln);
-  if (!m) return { error:'行頭に時刻（例 01:23.45）が必要です' };
+  if (!m) return { error:T('行頭に時刻（例 01:23.45）が必要です') };
   const t = parseTime(m[1]);
-  if (!VIM_TIME_RE.test(m[1]) || !isFinite(t)) return { error:`時刻「${m[1]}」を解釈できません` };
+  if (!VIM_TIME_RE.test(m[1]) || !isFinite(t)) return { error:T`時刻「${m[1]}」を解釈できません` };
   const rest = m[2], bar = rest.indexOf('|');
   let cmd = '', text;
   if (bar >= 0){ cmd = rest.slice(0, bar).trim(); text = rest.slice(bar + 1); if (text.startsWith(' ')) text = text.slice(1); }
   else text = rest.trim();
   text = text.replace(/\\(.)/g, (x, ch) => ch === 'n' ? '\n' : ch === 't' ? '\t' : ch);
-  if (!text.trim()) return { error:'本文が空です' };
+  if (!text.trim()) return { error:T('本文が空です') };
   return { t, cmd, text };
 }
 function vimWrite(text, force){
-  if (tm.on) return { ok:false, err:'E21: タイムマシンで見ている間は書き込めません（「終了」で今に戻ります）' };
-  if (!force && vim.synced !== state.version) return { ok:false, err:'E949: コメントは読み込み後に他の場所で変更されています（:w! で上書き、:e! で読み直し）' };
+  if (tm.on) return { ok:false, err:T('E21: タイムマシンで見ている間は書き込めません（「終了」で今に戻ります）') };
+  if (!force && vim.synced !== state.version) return { ok:false, err:T('E949: コメントは読み込み後に他の場所で変更されています（:w! で上書き、:e! で読み直し）') };
   const parsed = [], errors = [];
   text.split('\n').forEach((ln, i) => {
     const r = parseVimLine(ln);
@@ -3000,7 +3112,7 @@ function vimWrite(text, force){
     if (r.error) errors.push({ line: i + 1, msg: r.error });
     else parsed.push(r);
   });
-  if (errors.length) return { ok:false, err:`E: ${errors[0].line} 行目: ${errors[0].msg}` + (errors.length > 1 ? `（ほか ${errors.length - 1} 件）` : '') };
+  if (errors.length) return { ok:false, err:T`E: ${errors[0].line} 行目: ${errors[0].msg}` + (errors.length > 1 ? T`（ほか ${errors.length - 1} 件）` : '') };
   const oldByKey = new Map(state.comments.map(c => [c.key, c]));
   const next = [], seen = new Set();
   let added = 0, dup = 0;
@@ -3019,7 +3131,7 @@ function vimWrite(text, force){
     finally { vim.writing = false; }
   }
   vim.synced = state.version;
-  return { ok:true, msg:`"コメント" ${next.length}件 反映しました（追加 ${added} / 削除 ${removed.length}${dup ? ` / 重複 ${dup}` : ''}）` };
+  return { ok:true, msg:T`"コメント" ${next.length}件 反映しました（追加 ${added} / 削除 ${removed.length}${dup ? T` / 重複 ${dup}` : ''}）` };
 }
 function vimReload(force){
   const E = vim.E;
@@ -3042,12 +3154,12 @@ function vimQuit(){
 function vimEx(name, args, ctx){
   const n = name.toLowerCase();
   if (n === 'seek'){
-    if (!state.videoLoaded) return 'E: 動画が開かれていません';
+    if (!state.videoLoaded) return T('E: 動画が開かれていません');
     let t;
-    if (args){ t = parseTime(args); if (!isFinite(t)) return `E: 時刻「${args}」を解釈できません`; }
+    if (args){ t = parseTime(args); if (!isFinite(t)) return T`E: 時刻「${args}」を解釈できません`; }
     else {
       const r = parseVimLine(ctx.line);
-      if (!r || r.error) return 'E: この行には時刻がありません';
+      if (!r || r.error) return T('E: この行には時刻がありません');
       t = parseCmd(normCmd(r.cmd)).pos === 'naka' ? r.t - NAKA_LEAD : r.t;
     }
     seekTo(Math.max(0, t));
@@ -3063,34 +3175,34 @@ function vimEx(name, args, ctx){
 }
 function vimHelp(){
   return [
-    'コメナガレ Vim エディタ                                   （Enter / q で閉じる）',
+    T('コメナガレ Vim エディタ                                   （Enter / q で閉じる）'),
     '',
-    '書式        時刻 コマンド | 本文       例) 01:23.45 ue red @5 | こんにちは',
-    '            本文の改行は \\n 、\\ 自体は \\\\ 。" で始まる行と空行は無視されます。',
-    '            表示時間はコマンドの @秒数。時刻の数字は Ctrl-a / Ctrl-x で増減できます。',
-    '反映        :w（:w! 他所での変更を上書き） :wq :x ZZ   閉じる :q :q! ZQ   読み直し :e!',
-    '独自        :seek [時刻] 動画をシーク   :now 再生位置で行を追加   :play 再生/一時停止',
+    T('書式        時刻 コマンド | 本文       例) 01:23.45 ue red @5 | こんにちは'),
+    T('            本文の改行は \\n 、\\ 自体は \\\\ 。" で始まる行と空行は無視されます。'),
+    T('            表示時間はコマンドの @秒数。時刻の数字は Ctrl-a / Ctrl-x で増減できます。'),
+    T('反映        :w（:w! 他所での変更を上書き） :wq :x ZZ   閉じる :q :q! ZQ   読み直し :e!'),
+    T('独自        :seek [時刻] 動画をシーク   :now 再生位置で行を追加   :play 再生/一時停止'),
     '',
-    'モード      i a I A o O gi gI R s S C   v V Ctrl-v gv   :   / ?',
-    '移動        h j k l  w b e ge W B E gE  0 ^ $ g_ |  f F t T ; ,  gg G H M L  % { } ( )',
+    T('モード      i a I A o O gi gI R s S C   v V Ctrl-v gv   :   / ?'),
+    T('移動        h j k l  w b e ge W B E gE  0 ^ $ g_ |  f F t T ; ,  gg G H M L  % { } ( )'),
     '            Ctrl-d u f b e y  zz zt zb  n N * # g* g#  m{a-z} `{a-z} \'{a-z}  Ctrl-o Ctrl-i',
-    'オペレータ  d c y > < g~ gu gU g? = ＋ モーション／テキストオブジェクト（dd cc yy >> など）',
+    T('オペレータ  d c y > < g~ gu gU g? = ＋ モーション／テキストオブジェクト（dd cc yy >> など）'),
     '            iw aw iW aW is as ip ap i( a( ib i{ iB i[ i< i" i\' i`',
-    '編集        x X D C Y p P gp gP ]p J gJ r ~ u U Ctrl-r . Ctrl-a Ctrl-x',
-    'レジスタ    "a-z "A-Z "0-9 "- "_ "+ ". ": "/ "%    マクロ q{reg} … q  @{reg} @@ @:',
-    '挿入モード  Ctrl-w Ctrl-u Ctrl-h Ctrl-r{reg} Ctrl-o Ctrl-a Ctrl-e Ctrl-y Ctrl-t Ctrl-d',
+    T('編集        x X D C Y p P gp gP ]p J gJ r ~ u U Ctrl-r . Ctrl-a Ctrl-x'),
+    T('レジスタ    "a-z "A-Z "0-9 "- "_ "+ ". ": "/ "%    マクロ q{reg} … q  @{reg} @@ @:'),
+    T('挿入モード  Ctrl-w Ctrl-u Ctrl-h Ctrl-r{reg} Ctrl-o Ctrl-a Ctrl-e Ctrl-y Ctrl-t Ctrl-d'),
     '            Ctrl-v Ctrl-n Ctrl-p Insert',
-    'ビジュアル  o O d x c s r y p P > < ~ u U J gJ I A : Ctrl-a Ctrl-x g Ctrl-a',
+    T('ビジュアル  o O d x c s r y p P > < ~ u U J gJ I A : Ctrl-a Ctrl-x g Ctrl-a'),
     'Ex          :s :& :&& :g :v :d :y :m :t :co :j :> :< :normal :sort :pu :k :mark',
     '            :noh :set :reg :marks :jumps :delm :p :nu := :undo :redo :retab',
-    '            範囲  % . $ 数字 \'a \'<,\'> /pat/ ?pat? +n -n ;   区切り |',
+    T('            範囲  % . $ 数字 \'a \'<,\'> /pat/ ?pat? +n -n ;   区切り |'),
     ':set        number relativenumber wrap linebreak ignorecase smartcase hlsearch incsearch',
     '            wrapscan shiftwidth expandtab tabstop joinspaces report',
-    '            例) :set nowrap 折り返さない  :set linebreak 単語の区切りで折り返す',
-    '            変えた設定は次に開いたときも使われます（:set {名前}& / :set all& で既定に戻す）',
+    T('            例) :set nowrap 折り返さない  :set linebreak 単語の区切りで折り返す'),
+    T('            変えた設定は次に開いたときも使われます（:set {名前}& / :set all& で既定に戻す）'),
     '',
-    '注意        Ctrl-w / Ctrl-n / Ctrl-t などブラウザ予約キーは効かないことがあります。',
-    '            ノーマルモードでは IME をオフにしてください（挿入モードの日本語入力は可）。',
+    T('注意        Ctrl-w / Ctrl-n / Ctrl-t などブラウザ予約キーは効かないことがあります。'),
+    T('            ノーマルモードでは IME をオフにしてください（挿入モードの日本語入力は可）。'),
   ];
 }
 function vimEnsure(){
@@ -3110,7 +3222,7 @@ function vimEnsure(){
     const d = E.optDefaults[k];
     if (typeof d === 'boolean' ? typeof v === 'boolean' : typeof d === 'number' && Number.isInteger(v) && v >= 0) E.opts[k] = v;
   }
-  E.fileName = 'コメント';
+  E.fileName = T('コメント');
   E.load(vimBufferText());
   E.setCursor(VIM_HEADER.length, 0);
   vim.synced = state.version;
@@ -3253,7 +3365,7 @@ function vimRender(){
   const pct = E.top === 0 && E.top + rows >= L.length ? 'All' : E.top === 0 ? 'Top' : E.top + rows >= L.length ? 'Bot' : Math.round(E.top * 100 / Math.max(1, L.length - rows)) + '%';
   const stale = vim.synced !== state.version;
   const ch = [...L[E.cur.line].slice(0, E.cur.col)].length + 1;
-  $('#vimStatus').innerHTML = `<span class="grow">"${escHtml(E.fileName)}"${E.modified ? ' <span class="mod">[+]</span>' : ''}${stale ? ' <span class="stale">[他所で変更あり]</span>' : ''}</span>`
+  $('#vimStatus').innerHTML = `<span class="grow">"${escHtml(E.fileName)}"${E.modified ? ' <span class="mod">[+]</span>' : ''}${stale ? T(' <span class="stale">[他所で変更あり]</span>') : ''}</span>`
     + `<span>${state.videoLoaded ? '▶ ' + fmtPrecise(nowT) : ''}</span><span>${E.cur.line + 1},${ch}</span><span>${pct}</span>`;
   // コマンド行
   let left;
@@ -3345,7 +3457,7 @@ const vimTakesIme = () => ['insert', 'replace', 'cmdline'].includes(vim.E.mode) 
 vimInput.addEventListener('keydown', (e) => {
   if (!vim.E) return;
   if (e.isComposing || e.keyCode === 229){
-    if (e.key === 'Process' && !vimTakesIme()){ vim.E.msg = 'IME がオンになっています（ノーマルモードではオフにしてください）'; vim.E.msgErr = true; vimScheduleRender(); }
+    if (e.key === 'Process' && !vimTakesIme()){ vim.E.msg = T('IME がオンになっています（ノーマルモードではオフにしてください）'); vim.E.msgErr = true; vimScheduleRender(); }
     return;
   }
   let tok = vimKeyToken(e);
@@ -3548,15 +3660,130 @@ function resetStrayScroll(){
 }
 document.addEventListener('focusout', () => setTimeout(resetStrayScroll, 300));
 window.visualViewport?.addEventListener('resize', () => setTimeout(resetStrayScroll, 300));
-// タイムラインの高さの上限（PC の配置で、動画と右のパネルが潰れないように。窓を小さくしたときや iPad を回したときも）
-function tlMaxHeight(){ return Math.max(140, document.documentElement.clientHeight - ($(".topbar")?.offsetHeight || 0) - 340); }
+/* ---------- 画面の配置（PC） ---------- */
+const layoutCur = () => LAYOUTS[settings.layout] || LAYOUTS.std;
+// 出すパネル（どれも隠したらプレビューを出す）
+function layoutVis(){
+  const v = { player: settings.preview !== false, side: !!settings.side, tl: !!settings.timeline };
+  if (!v.player && !v.side && !v.tl) v.player = true;
+  return v;
+}
+// 右の列の幅・下の行の高さ（パネルが潰れないよう、今の画面に収める）
+const LAY_MIN = { player: 320, side: 280, tl: 360 }, LAY_MIN_H = { player: 220, side: 160, tl: 150 };
+function layoutSize(){
+  const L = layoutCur(), box = $('#layout'), cs = getComputedStyle(box);
+  const W = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const Hh = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const G = 8;
+  // 右の列: 標準なら右のパネル（左はプレビュー）、ほかは right（左は left の2つ）
+  const rightKey = L.right || 'side', leftKey = L.left ? L.left[0] : 'player';
+  const wMin = LAY_MIN[rightKey], wMax = Math.max(wMin, W - G - LAY_MIN[leftKey]);
+  // 下の行: 標準ならタイムライン（上はプレビューと右のパネル）、ほかは left の下（上は left の上）
+  const botKey = L.bottom || L.left[1], topKey = L.bottom ? 'player' : L.left[0];
+  const hMin = LAY_MIN_H[botKey], hMax = Math.max(hMin, Hh - G - LAY_MIN_H[topKey]);
+  return { w: Math.round(clamp(+settings[L.w] || L.dw, wMin, wMax)), h: Math.round(clamp(+settings[L.h] || L.dh, hMin, hMax)) };
+}
+// 格子の列・行と、各パネル・つまみの置き場所を決める
+function layoutApply(){
+  const els = { player: $('.player-col'), side: $('#side'), tl: $('#timeline') };
+  const guts = { v: $('#gutV'), h: $('#gutH'), c: $('#gutC') };
+  const box = $('#layout');
+  const all = [...Object.values(els), ...Object.values(guts)];
+  if (mq.matches){
+    // スマホはタブで切り替える（格子は使わない）
+    box.style.gridTemplateColumns = box.style.gridTemplateRows = '';
+    for (const el of all){ el.style.gridArea = ''; el.classList.remove('lay-off'); }
+    return;
+  }
+  const L = layoutCur(), vis = layoutVis(), sz = layoutSize(), G = '8px';
+  const area = {}; // key → [行の始まり, 列の始まり, 行の終わり, 列の終わり]
+  let cols = ['minmax(0,1fr)'], rows = ['minmax(0,1fr)'];
+  let gv = null, gh = null;
+  if (L.top){
+    const top = L.top.filter(k => vis[k]), bot = vis[L.bottom];
+    if (top.length === 2){ cols = ['minmax(0,1fr)', G, sz.w + 'px']; area[top[0]] = [1, 1, 2, 2]; area[top[1]] = [1, 3, 2, 4]; gv = [1, 2, 2, 3]; }
+    else if (top.length === 1) area[top[0]] = [1, 1, 2, -1];
+    if (bot){
+      if (top.length){ rows = ['minmax(0,1fr)', G, sz.h + 'px']; area[L.bottom] = [3, 1, 4, -1]; gh = [2, 1, 3, -1]; }
+      else area[L.bottom] = [1, 1, 2, -1];
+    }
+  } else {
+    const left = L.left.filter(k => vis[k]), right = vis[L.right];
+    const lc = right && left.length ? [1, 2] : [1, -1];
+    if (right && left.length){ cols = ['minmax(0,1fr)', G, sz.w + 'px']; area[L.right] = [1, 3, -1, 4]; gv = [1, 2, -1, 3]; }
+    else if (right) area[L.right] = [1, 1, -1, -1];
+    if (left.length === 2){ rows = ['minmax(0,1fr)', G, sz.h + 'px']; area[left[0]] = [1, lc[0], 2, lc[1]]; area[left[1]] = [3, lc[0], 4, lc[1]]; gh = [2, lc[0], 3, lc[1]]; }
+    else if (left.length === 1) area[left[0]] = [1, lc[0], -1, lc[1]];
+  }
+  box.style.gridTemplateColumns = cols.join(' ');
+  box.style.gridTemplateRows = rows.join(' ');
+  const put = (el, a) => { el.classList.toggle('lay-off', !a); el.style.gridArea = a ? a.join(' / ') : ''; };
+  for (const k in els) put(els[k], area[k]);
+  put(guts.v, gv); put(guts.h, gh);
+  put(guts.c, gv && gh ? [gh[0], gv[1], gh[2], gv[3]] : null);
+}
+// 配置の小さな図（メニューのカードとボタンで使う）
+function layoutGlyph(key){
+  const L = LAYOUTS[key], NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 44 32');
+  const r = (x, y, w, h, cls, rx = 1.5) => { const e = document.createElementNS(NS, 'rect'); Object.entries({ x, y, width: w, height: h, rx, class: cls }).forEach(([k, v]) => e.setAttribute(k, v)); svg.append(e); };
+  const part = (k, x, y, w, h) => {
+    if (k === 'player') r(x, y, w, h, 'lg-p');
+    else if (k === 'side'){ r(x, y, w, h, 'lg-s'); for (let yy = y + 3; yy + 1.2 <= y + h - 2; yy += 3.4) r(x + 2, yy, Math.max(2, w - 4), 1.2, 'lg-row', .6); }
+    else { r(x, y, w, h, 'lg-t'); r(x + 2, y + h * .3, w * .35, 2.2, 'lg-clip', .8); r(x + w * .45, y + h * .62, w * .4, 2.2, 'lg-clip', .8); }
+  };
+  r(.75, .75, 42.5, 30.5, 'lg-frame', 3);
+  if (L.top){ part('player', 3, 3, 25, 15); part('side', 30, 3, 11, 15); part('tl', 3, 20, 38, 9); }
+  else { part(L.left[0], 3, 3, 25, 15); part(L.left[1], 3, 20, 25, 9); part(L.right, 30, 3, 11, 26); }
+  return svg;
+}
+function layoutMenuRender(){
+  const box = $('#layCards');
+  box.replaceChildren();
+  for (const key of Object.keys(LAYOUTS)){
+    const b = mkEl('button', 'lay-card');
+    b.type = 'button'; b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('aria-checked', String(settings.layout === key || (!LAYOUTS[settings.layout] && key === 'std')));
+    b.append(layoutGlyph(key), mkEl('span', null, LAYOUTS[key].name));
+    b.onclick = () => { settings.layout = key; saveSettings(); applyPanes(); layoutMenu(false); };
+    box.append(b);
+  }
+  const vis = layoutVis();
+  for (const cb of $('#layoutMenu').querySelectorAll('[data-panel]')){
+    cb.checked = { preview: vis.player, side: vis.side, timeline: vis.tl }[cb.dataset.panel];
+  }
+  $('#layGlyph').replaceChildren(layoutGlyph(LAYOUTS[settings.layout] ? settings.layout : 'std'));
+}
+function layoutMenu(open){
+  const m = $('#layoutMenu'), b = $('#btnLayout');
+  if (open == null) open = m.hidden;
+  m.hidden = !open;
+  b.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  layoutMenuRender();
+  const r = b.getBoundingClientRect();
+  m.style.top = (r.bottom + 6) + 'px';
+  m.style.left = Math.max(8, Math.min(r.right - m.offsetWidth, innerWidth - m.offsetWidth - 8)) + 'px';
+  m.querySelector('[aria-checked="true"]')?.focus();
+}
+$('#btnLayout').onclick = (e) => { e.stopPropagation(); layoutMenu(); };
+document.addEventListener('pointerdown', (e) => { if (!$('#layoutMenu').hidden && !e.target.closest('#layoutMenu,#btnLayout')) layoutMenu(false); });
+$('#layoutMenu').addEventListener('keydown', (e) => { if (e.key === 'Escape'){ layoutMenu(false); $('#btnLayout').focus(); } });
+window.addEventListener('resize', () => { if (!$('#layoutMenu').hidden) layoutMenu(false); });
+// パネルを出す・隠す（最後の1つは隠せない）
+function panelToggle(key, on){
+  const name = { preview: 'preview', side: 'side', timeline: 'timeline' }[key];
+  const next = { preview: settings.preview !== false, side: !!settings.side, timeline: !!settings.timeline, [name]: on ?? !(name === 'preview' ? settings.preview !== false : settings[name]) };
+  if (!next.preview && !next.side && !next.timeline){ toast(T('どれか1つは出しておく必要があります'), { timeout:1800 }); layoutMenuRender(); return; }
+  settings.preview = next.preview; settings.side = next.side; settings.timeline = next.timeline;
+  saveSettings(); applyPanes(); layoutMenuRender();
+}
+for (const cb of $('#layoutMenu').querySelectorAll('[data-panel]')) cb.onchange = () => panelToggle(cb.dataset.panel, cb.checked);
 function applyLayoutVars(){
   const root = document.documentElement.style;
-  const tlH = Math.min(settings.tlHeight, tlMaxHeight());
-  root.setProperty('--tl-h', tlH + 'px');
-  root.setProperty('--tl-space', (!mq.matches && settings.timeline) ? tlH + 'px' : '0px');
-  root.setProperty('--side-w', settings.sideWidth + 'px');
   root.setProperty('--m-video', settings.mVideo);
+  layoutApply();
 }
 window.addEventListener('resize', applyLayoutVars);
 function applyPanes(){
@@ -3566,16 +3793,17 @@ function applyPanes(){
   $('#paneVim').hidden = pane !== 'vim';
   $('#paneHistory').hidden = pane !== 'history';
   document.body.dataset.mpane = settings.mobilePane;
-  document.body.classList.toggle('tl-off', !settings.timeline);
-  // 右のパネル（コメントリスト・Vim・変更履歴）は PC の幅のときだけ隠せる
-  document.body.classList.toggle('side-off', !settings.side);
-  $('#btnTimeline').classList.toggle('on', settings.timeline);
-  $('#btnSide').classList.toggle('on', settings.side);
-  if (!mobile && !settings.side && $('#side').contains(document.activeElement)) document.activeElement.blur();
+  const vis = layoutVis();
+  $('#btnPreview').classList.toggle('on', vis.player);
+  $('#btnTimeline').classList.toggle('on', vis.tl);
+  $('#btnSide').classList.toggle('on', vis.side);
+  for (const [b, on] of [[$('#btnPreview'), vis.player], [$('#btnTimeline'), vis.tl], [$('#btnSide'), vis.side]]) b.setAttribute('aria-pressed', String(on));
+  if (!mobile && !vis.side && $('#side').contains(document.activeElement)) document.activeElement.blur();
   for (const b of document.querySelectorAll('.stab')) b.classList.toggle('on', b.dataset.pane === settings.sidePane);
   for (const b of document.querySelectorAll('.mtab')) b.classList.toggle('on', b.dataset.mpane === settings.mobilePane);
+  $('#layGlyph').replaceChildren(layoutGlyph(LAYOUTS[settings.layout] ? settings.layout : 'std'));
   applyLayoutVars();
-  const vimShown = pane === 'vim' && (mobile ? settings.mobilePane === 'vim' : settings.side);
+  const vimShown = pane === 'vim' && (mobile ? settings.mobilePane === 'vim' : vis.side);
   if (vimShown){ vimEnsure(); if (!vim.E.modified && vim.synced !== state.version) vimReload(false); }
   if (pane === 'history') histRefresh();
   requestAnimationFrame(() => {
@@ -3590,8 +3818,9 @@ for (const b of document.querySelectorAll('.stab')) b.onclick = () => {
 for (const b of document.querySelectorAll('.mtab')) b.onclick = () => {
   settings.mobilePane = b.dataset.mpane; saveSettings(); applyPanes();
 };
-$('#btnTimeline').onclick = () => { settings.timeline = !settings.timeline; saveSettings(); applyPanes(); };
-$('#btnSide').onclick = () => { settings.side = !settings.side; saveSettings(); applyPanes(); };
+$('#btnPreview').onclick = () => panelToggle('preview');
+$('#btnTimeline').onclick = () => panelToggle('timeline');
+$('#btnSide').onclick = () => panelToggle('side');
 mq.addEventListener('change', applyPanes);
 // ウィンドウや右のパネルの幅が変わったら描き直す
 new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender(); }).observe($('#vimScreen'));
@@ -3718,7 +3947,7 @@ async function collabResplitOutbox(){
 }
 
 function collabHello(){
-  const h = { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || 'ゲスト', client_key: collabClientKey(), session: collab.session?.token };
+  const h = { type: 'hello', protocol: COLLAB_PROTOCOL, name: collabName() || T('ゲスト'), client_key: collabClientKey(), session: collab.session?.token };
   // このタブでつながっていたなら、前に受け取ったところからの変更だけを求める（ホストが覚えていなければ全体が来る）
   if (collab.epoch){ h.since = collab.rev; h.epoch = collab.epoch; }
   return h;
@@ -3746,7 +3975,7 @@ function collabClosed(ws){
   const was = collab.connected;
   if (collab.peersReady) collab.lastPeers = collab.peerList;
   collab.connected = false; collab.peers = []; collab.peerList = []; collab.presence.clear(); collab.peersReady = false;
-  termDropped('接続が切れたため');
+  termDropped(T('接続が切れたため'));
   followLost();
   presenceChanged();
   if (!was) collab.failed++;
@@ -3795,7 +4024,7 @@ async function collabCheckEmailGate(){
   collab.blocked = 'email';
   if (collab.ws) collab.ws.close();
   collabUI();
-  toast('メールでの確認の期限が切れました。ページを再読み込みして、もう一度確認してください（未送信の変更はこのブラウザに残っています）', { type:'error', timeout:15000, action:{ label:'再読み込み', fn: () => location.reload() } });
+  toast(T('メールでの確認の期限が切れました。ページを再読み込みして、もう一度確認してください（未送信の変更はこのブラウザに残っています）'), { type:'error', timeout:15000, action:{ label:T('再読み込み'), fn: () => location.reload() } });
 }
 
 function collabHandle(m){
@@ -3819,7 +4048,7 @@ function collabHandle(m){
     collab.remote = m.remote || null;
     if (!collab.remote) tmClose();
     collab.synced = true; collab.peersReady = false;
-    termDropped('接続し直したため');
+    termDropped(T('接続し直したため'));
     for (const e of collab.outbox) collab.ws.send(JSON.stringify({ type: 'change', change: e.change }));
     collabShareConflicts();
     presence.sent = ''; presenceDirty();
@@ -3886,11 +4115,11 @@ function collabHandle(m){
     if (m.code === 'auth'){ collab.ws.close(); collabRelogin(); return; }
     if (m.code === 'project'){
       collab.blocked = 'project'; collab.ws.close();
-      toast('ホスト: ' + m.message, { type:'error', timeout:6000 });
+      toast(T('ホスト: ') + m.message, { type:'error', timeout:6000 });
       projectsOpen();
       return;
     }
-    toast('ホスト: ' + m.message, { type:'error', timeout: m.code === 'protocol' ? 20000 : 3800 });
+    toast(T('ホスト: ') + m.message, { type:'error', timeout: m.code === 'protocol' ? 20000 : 3800 });
     if (m.code === 'protocol'){ collab.blocked = 'protocol'; collab.ws.close(); }
   }
 }
@@ -3927,7 +4156,7 @@ function collabAddConflicts(entry, conflicts, fix, local){
   }
   if (!added) return;
   conflictsChanged();
-  toast(`${added} 件の変更がほかの人の変更と重なったため、まだ反映していません`, { type:'error', timeout:10000, action:{ label:'確認する', fn: conflictOpen } });
+  toast(T`${added} 件の変更がほかの人の変更と重なったため、まだ反映していません`, { type:'error', timeout:10000, action:{ label:T('確認する'), fn: conflictOpen } });
 }
 
 function collabUI(){
@@ -3941,13 +4170,13 @@ function collabUI(){
   const pending = collab.outbox.length;
   if (collab.connected){
     el.className = 'collab on';
-    el.textContent = `● 共同編集 ${collab.peers.length}人` + (pending ? `（送信中 ${pending}）` : '');
-    el.title = `参加者: ${collab.peers.join('、') || '—'}\nクリックで参加者の一覧（追いかける・表示名の変更）`;
+    el.textContent = T`● 共同編集 ${collab.peers.length}人` + (pending ? T`（送信中 ${pending}）` : '');
+    el.title = T`参加者: ${collab.peers.join(T('、')) || '—'}\nクリックで参加者の一覧（追いかける・表示名の変更）`;
   } else {
     el.className = 'collab off';
-    const blocked = { protocol: '○ ページを再読み込みしてください', auth: '○ ログインしてください', project: '○ プロジェクトを選んでください', email: '○ メールでの確認の期限切れ（再読み込み）' }[collab.blocked];
-    el.textContent = (blocked || (collab.failed >= 3 ? '○ ホストに接続できません' : '○ オフライン')) + (pending ? `（未送信 ${pending}）` : '');
-    el.title = (collab.failed >= 3 ? 'ホストが起動しているか、URL の k= が正しいか確認してください。' : 'ホストとの接続が切れています。') + '\n変更はこのブラウザに保存され、つながり直したら送られます。';
+    const blocked = { protocol: T('○ ページを再読み込みしてください'), auth: T('○ ログインしてください'), project: T('○ プロジェクトを選んでください'), email: T('○ メールでの確認の期限切れ（再読み込み）') }[collab.blocked];
+    el.textContent = (blocked || (collab.failed >= 3 ? T('○ ホストに接続できません') : T('○ オフライン'))) + (pending ? T`（未送信 ${pending}）` : '');
+    el.title = (collab.failed >= 3 ? T('ホストが起動しているか、URL の k= が正しいか確認してください。') : T('ホストとの接続が切れています。')) + T('\n変更はこのブラウザに保存され、つながり直したら送られます。');
   }
 }
 
@@ -3979,15 +4208,15 @@ function termUI(){
   const btn = $('#termBtn');
   btn.hidden = !(state.collab && collab.remote);
   btn.classList.toggle('busy', !!term.running);
-  btn.textContent = term.running ? '⌨ 実行中…' : '⌨ ターミナル';
+  btn.textContent = term.running ? T('実行中…') : T('ターミナル');
   const ready = collab.connected && !!collab.remote;
   $('#termRun').disabled = !ready || !!term.running;
   $('#termStop').disabled = !term.running;
-  $('#termNote').textContent = !ready ? 'ホストにつながっていません。'
+  $('#termNote').textContent = !ready ? T('ホストにつながっていません。')
     : (collab.remote === 'shell'
-      ? 'ホストのパソコンで、作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）を今の場所としてコマンドを打てます。端末ではないので、色を付けるには ls --color=always や git -c color.ui=always のように指定してください。'
-      : '作業フォルダ（' + (collab.project?.name || 'このプロジェクト') + '）で git の決まったサブコマンドを打てます（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash など）。')
-      + ' 入力を求めるコマンド（エディタ・パスワードなど）は使えません。打ったコマンドはホストに記録されます。';
+      ? T('ホストのパソコンで、作業フォルダ（') + (collab.project?.name || T('このプロジェクト')) + T('）を今の場所としてコマンドを打てます。端末ではないので、色を付けるには ls --color=always や git -c color.ui=always のように指定してください。')
+      : T('作業フォルダ（') + (collab.project?.name || T('このプロジェクト')) + T('）で git の決まったサブコマンドを打てます（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash など）。'))
+      + T(' 入力を求めるコマンド（エディタ・パスワードなど）は使えません。打ったコマンドはホストに記録されます。');
 }
 function termRun(line){
   line = line.trim();
@@ -4008,13 +4237,13 @@ function termEnd(m){
   const out = $('#termOut');
   if (out.textContent && !out.textContent.endsWith('\n')) termAppend('\n', '');
   if (m.message) termAppend(m.message + '\n', 'err');
-  if (m.code != null) termAppend(`（終了コード ${m.code}）\n`, 'info');
+  if (m.code != null) termAppend(T`（終了コード ${m.code}）\n`, 'info');
   termUI();
 }
 // 接続が切れると、ホストは動いているコマンドを止める
 function termDropped(why){
   if (!term.running) return;
-  termEnd({ code: null, message: why + '、コマンドは止まりました' });
+  termEnd({ code: null, message: why + T('、コマンドは止まりました') });
 }
 function termStop(){
   if (term.running && collab.connected) collab.ws.send(JSON.stringify({ type: 'run_stop', id: term.running }));
@@ -4059,11 +4288,15 @@ $('#termInput').addEventListener('keydown', (e) => {
    目盛りを選ぶと、そのときのコメントを画面に出す（再生・タイムライン・リスト・書き出しはそのまま使える。編集はできない）。
    「復元」は git reset ではなく、今の中身からそのときの中身に戻す変更として、ホストが記録・コミットして全員に配る */
 const TM_WD = '日月火水木金土';
+const TM_WD_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], TM_MON_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const tmWd = (day) => I18N.lang === 'en' ? TM_WD_EN[day] : TM_WD[day];
 const tmPad = (n) => String(n).padStart(2, '0');
 function tmDayKey(ms){ const d = new Date(ms); return d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate(); }
 function tmDate(ms){
   const d = new Date(ms);
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${TM_WD[d.getDay()]}) ${tmPad(d.getHours())}:${tmPad(d.getMinutes())}`;
+  const hm = `${tmPad(d.getHours())}:${tmPad(d.getMinutes())}`;
+  if (I18N.lang === 'en') return `${tmWd(d.getDay())}, ${TM_MON_EN[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} ${hm}`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${TM_WD[d.getDay()]}) ${hm}`;
 }
 function tmDayLabel(ms){
   const d = new Date(ms), y = d.getFullYear() === new Date().getFullYear() ? '' : d.getFullYear() + '/';
@@ -4074,7 +4307,7 @@ const tmIsNow = (i) => i === tm.list.length - 1;
 function tmTitle(i){
   const p = tm.list[i];
   if (!p) return { date: '', sub: '' };
-  if (tmIsNow(i)) return { date: '今', sub: '今のコメント（最新）' };
+  if (tmIsNow(i)) return { date: T('今'), sub: T('今のコメント（最新）') };
   return { date: tmDate(p.time), sub: p.subject || p.author || '' };
 }
 function tmUI(){
@@ -4086,15 +4319,15 @@ function tmUI(){
   const n = tm.list.length, i = tm.idx, t = tmTitle(i);
   $('#tmUp').disabled = !n || i <= 0;
   $('#tmDown').disabled = !n || i >= n - 1;
-  $('#tmWhen').textContent = n ? t.date : (tm.loading ? '履歴を読んでいます…' : '');
-  $('#tmWhat').textContent = n ? (tm.want ? '読み込み中…' : t.sub) : '';
-  $('#tmWhen').title = $('#tmWhat').title = n && !tmIsNow(i) ? `${t.date}\n${t.sub}\nコミット ${tm.list[i].id.slice(0, 7)}（${tm.list[i].author}）` : '';
-  $('#tmPos').textContent = n ? (tmIsNow(i) ? '' : `${n - 1 - i} 個前`) : '';
+  $('#tmWhen').textContent = n ? t.date : (tm.loading ? T('履歴を読んでいます…') : '');
+  $('#tmWhat').textContent = n ? (tm.want ? T('読み込み中…') : t.sub) : '';
+  $('#tmWhen').title = $('#tmWhat').title = n && !tmIsNow(i) ? T`${t.date}\n${t.sub}\nコミット ${tm.list[i].id.slice(0, 7)}（${tm.list[i].author}）` : '';
+  $('#tmPos').textContent = n ? (tmIsNow(i) ? '' : T`${n - 1 - i} 個前`) : '';
   $('#tmRestore').disabled = !n || tmIsNow(i) || !!tm.want || !tm.view || tm.restoring || !collab.connected;
   const nc = tm.changedList.length;
   $('#tmChg').hidden = !n || !!tm.want || !nc;
-  $('#tmChgBtn').textContent = tm.chgPos >= 0 ? `変更 ${tm.chgPos + 1} / ${nc}` : `変更 ${nc} 件`;
-  $('#tmChgBtn').title = tmIsNow(i) ? '最新のコミット（と、まだコミットしていない変更）で変わったコメントへ順に飛ぶ' : 'このコミットで追加・変更したコメントへ順に飛ぶ（枠で囲っています）';
+  $('#tmChgBtn').textContent = tm.chgPos >= 0 ? T`変更 ${tm.chgPos + 1} / ${nc}` : T`変更 ${nc} 件`;
+  $('#tmChgBtn').title = tmIsNow(i) ? T('最新のコミット（と、まだコミットしていない変更）で変わったコメントへ順に飛ぶ') : T('このコミットで追加・変更したコメントへ順に飛ぶ（枠で囲っています）');
   tmMarks();
 }
 // 目盛りの並べ方。全部が高さに入りきらなければ、1本ごとに TM_GAP px 空けてスクロールする（入りきるなら高さいっぱいに並べる）
@@ -4103,7 +4336,8 @@ const tmTrack = () => $('#tmTrack');
 // 目盛りの位置（並びの上端からの px。上が古く、下が今）
 function tmY(i){ const n = tm.list.length, h = tm.h || 0; return n <= 1 ? h - TM_PAD : TM_PAD + i / (n - 1) * (h - TM_PAD * 2); }
 function tmIndexAt(y){ const n = tm.list.length, h = tm.h || 0; return n <= 1 ? 0 : clamp(Math.round((y - TM_PAD) / (h - TM_PAD * 2) * (n - 1)), 0, n - 1); }
-// 目盛りを描く。最初と最後と、各日の最初は長くし、間が空いていれば日付も出す（近すぎるものは間引く。どれも選べる）
+// 目盛りを描く。最初と最後と、各日の最初は長くし、間が空いていれば日付も出す（近すぎるものは間引く。どれも選べる）。
+// 日ごとに薄い帯を敷き、1本の長さはそのコミットでまとめた変更の数で少し伸ばす（活発だった所が分かるように）
 // follow: 見ている位置が見えるところまでスクロールする（'smooth' なら滑らかに。false なら今のスクロールのまま）
 function tmRender(follow = 'jump'){
   const box = $('#tmTicks'), track = tmTrack(), n = tm.list.length, vh = track.clientHeight;
@@ -4111,30 +4345,63 @@ function tmRender(follow = 'jump'){
   box.style.height = tm.h + 'px';
   track.classList.toggle('scroll', tm.h > vh + 1);
   const frag = document.createDocumentFragment();
-  let lastY = -1e9, lastLong = -1e9, lastLabel = -1e9, prevDay = null;
+  const ticks = [];
+  let lastY = -1e9, lastLong = -1e9, lastLabel = -1e9, prevDay = null, dayTop = null, dayN = 0;
   const endY = tmY(n - 1);
+  const band = (y0, y1) => {
+    const d = mkEl('div', 'tm-day' + (dayN++ % 2 ? ' alt' : ''));
+    d.style.top = y0 + 'px'; d.style.height = Math.max(1, y1 - y0) + 'px';
+    frag.append(d);
+  };
   for (let i = 0; i < n; i++){
     const p = tm.list[i], y = tmY(i), day = tmIsNow(i) ? null : tmDayKey(p.time);
     const dayFirst = day != null && day !== prevDay;
+    // 日の帯（その日の最初の目盛りの少し上から、次の日の最初の目盛りの少し上まで）
+    if (dayFirst){ const top = i === 0 ? 0 : y - TM_GAP / 2; if (dayTop != null) band(dayTop, top); dayTop = top; }
     prevDay = day ?? prevDay;
     const edge = i === 0 || i === n - 1, long = edge || dayFirst;
     if (long ? (y - lastLong < 2 && !edge) : (y - lastY < 3)) continue;
     const tk = mkEl('div', 'tm-tick' + (long ? ' long' : '') + (tmIsNow(i) ? ' now' : ''));
     tk.style.top = y + 'px';
+    const k = (p.changes || []).length;
+    tk.style.setProperty('--len', (long ? 20 : 8 + Math.min(9, Math.log2(1 + k) * 3)).toFixed(1) + 'px');
     frag.append(tk);
+    ticks.push({ el: tk, y });
     lastY = y; if (long) lastLong = y;
     // 日付（その日の最初の目盛りに。前の日付や「今」と重なるときは出さない）
-    const label = tmIsNow(i) ? '今' : (dayFirst ? tmDayLabel(p.time) : null);
-    if (label && y - lastLabel >= 14 && (tmIsNow(i) || endY - y >= 14)){
-      const lb = mkEl('div', 'tm-label' + (tmIsNow(i) ? ' now' : ''), label);
+    const isNow = tmIsNow(i);
+    if ((isNow || dayFirst) && y - lastLabel >= 14 && (isNow || endY - y >= 14)){
+      const lb = mkEl('div', 'tm-label' + (isNow ? ' now' : ''), isNow ? T('今') : tmDayLabel(p.time));
+      if (!isNow) lb.append(mkEl('small', null, tmWd(new Date(p.time).getDay())));
       lb.style.top = y + 'px';
       frag.append(lb);
       lastLabel = y;
     }
   }
+  if (dayTop != null) band(dayTop, tm.h);
   box.replaceChildren(frag);
+  tm.ticks = ticks;
+  tm.lensOn = [];
   tmMarks();
   if (follow) tmEnsureVisible(follow === 'smooth');
+}
+// 拡大鏡：マウスや指の近く（TM_LENS px 以内）の目盛りを、近いほど長く・明るくする（Mac の Time Machine の目盛りのように）。
+// y は目盛りの並びの上端からの位置。null で元に戻す
+const TM_LENS = 56;
+function tmLens(y){
+  const ticks = tm.ticks || [];
+  for (const t of tm.lensOn || []) t.el.style.removeProperty('--m');
+  tm.lensOn = [];
+  if (y == null || !ticks.length || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  // 近くの目盛りだけを二分探索で探す
+  let lo = 0, hi = ticks.length;
+  while (lo < hi){ const mid = (lo + hi) >> 1; if (ticks[mid].y < y - TM_LENS) lo = mid + 1; else hi = mid; }
+  for (let i = lo; i < ticks.length && ticks[i].y <= y + TM_LENS; i++){
+    const f = 1 - Math.abs(ticks[i].y - y) / TM_LENS;
+    if (f <= 0) continue;
+    ticks[i].el.style.setProperty('--m', (1 + 1.6 * f * f).toFixed(3));
+    tm.lensOn.push(ticks[i]);
+  }
 }
 // 見ている位置が目盛りの見えている範囲から出ていれば、見えるところまでスクロールする（smooth なら滑らかに）
 function tmEnsureVisible(smooth){
@@ -4296,7 +4563,7 @@ function tmJump(d){
 }
 function tmOpen(){
   if (tm.on || !collab.connected || !collab.remote) return;
-  if (vim.E?.modified && !confirm('Vim エディタに書き込んでいない変更があります。捨ててタイムマシンを開きますか？')) return;
+  if (vim.E?.modified && !confirm(T('Vim エディタに書き込んでいない変更があります。捨ててタイムマシンを開きますか？'))) return;
   tmCancelEdits();
   Object.assign(tm, { on: true, list: [], idx: -1, view: null, want: null, loading: true, restoring: false, hover: -1 });
   tm.cache.clear();
@@ -4347,7 +4614,7 @@ function tmHandle(m){
   if (!tm.on) return;
   if (m.type === 'tm_log'){
     tm.loading = false;
-    if (m.error){ toast('タイムマシン: ' + m.error, { type:'error', timeout:6000 }); tmClose(); return; }
+    if (m.error){ toast(T('タイムマシン: ') + m.error, { type:'error', timeout:6000 }); tmClose(); return; }
     const keep = tm.idx >= 0 && !tmIsNow(tm.idx) ? tm.list[tm.idx]?.id : null, first = !tm.list.length;
     const commits = (Array.isArray(m.commits) ? m.commits : []).filter(c => c && typeof c.id === 'string' && /^[0-9a-f]{40,64}$/.test(c.id) && typeof c.time === 'number')
       .map(c => ({ id: c.id, time: c.time, author: String(c.author ?? ''), subject: String(c.subject ?? ''),
@@ -4355,7 +4622,7 @@ function tmHandle(m){
     tm.list = commits.reverse().concat([{ id: null, time: Date.now(), author: '', subject: '' }]);
     const at = keep ? tm.list.findIndex(p => p.id === keep) : -1;
     tm.idx = at >= 0 ? at : tm.list.length - 1;
-    if (tm.list.length === 1) toast('このプロジェクトには、まださかのぼれる履歴がありません', { timeout:5000 });
+    if (tm.list.length === 1) toast(T('このプロジェクトには、まださかのぼれる履歴がありません'), { timeout:5000 });
     // 今を見ているなら、最新のコミットで変わったものを目立たせる
     if (tmIsNow(tm.idx) && tm.list.length > 1){
       const last = tm.list[tm.idx - 1].id;
@@ -4368,7 +4635,7 @@ function tmHandle(m){
     histRender();
   } else if (m.type === 'tm_show'){
     if (m.error){
-      toast('タイムマシン: ' + m.error, { type:'error', timeout:6000 });
+      toast(T('タイムマシン: ') + m.error, { type:'error', timeout:6000 });
       if (m.commit === tm.want){ tm.want = null; tmUI(); }
       return;
     }
@@ -4386,8 +4653,8 @@ function tmHandle(m){
     }
   } else if (m.type === 'tm_restore'){
     tm.restoring = false;
-    if (m.error){ toast('復元できませんでした: ' + m.error, { type:'error', timeout:8000 }); tmUI(); return; }
-    toast(m.rev == null ? '今と同じ内容だったため、何も変わりませんでした' : `復元しました（${m.count} 件の変更として記録しました）`, { timeout:5000 });
+    if (m.error){ toast(T('復元できませんでした: ') + m.error, { type:'error', timeout:8000 }); tmUI(); return; }
+    toast(m.rev == null ? T('今と同じ内容だったため、何も変わりませんでした') : T`復元しました（${m.count} 件の変更として記録しました）`, { timeout:5000 });
     tmClose();
   }
 }
@@ -4414,11 +4681,11 @@ function tmRestoreFill(force = false){
   if (!tm.on || !tm.view || tmIsNow(tm.idx)) return;
   const p = tm.list[tm.idx], d = tmDiff(), t = tmTitle(tm.idx);
   $('#tmRestoreWhen').textContent = t.date;
-  $('#tmRestoreWhat').textContent = `${t.sub}（${p.author}・コミット ${p.id.slice(0, 7)}）`;
-  const parts = [['追加', d.add], ['変更', d.upd], ['削除', d.del]].filter(x => x[1]).map(([k, n]) => `${k} ${n} 件`);
+  $('#tmRestoreWhat').textContent = T`${t.sub}（${p.author}・コミット ${p.id.slice(0, 7)}）`;
+  const parts = [[T('追加'), d.add], [T('変更'), d.upd], [T('削除'), d.del]].filter(x => x[1]).map(([k, n]) => T`${k} ${n} 件`);
   $('#tmRestoreDiff').textContent = parts.length
-    ? `今のコメント（${store.size} 件）から、${parts.join('・')}をして、このときのコメント（${tm.view.size} 件）に戻します。`
-    : '今のコメントと同じ内容です（戻しても何も変わりません）。';
+    ? T`今のコメント（${store.size} 件）から、${parts.join(T('・'))}をして、このときのコメント（${tm.view.size} 件）に戻します。`
+    : T('今のコメントと同じ内容です（戻しても何も変わりません）。');
   $('#tmRestoreOk').disabled = !parts.length || !collab.connected;
 }
 function tmRestore(){
@@ -4455,9 +4722,10 @@ $('#tmRestoreOk').onclick = tmRestore;
     tm.hover = i;
     tmTip(i, touch);
     tmMarks();
+    tmLens(clientY - box.getBoundingClientRect().top);
     return i;
   };
-  const hideSoon = (ms) => setTimeout(() => { if (!tm.scrub && !pending && mouseY == null){ tm.hover = -1; tmTip(-1); tmMarks(); } }, ms);
+  const hideSoon = (ms) => setTimeout(() => { if (!tm.scrub && !pending && mouseY == null){ tm.hover = -1; tmTip(-1); tmMarks(); tmLens(null); } }, ms);
   // なぞっている指やマウスが目盛りの上端・下端に近づいたら、その方向へスクロールし続ける
   const edgeScroll = () => {
     edgeRaf = 0;
@@ -4529,7 +4797,7 @@ $('#tmRestoreOk').onclick = tmRestore;
   };
   box.addEventListener('pointerup', (e) => end(e, false));
   box.addEventListener('pointercancel', (e) => end(e, true));
-  box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse'){ mouseY = null; if (!tm.scrub){ tm.hover = -1; tmTip(-1); tmMarks(); } } });
+  box.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse'){ mouseY = null; if (!tm.scrub){ tm.hover = -1; tmTip(-1); tmMarks(); tmLens(null); } } });
   // 選んでいる間（指で少し止めてからなぞっている間）は、ページや目盛りをスクロールさせない
   track.addEventListener('touchmove', (e) => { if (tm.scrub?.touch && e.cancelable) e.preventDefault(); }, { passive: false });
   // スクロールしたら、指している目盛りを直す
@@ -4564,7 +4832,7 @@ async function collabApi(path, body){
   const url = path + (collab.key ? (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(collab.key) : '');
   const r = await fetch(url, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(j.message || `ホストがエラーを返しました（${r.status}）`), { status: r.status });
+  if (!r.ok) throw Object.assign(new Error(j.message || T`ホストがエラーを返しました（${r.status}）`), { status: r.status });
   return j;
 }
 // URL の検索部分を書き換える（ページは読み込み直さない）
@@ -4624,7 +4892,7 @@ async function collabRelogin(){
   sessionSave(null);
   collab.blocked = 'auth';
   collabUI();
-  $('#loginErr').textContent = 'ログインし直してください（ホストの人に新しいワンタイムパスワードをもらってください）';
+  $('#loginErr').textContent = T('ログインし直してください（ホストの人に新しいワンタイムパスワードをもらってください）');
   await loginOpen();
   collab.blocked = false; collab.retry = 0;
   peersUI();
@@ -4665,9 +4933,9 @@ async function collabInit(){
   $('#collabStatus').onclick = () => { if (collab.blocked === 'email') location.reload(); else peersOpen(); };
   $('#projectBtn').onclick = () => projectsOpen();
   $('#projectBtn').hidden = false;
-  $('#projectBtn').textContent = '📁 プロジェクト';
+  $('#projectBtn').textContent = T('プロジェクト');
   $('#peersRename').onclick = () => {
-    const n = prompt('共同編集で表示する名前', collabName());
+    const n = prompt(T('共同編集で表示する名前'), collabName());
     if (n == null) return;
     collabLS('komenagare.name', n.trim().slice(0, 40));
     if (collab.connected) collab.ws.send(JSON.stringify(collabHello()));
@@ -4676,13 +4944,13 @@ async function collabInit(){
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if (collab.auth === 'otp') await ensureLogin();
   else if (!collabName()){
-    const n = prompt('共同編集で表示する名前を入力してください（コミットの作者名になります）', '');
+    const n = prompt(T('共同編集で表示する名前を入力してください（コミットの作者名になります）'), '');
     if (n && n.trim()) collabLS('komenagare.name', n.trim().slice(0, 40));
   }
   peersUI();
   collabUI();
   let list = null;
-  try { list = await projectsFetch(); } catch (e) { toast('ホスト: ' + e.message, { type:'error', timeout:8000 }); }
+  try { list = await projectsFetch(); } catch (e) { toast(T('ホスト: ') + e.message, { type:'error', timeout:8000 }); }
   const want = new URLSearchParams(location.search).get('p');
   const saved = (() => { try { return JSON.parse(sessionStorage.getItem('komenagare.project') || 'null'); } catch { return null; } })();
   let p = list ? list.find(x => x.id === want) || (list.length === 1 ? list[0] : null)
@@ -4710,8 +4978,8 @@ async function collabOpen(p){
   collab.owner = uuidv7(); ownerBeat();
   try { sessionStorage.setItem('komenagare.project', JSON.stringify(collab.project)); } catch {}
   collabSetQuery(q => q.set('p', p.id));
-  document.title = `${p.name} - コメナガレ`;
-  $('#projectBtn').textContent = '📁 ' + p.name;
+  document.title = T`${p.name} - コメナガレ`;
+  $('#projectBtn').textContent = p.name;
   store.reset([]);
   try {
     collab.db = await collabIdb();
@@ -4724,8 +4992,8 @@ async function collabOpen(p){
     if (snap && snap.comments) store.reset(snap.comments);
     for (const e of collab.outbox) store.apply(e.change);
   } catch (e) {
-    console.warn('IndexedDB を使えません', e);
-    toast('このブラウザに控えを保存できないため、オフラインの間の変更は失われることがあります', { type:'error', timeout:8000 });
+    console.warn(T('IndexedDB を使えません'), e);
+    toast(T('このブラウザに控えを保存できないため、オフラインの間の変更は失われることがあります'), { type:'error', timeout:8000 });
   }
   commentsChanged();
   // このタブで前に開いていたなら、動画（再生位置）とタイムラインの表示（位置・拡大縮小・縦の位置）を戻す
@@ -4734,7 +5002,7 @@ async function collabOpen(p){
   else {
     if (v?.view) tlRestoreView(v.view); else { TL.pendingView = null; tlResetView(); }
     const name = collabLS(VIDEO_HINT + p.id);
-    if (name) toast(`このプロジェクトでは前に「${name}」を開いていました。動画を開き直してください`, { timeout: 6000 });
+    if (name) toast(T`このプロジェクトでは前に「${name}」を開いていました。動画を開き直してください`, { timeout: 6000 });
   }
   updateStatus();
   collabUI();
@@ -4784,7 +5052,7 @@ function projectsOpen(required = false){
   $('#projectsAuth').hidden = !(collab.auth === 'otp' && collab.session?.admin);
   $('#projectsLogout').hidden = collab.auth !== 'otp' || !collab.session;
   projectsRender();
-  projectsFetch().then(projectsRender).catch(e => { $('#projectsList').replaceChildren(mkEl('p', 'muted', 'ホスト: ' + e.message)); });
+  projectsFetch().then(projectsRender).catch(e => { $('#projectsList').replaceChildren(mkEl('p', 'muted', T('ホスト: ') + e.message)); });
   clearInterval(projectsTimer);
   projectsTimer = setInterval(() => { if (dlg.open) projectsFetch().then(projectsRender).catch(() => {}); else clearInterval(projectsTimer); }, 4000);
   if (!dlg.open) dlg.showModal();
@@ -4800,19 +5068,19 @@ function projectUrl(p){
 }
 function projectsRender(){
   const frag = document.createDocumentFragment();
-  if (!collab.projects.length) frag.append(mkEl('p', 'muted', !collab.projectsLoaded ? '読み込んでいます…'
-    : 'プロジェクトがありません。' + (collab.projectsManage ? '下で名前を入れて「作る」と作れます。' : 'ホストの管理者に作ってもらってください。')));
+  if (!collab.projects.length) frag.append(mkEl('p', 'muted', !collab.projectsLoaded ? T('読み込んでいます…')
+    : T('プロジェクトがありません。') + (collab.projectsManage ? T('下で名前を入れて「作る」と作れます。') : T('ホストの管理者に作ってもらってください。'))));
   for (const p of collab.projects){
     const cur = collab.project?.id === p.id;
     const row = mkEl('div', 'proj-row' + (cur ? ' on' : ''));
     const info = mkEl('div', 'proj-info');
-    info.append(mkEl('div', 'proj-name', p.name + (cur ? '（このタブで開いています）' : '')));
-    info.append(mkEl('div', 'proj-peers', p.peers?.length ? `${p.peers.length}人: ${p.peers.join('、')}` : 'だれもいません'));
+    info.append(mkEl('div', 'proj-name', p.name + (cur ? T('（このタブで開いています）') : '')));
+    info.append(mkEl('div', 'proj-peers', p.peers?.length ? T`${p.peers.length}人: ${p.peers.join(T('、'))}` : T('だれもいません')));
     row.append(info);
     if (!cur){
-      const b = mkEl('button', 'primary', '開く');
+      const b = mkEl('button', 'primary', T('開く'));
       b.onclick = () => {
-        if (exportState.running){ toast('書き出し中はプロジェクトを切り替えられません', { type:'error' }); return; }
+        if (exportState.running){ toast(T('書き出し中はプロジェクトを切り替えられません'), { type:'error' }); return; }
         const dlg = $('#projectsDlg'), done = dlg._done;
         dlg._done = null; projectsWait = null; dlg.dataset.required = '';
         dlg.close();
@@ -4820,12 +5088,12 @@ function projectsRender(){
       };
       row.append(b);
     }
-    const a = mkEl('a', 'btn', '新しいタブ');
+    const a = mkEl('a', 'btn', T('新しいタブ'));
     a.href = projectUrl(p); a.target = '_blank'; a.rel = 'noopener';
     row.append(a);
     if (collab.projectsManage){
-      const rm = mkEl('button', null, '外す');
-      rm.title = 'このホストでの共有をやめます（フォルダとコメントは残り、あとで戻せます）';
+      const rm = mkEl('button', null, T('外す'));
+      rm.title = T('このホストでの共有をやめます（フォルダとコメントは残り、あとで戻せます）');
       rm.onclick = () => projectRemove(p);
       row.append(rm);
     }
@@ -4835,7 +5103,7 @@ function projectsRender(){
   $('#projectsManage').hidden = !collab.projectsManage;
   const n = collab.projectsHidden.length;
   $('#projectsRestoreBtn').disabled = !n;
-  $('#projectsRestoreBtn').textContent = n ? `プロジェクトを復元…（${n}）` : 'プロジェクトを復元…（外したものはありません）';
+  $('#projectsRestoreBtn').textContent = n ? T`プロジェクトを復元…（${n}）` : T('プロジェクトを復元…（外したものはありません）');
   if ($('#restoreDlg').open) restoreRender();
 }
 /* ---------- 外したプロジェクトを復元する ---------- */
@@ -4848,7 +5116,7 @@ function restoreOpen(){
 function restoreRender(){
   for (const name of [...restorePicked]) if (!collab.projectsHidden.includes(name)) restorePicked.delete(name);
   const frag = document.createDocumentFragment();
-  if (!collab.projectsHidden.length) frag.append(mkEl('p', 'muted', '外したプロジェクトはありません。'));
+  if (!collab.projectsHidden.length) frag.append(mkEl('p', 'muted', T('外したプロジェクトはありません。')));
   for (const name of collab.projectsHidden){
     const row = mkEl('label', 'restore-row');
     const cb = mkEl('input');
@@ -4872,10 +5140,10 @@ $('#restoreOk').onclick = async () => {
       await collabApi('/api/projects', { name, by: collabName() });
       done.push(name);
     } catch (e) {
-      toast(`ホスト:「${name}」を復元できませんでした: ${e.message}`, { type:'error', timeout:6000 });
+      toast(T`ホスト:「${name}」を復元できませんでした: ${e.message}`, { type:'error', timeout:6000 });
     }
   }
-  if (done.length) toast(`${done.map(n => `「${n}」`).join('')}を復元しました`);
+  if (done.length) toast(T`${done.map(n => T`「${n}」`).join('')}を復元しました`);
   $('#restoreDlg').close();
   try { await projectsFetch(); } catch {}
   projectsRender();
@@ -4887,25 +5155,25 @@ async function projectAdd(name, done){
   $('#projectsNewBtn').disabled = true;
   try {
     const r = await collabApi('/api/projects', { name, by: collabName() });
-    toast(done || `「${r.name}」を作りました`);
+    toast(done || T`「${r.name}」を作りました`);
     if (!done) $('#projectsNewName').value = '';
     await projectsFetch();
     projectsRender();
   } catch (e) {
-    toast('ホスト: ' + e.message, { type:'error', timeout:6000 });
+    toast(T('ホスト: ') + e.message, { type:'error', timeout:6000 });
   } finally {
     $('#projectsNewBtn').disabled = false;
   }
 }
 async function projectRemove(p){
-  if (!confirm(`「${p.name}」を外しますか？\nこのホストでの共有をやめて、まとめフォルダのリポジトリからも外します（それまでの履歴には残ります）。\nホストのフォルダとコメントはそのままで、「プロジェクトを復元」で戻せます。開いている人は切断されます。`)) return;
+  if (!confirm(T`「${p.name}」を外しますか？\nこのホストでの共有をやめて、まとめフォルダのリポジトリからも外します（それまでの履歴には残ります）。\nホストのフォルダとコメントはそのままで、「プロジェクトを復元」で戻せます。開いている人は切断されます。`)) return;
   try {
     await collabApi('/api/projects/remove', { id: p.id, by: collabName() });
-    toast(`「${p.name}」を外しました`);
+    toast(T`「${p.name}」を外しました`);
     await projectsFetch();
     projectsRender();
   } catch (e) {
-    toast('ホスト: ' + e.message, { type:'error', timeout:6000 });
+    toast(T('ホスト: ') + e.message, { type:'error', timeout:6000 });
   }
 }
 $('#projectsNewBtn').onclick = () => projectAdd($('#projectsNewName').value);
@@ -4916,7 +5184,7 @@ $('#projectsDlg').addEventListener('cancel', (e) => { if ($('#projectsDlg').data
 $('#projectsDlg').addEventListener('close', () => clearInterval(projectsTimer));
 $('#projectsClose').onclick = () => $('#projectsDlg').close();
 $('#projectsLogout').onclick = async () => {
-  if (!confirm('ログアウトしますか？（もう一度入るには新しいワンタイムパスワードが要ります）')) return;
+  if (!confirm(T('ログアウトしますか？（もう一度入るには新しいワンタイムパスワードが要ります）'))) return;
   try { await collabApi('/api/logout', {}); } catch {}
   sessionSave(null);
   location.reload();
@@ -4931,26 +5199,26 @@ async function authRender(){
   try { r = await collabApi('/api/admin/auth'); } catch (e) { $('#authLists').replaceChildren(mkEl('p', 'muted', e.message)); return; }
   const frag = document.createDocumentFragment();
   const revoke = (id, label) => {
-    const b = mkEl('button', null, '取り消す');
+    const b = mkEl('button', null, T('取り消す'));
     b.onclick = async () => {
-      if (!confirm(`${label} を取り消しますか？`)) return;
+      if (!confirm(T`${label} を取り消しますか？`)) return;
       try { await collabApi('/api/admin/revoke', { id }); } catch (e) { toast(e.message, { type:'error' }); }
       authRender();
     };
     return b;
   };
-  frag.append(mkEl('h4', null, `ログイン中（${r.sessions.length}）`));
+  frag.append(mkEl('h4', null, T`ログイン中（${r.sessions.length}）`));
   for (const x of r.sessions){
     const row = mkEl('div', 'auth-row');
-    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? '（管理者）' : '') + (x.you ? '（あなた）' : '')), mkEl('span', 'muted', fmtDate(x.created) + ' から' + (x.expires ? '・' + fmtDate(x.expires) + ' まで' : '')));
-    if (!x.you) row.append(revoke(x.id, `${x.name} のログイン`));
+    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? T('（管理者）') : '') + (x.you ? T('（あなた）') : '')), mkEl('span', 'muted', fmtDate(x.created) + T(' から') + (x.expires ? T('・') + fmtDate(x.expires) + T(' まで') : '')));
+    if (!x.you) row.append(revoke(x.id, T`${x.name} のログイン`));
     frag.append(row);
   }
-  frag.append(mkEl('h4', null, `未使用のワンタイムパスワード（${r.otps.length}）`));
-  if (!r.otps.length) frag.append(mkEl('p', 'muted', 'ありません'));
+  frag.append(mkEl('h4', null, T`未使用のワンタイムパスワード（${r.otps.length}）`));
+  if (!r.otps.length) frag.append(mkEl('p', 'muted', T('ありません')));
   for (const x of r.otps){
     const row = mkEl('div', 'auth-row');
-    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? '（管理者）' : '')), mkEl('span', 'muted', (x.kind === 'numeric' ? '数字' : '英数字') + '・' + fmtDate(x.expires) + ' まで'), revoke(x.id, `${x.name} のワンタイムパスワード`));
+    row.append(mkEl('span', 'auth-name', x.name + (x.admin ? T('（管理者）') : '')), mkEl('span', 'muted', (x.kind === 'numeric' ? T('数字') : T('英数字')) + T('・') + fmtDate(x.expires) + T(' まで')), revoke(x.id, T`${x.name} のワンタイムパスワード`));
     frag.append(row);
   }
   $('#authLists').replaceChildren(frag);
@@ -4965,13 +5233,13 @@ $('#authForm').addEventListener('submit', async (e) => {
     const link = (collab.publicUrl || location.origin + location.pathname) + '?otp=' + r.code;
     $('#authCode').textContent = r.code;
     $('#authLink').value = link;
-    $('#authExpires').textContent = `${name} 用・${fmtDate(r.expires)} まで・1回だけ使えます`;
+    $('#authExpires').textContent = T`${name} 用・${fmtDate(r.expires)} まで・1回だけ使えます`;
     $('#authResult').hidden = false;
     $('#authName').value = '';
     authRender();
   } catch (err) { toast(err.message, { type:'error' }); }
 });
-$('#authCopy').onclick = () => { const v = $('#authLink').value; (navigator.clipboard?.writeText(v) || Promise.reject()).then(() => toast('リンクをコピーしました', { timeout:1500 }), () => { $('#authLink').select(); document.execCommand('copy'); }); };
+$('#authCopy').onclick = () => { const v = $('#authLink').value; (navigator.clipboard?.writeText(v) || Promise.reject()).then(() => toast(T('リンクをコピーしました'), { timeout:1500 }), () => { $('#authLink').select(); document.execCommand('copy'); }); };
 $('#authClose').onclick = () => $('#authDlg').close();
 
 // 表示名の変更（--otp のときはホストが決めるので出さない）
@@ -4986,7 +5254,7 @@ function peersUI(){ $('#peersRename').hidden = collab.auth === 'otp'; }
    ===================================================================== */
 const hist = { entries: null, timer: 0 };
 function recordChange(ch){
-  state.changeLog.push({ time: Date.now(), author: state.collab ? (collabName() || 'ゲスト') : 'あなた', change: ch });
+  state.changeLog.push({ time: Date.now(), author: state.collab ? (collabName() || T('ゲスト')) : T('あなた'), change: ch });
   if (state.changeLog.length > 1000) state.changeLog.splice(0, state.changeLog.length - 1000);
   histChanged();
 }
@@ -5008,17 +5276,17 @@ function histTime(ms){
 // 1つの op を「追加 「本文」 01:23.45」のような1行にする
 function histOpLine(op){
   const line = mkEl('div', 'hist-op');
-  const kind = { add: '追加', update: '変更', delete: '削除' }[op.type];
+  const kind = { add: T('追加'), update: T('変更'), delete: T('削除') }[op.type];
   line.append(mkEl('span', 'k ' + op.type, kind));
   if (op.type === 'add' || op.type === 'delete'){
     const f = op.type === 'add' ? op.after : op.before;
-    line.append(`「${clip(f.text)}」 ${fmtPrecise(f.t ?? 0)}` + (f.cmd ? ` [${f.cmd}]` : ''));
+    line.append(T`「${clip(f.text)}」 ${fmtPrecise(f.t ?? 0)}` + (f.cmd ? ` [${f.cmd}]` : ''));
     return line;
   }
   const name = op.after.text ?? op.before.text ?? store.get(op.id)?.text;
-  line.append(name != null ? `「${clip(name, 24)}」 ` : '');
-  const label = { t: '時刻', cmd: 'コマンド', text: '本文' };
-  const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : k === 'text' ? `「${clip(v, 24)}」` : (v || '（なし）');
+  line.append(name != null ? T`「${clip(name, 24)}」 ` : '');
+  const label = { t: T('時刻'), cmd: T('コマンド'), text: T('本文') };
+  const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : k === 'text' ? T`「${clip(v, 24)}」` : (v || T('（なし）'));
   for (const k of ['t', 'cmd', 'text']){
     if (!(k in op.after)) continue;
     line.append(` ${label[k]} `);
@@ -5032,24 +5300,24 @@ function histRender(){
   if (!list || !histShown()) return;
   let items, note, cur = null;
   if (state.collab){
-    const me = collabName() || 'ゲスト';
+    const me = collabName() || T('ゲスト');
     items = [...collab.outbox.slice().reverse().map(e => ({ change: e.change, author: me, time: e.seq, pending: true })), ...(hist.entries || [])];
-    note = collab.connected ? 'ホストに記録された全員の変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。'
-      : 'ホストにつながっていないため、前回取得した履歴を表示しています。';
+    note = collab.connected ? T('ホストに記録された全員の変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。')
+      : T('ホストにつながっていないため、前回取得した履歴を表示しています。');
     // タイムマシン: 見ている時点までの変更だけにする（その時点のコミットの変更は印を付ける）
     if (tm.on && tm.list.length){
       const r = tmHistory(items);
       items = r.items; cur = r.cur;
-      note = tmIsNow(tm.idx) ? 'タイムマシン: 今までの変更です（新しい順）。印は最新のコミットとまだコミットしていない変更です。'
-        : `タイムマシン: ${tmDate(tm.list[tm.idx].time)} の時点までの変更です（新しい順）。印はこの時点のコミットの変更です。`
-          + (r.older ? ' それより前はホストの最近の記録に無いので、git のコミットの一覧で出します（「見る」でその時点へ）。' : '');
+      note = tmIsNow(tm.idx) ? T('タイムマシン: 今までの変更です（新しい順）。印は最新のコミットとまだコミットしていない変更です。')
+        : T`タイムマシン: ${tmDate(tm.list[tm.idx].time)} の時点までの変更です（新しい順）。印はこの時点のコミットの変更です。`
+          + (r.older ? T(' それより前はホストの最近の記録に無いので、git のコミットの一覧で出します（「見る」でその時点へ）。') : '');
     }
   } else {
     items = state.changeLog.slice().reverse();
-    note = 'この画面を開いてからの変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。komenagare でホストすると全員の変更が記録されます。';
+    note = T('この画面を開いてからの変更です（新しい順）。「取り消す」は打ち消す変更を新しく加えます。komenagare でホストすると全員の変更が記録されます。');
   }
   $('#histNote').textContent = note;
-  $('#histCount').textContent = items.length ? `${items.length}件` : '';
+  $('#histCount').textContent = items.length ? T`${items.length}件` : '';
   const frag = document.createDocumentFragment();
   for (const it of items.slice(0, 300)){
     // タイムマシン: ホストの記録より前は git のコミット（説明だけ）で出す
@@ -5058,8 +5326,8 @@ function histRender(){
       const meta = mkEl('div', 'hist-meta');
       meta.append(mkEl('span', null, histTime(it.commit.time)), mkEl('b', null, it.commit.author), mkEl('span', null, it.commit.id.slice(0, 7)), mkEl('span', 'spacer'));
       if (it.index !== tm.idx){
-        const go = mkEl('button', null, '見る');
-        go.title = 'タイムマシンでこの時点を見る';
+        const go = mkEl('button', null, T('見る'));
+        go.title = T('タイムマシンでこの時点を見る');
         go.onclick = () => tmSelect(it.index);
         meta.append(go);
       }
@@ -5071,27 +5339,27 @@ function histRender(){
     const meta = mkEl('div', 'hist-meta');
     meta.append(mkEl('span', null, histTime(it.time)), mkEl('b', null, it.author || ''));
     if (it.rev) meta.append(mkEl('span', null, '#' + it.rev));
-    if (it.pending) meta.append(mkEl('span', null, '未送信'));
+    if (it.pending) meta.append(mkEl('span', null, T('未送信')));
     meta.append(mkEl('span', 'spacer'));
     const target = it.change.ops.map(op => shown().get(op.id)).find(Boolean);
     if (target){
-      const go = mkEl('button', null, '移動');
-      go.title = 'このコメントの時刻へ移動して選ぶ';
+      const go = mkEl('button', null, T('移動'));
+      go.title = T('このコメントの時刻へ移動して選ぶ');
       go.onclick = () => { seekTo(target.t); TL.sel = new Set([target.id]); tlEnsureVisible(target); tlSelChanged(); };
       meta.append(go);
     }
     if (!it.pending && !tm.on){
-      const undo = mkEl('button', null, '取り消す');
-      undo.title = 'この変更を打ち消す変更を加える';
-      undo.onclick = () => { if (revertChange(it.change)) toast('変更を取り消しました'); };
+      const undo = mkEl('button', null, T('取り消す'));
+      undo.title = T('この変更を打ち消す変更を加える');
+      undo.onclick = () => { if (revertChange(it.change)) toast(T('変更を取り消しました')); };
       meta.append(undo);
     }
     box.append(meta);
     for (const op of it.change.ops.slice(0, 5)) box.append(histOpLine(op));
-    if (it.change.ops.length > 5) box.append(mkEl('div', 'hist-op muted', `ほか ${it.change.ops.length - 5} 件`));
+    if (it.change.ops.length > 5) box.append(mkEl('div', 'hist-op muted', T`ほか ${it.change.ops.length - 5} 件`));
     frag.append(box);
   }
-  if (!items.length) frag.append(mkEl('p', 'muted hist-note', 'まだ変更はありません。'));
+  if (!items.length) frag.append(mkEl('p', 'muted hist-note', T('まだ変更はありません。')));
   list.replaceChildren(frag);
 }
 
@@ -5141,10 +5409,10 @@ function cleanConflict(r){
 
 /* ---------- 衝突の解決（共同編集） ---------- */
 const CONFLICT_WHY = {
-  'modified:update': 'ほかの人が先に同じ項目を変更していました',
-  'deleted:update': 'ほかの人が先に削除していました',
-  'modified:delete': 'あなたは削除しようとしましたが、ほかの人が先に変更していました',
-  'exists:add': '同じ id のコメントが既にありました',
+  'modified:update': T('ほかの人が先に同じ項目を変更していました'),
+  'deleted:update': T('ほかの人が先に削除していました'),
+  'modified:delete': T('あなたは削除しようとしましたが、ほかの人が先に変更していました'),
+  'exists:add': T('同じ id のコメントが既にありました'),
 };
 const allConflicts = () => [...collab.conflicts, ...collab.shared];
 // 自分の変更か（ホストに預けたものも、同じブラウザから出したものなら自分の分）
@@ -5152,11 +5420,11 @@ const conflictOwn = (rec) => !rec.author || (!!collab.myClient && rec.client ===
 // 今の内容（ホストに預けた衝突はあとから変わっていることがあるので、いつも今の値を見る）
 const conflictNow = (rec) => { const c = store.get(rec.id); return c ? pickFields(c) : null; };
 function conflictActions(rec){
-  const own = conflictOwn(rec), who = own ? 'あなた' : rec.author;
-  if (rec.opType === 'update' && conflictNow(rec)) return [['mine', `${who}の変更にする`], ['keep', own ? '相手のままにする' : '今のままにする'], ['both', '両方残す']];
-  if (rec.opType === 'update') return [['mine', `${who}の内容で復活させる`], ['keep', '削除のままにする']];
-  if (rec.opType === 'delete') return [['mine', 'それでも削除する'], ['keep', '残す']];
-  return [['both', '新しいコメントとして追加する'], ['keep', '追加しない']];
+  const own = conflictOwn(rec), who = own ? T('あなた') : rec.author;
+  if (rec.opType === 'update' && conflictNow(rec)) return [['mine', T`${who}の変更にする`], ['keep', own ? T('相手のままにする') : T('今のままにする')], ['both', T('両方残す')]];
+  if (rec.opType === 'update') return [['mine', T`${who}の内容で復活させる`], ['keep', T('削除のままにする')]];
+  if (rec.opType === 'delete') return [['mine', T('それでも削除する')], ['keep', T('残す')]];
+  return [['both', T('新しいコメントとして追加する')], ['keep', T('追加しない')]];
 }
 // 衝突を一覧から外す（ホストに預けたものは全員の一覧から外す）
 function conflictDrop(recs){
@@ -5187,12 +5455,12 @@ function conflictResolve(rec, action){
     if (rec.opType === 'delete'){ if (cur) ops = [deleteOp(cur)]; }
     else if (cur){
       const r = updateOps([{ c: cur, t: rec.mine.t, cmd: rec.mine.cmd, text: rec.mine.text }]);
-      if (r.failed){ toast('同じ時刻・内容のコメントが既にあるため変更できません', { type:'error' }); return; }
+      if (r.failed){ toast(T('同じ時刻・内容のコメントが既にあるため変更できません'), { type:'error' }); return; }
       ops = r.ops;
     } else ops = [{ type:'add', id: rec.id, after: normFields(rec.mine.t, rec.mine.cmd, rec.mine.text), mine: true }];
   } else if (action === 'both'){
     const c = makeComment(rec.mine.t, rec.mine.cmd, rec.mine.text, true);
-    if (store.hasKey(c.key)){ toast('同じ時刻・内容のコメントが既にあります', { type:'error' }); return; }
+    if (store.hasKey(c.key)){ toast(T('同じ時刻・内容のコメントが既にあります'), { type:'error' }); return; }
     ops = [addOp(c)];
   }
   if (ops.length) commitOps(ops);
@@ -5201,26 +5469,26 @@ function conflictResolve(rec, action){
 function conflictsChanged(){
   if (collab.owner) collabTx('meta', 'readwrite', s => s.put(collab.conflicts, 'conflicts:' + collab.owner)).catch(e => console.warn(e));
   const n = allConflicts().length;
-  for (const b of [$('#conflictBtn'), $('#histConflicts')]){ b.hidden = !n; b.textContent = `⚠ 衝突 ${n}`; }
+  for (const b of [$('#conflictBtn'), $('#histConflicts')]){ b.hidden = !n; b.textContent = T`⚠ 衝突 ${n}`; }
   if ($('#conflictDlg').open){ if (n) conflictRender(); else $('#conflictDlg').close(); }
 }
 function conflictRender(){
-  const label = { t: '時刻', cmd: 'コマンド', text: '本文' };
-  const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : (v || '（なし）');
+  const label = { t: T('時刻'), cmd: T('コマンド'), text: T('本文') };
+  const show = (k, v) => k === 't' ? fmtPrecise(v ?? 0) : (v || T('（なし）'));
   const frag = document.createDocumentFragment();
   for (const rec of allConflicts()){
     const box = mkEl('div', 'cf-item');
     const own = conflictOwn(rec), now = conflictNow(rec);
     const base = now || rec.mine || {};
-    box.append(mkEl('div', 'cf-title', `「${clip(base.text, 60)}」 ${fmtPrecise(base.t ?? 0)}`));
-    const why = CONFLICT_WHY[`${rec.reason}:${rec.opType}`] || 'ほかの人の変更と重なりました';
-    box.append(mkEl('div', 'cf-why', own ? why : `${rec.author} の変更：${why.replace(/^あなたは/, '')}`));
-    if (rec.author || rec.share) box.append(mkEl('div', 'cf-shared', own ? 'ほかの参加者にも表示しています' : `${rec.author} が「あとで」にしたものです。誰が選んでもかまいません`));
+    box.append(mkEl('div', 'cf-title', T`「${clip(base.text, 60)}」 ${fmtPrecise(base.t ?? 0)}`));
+    const why = CONFLICT_WHY[`${rec.reason}:${rec.opType}`] || T('ほかの人の変更と重なりました');
+    box.append(mkEl('div', 'cf-why', own ? why : T`${rec.author} の変更：${why.replace(/^あなたは/, '')}`));
+    if (rec.author || rec.share) box.append(mkEl('div', 'cf-shared', own ? T('ほかの参加者にも表示しています') : T`${rec.author} が「あとで」にしたものです。誰が選んでもかまいません`));
     // 3-way：元の値（共通の祖先）・あなた・相手（今の内容）を並べ、どれかが違う項目だけ出す
     const table = mkEl('table', 'cf-table');
     const cols = [];
-    if (rec.base) cols.push(['元の値', rec.base, '（なし）']);
-    cols.push([own ? 'あなた' : rec.author, rec.mine, '（削除）'], [own ? '相手（今の内容）' : '今の内容', now, '（削除済み）']);
+    if (rec.base) cols.push([T('元の値'), rec.base, T('（なし）')]);
+    cols.push([own ? T('あなた') : rec.author, rec.mine, T('（削除）')], [own ? T('相手（今の内容）') : T('今の内容'), now, T('（削除済み）')]);
     const head = mkEl('tr'); head.append(mkEl('th'), ...cols.map(([name]) => mkEl('th', null, name))); table.append(head);
     const vals = cols.map(([, v]) => v).filter(Boolean);
     let keys = COMMENT_FIELDS.filter(k => vals.some(v => v[k] !== vals[0][k]));
@@ -5456,25 +5724,25 @@ function tlDrawCursor(g, x, y, p){
 /* ---------- 参加者の一覧と追いかける ---------- */
 function presenceText(s, t = s.t){
   if (typeof t !== 'number') return '—';
-  const parts = [(s.playing ? '再生中 ' : '停止中 ') + fmt(t)];
-  if (s.sel && s.sel.length) parts.push(`${s.sel.length} 件選択中`);
-  if (!s.video) parts.push('動画を開いていません');
-  else if (videoDiffers(s.video)) parts.push(`⚠ 動画の長さが違います（${fmtPrecise(s.video.d)}）`);
-  return parts.join('　');
+  const parts = [(s.playing ? T('再生中 ') : T('停止中 ')) + fmt(t)];
+  if (s.sel && s.sel.length) parts.push(T`${s.sel.length} 件選択中`);
+  if (!s.video) parts.push(T('動画を開いていません'));
+  else if (videoDiffers(s.video)) parts.push(T`⚠ 動画の長さが違います（${fmtPrecise(s.video.d)}）`);
+  return parts.join(T('　'));
 }
 function peersRender(){
   const frag = document.createDocumentFragment();
   presence.dlgRows.clear();
-  if (!collab.connected) frag.append(mkEl('p', 'muted', 'ホストにつながっていません'));
+  if (!collab.connected) frag.append(mkEl('p', 'muted', T('ホストにつながっていません')));
   for (const p of collab.peerList){
     const me = p.id === collab.me, on = collab.follow === p.id;
     const row = mkEl('div', 'peer-row' + (on ? ' on' : ''));
     row.style.setProperty('--peer', peerColor(p));
     const info = mkEl('div', 'peer-info'), st = mkEl('div', 'peer-state');
-    info.append(mkEl('div', 'peer-name', p.name + (me ? '（あなた）' : collab.myClient && p.client === collab.myClient ? '（あなた・別のタブ）' : '')), st);
+    info.append(mkEl('div', 'peer-name', p.name + (me ? T('（あなた）') : collab.myClient && p.client === collab.myClient ? T('（あなた・別のタブ）') : '')), st);
     row.append(mkEl('span', 'peer-dot'), info);
     if (!me){
-      const b = mkEl('button', on ? 'primary' : null, on ? '追いかけるのをやめる' : '追いかける');
+      const b = mkEl('button', on ? 'primary' : null, on ? T('追いかけるのをやめる') : T('追いかける'));
       b.onclick = () => { if (on) collabUnfollow(); else { collabFollow(p.id); $('#peersDlg').close(); } };
       row.append(b);
     }
@@ -5517,9 +5785,9 @@ function collabUnfollow(msg){
 function followLost(){
   if (collab.follow == null) return;
   collab.follow = null;
-  if (!collab.followClient) return collabUnfollow('追いかけていた人が抜けました');
+  if (!collab.followClient) return collabUnfollow(T('追いかけていた人が抜けました'));
   clearTimeout(collab.followWait);
-  collab.followWait = setTimeout(() => collabUnfollow('追いかけていた人が抜けました'), FOLLOW_WAIT_MS);
+  collab.followWait = setTimeout(() => collabUnfollow(T('追いかけていた人が抜けました')), FOLLOW_WAIT_MS);
   followUI();
 }
 // 追いかけていた人（のブラウザ）がまた一覧にいれば、その接続を追いかける
@@ -5589,7 +5857,7 @@ function videoCheckPeer(id, pr){
   if (videoWarned.has(key)) return;
   videoWarned.add(key);
   const name = clip(p.name, 20);
-  toast(`${name}さんの動画と長さが違います（${name}さん: ${fmtPrecise(v.d)}、あなた: ${fmtPrecise(video.duration)}）。同じ動画ファイルか確かめてください（違うと、コメントの出る場面がずれます）`, { type:'error', timeout:15000 });
+  toast(T`${name}さんの動画と長さが違います（${name}さん: ${fmtPrecise(v.d)}、あなた: ${fmtPrecise(video.duration)}）。同じ動画ファイルか確かめてください（違うと、コメントの出る場面がずれます）`, { type:'error', timeout:15000 });
 }
 function videoCheck(){
   if (!state.collab) return;
@@ -5618,33 +5886,33 @@ function peersAnnounce(before, after, first){
     if (b.has(client) || collab.leaving.has(client)) continue;
     collab.leaving.set(client, setTimeout(() => {
       collab.leaving.delete(client);
-      if (collab.connected) toast(`${clip(name, 20)}さんが抜けました`, { timeout: 3000 });
+      if (collab.connected) toast(T`${clip(name, 20)}さんが抜けました`, { timeout: 3000 });
     }, LEAVE_WAIT_MS));
   }
-  if (joined.length) toast(`${joined.join('、')}さんが入りました`, { timeout: 3000 });
+  if (joined.length) toast(T`${joined.join(T('、'))}さんが入りました`, { timeout: 3000 });
 }
 
 /* ---------- 「ここ見て」（ほかの人を呼ぶ） ---------- */
 const CALL_GAP_MS = 2000; // ホストも 2 秒に 1 回までしか配らない
 let callLast = -Infinity;
 function callSend(){
-  if (!collab.connected) return toast('ホストにつながっていません', { type:'error' });
-  if (!state.videoLoaded) return toast('動画を開いてから使ってください');
+  if (!collab.connected) return toast(T('ホストにつながっていません'), { type:'error' });
+  if (!state.videoLoaded) return toast(T('動画を開いてから使ってください'));
   if (performance.now() - callLast < CALL_GAP_MS) return;
-  if (collab.peerList.every(p => p.id === collab.me)) return toast('ほかに参加している人がいません');
+  if (collab.peerList.every(p => p.id === collab.me)) return toast(T('ほかに参加している人がいません'));
   callLast = performance.now();
   const t = video.currentTime || 0, sel = [...TL.sel].slice(0, 200);
   collab.ws.send(JSON.stringify({ type: 'call', state: { t: +t.toFixed(3), sel } }));
-  toast(`ほかの人に ${fmt(t)}${sel.length ? `（コメント ${sel.length} 件）` : ''} を見てもらうよう知らせました`, { timeout: 2500 });
+  toast(T`ほかの人に ${fmt(t)}${sel.length ? T`（コメント ${sel.length} 件）` : ''} を見てもらうよう知らせました`, { timeout: 2500 });
 }
 function callReceived(m){
   const c = cleanCall(m.state);
   if (!c) return;
   const p = peerOf(m.id);
   if (p && collab.myClient && p.client === collab.myClient) return; // 自分の別のタブ
-  const name = clip(typeof m.name === 'string' && m.name ? m.name : p?.name || '誰か', 20);
-  const what = fmt(c.t) + (c.sel.length ? `（コメント ${c.sel.length} 件）` : '');
-  toast(`📣 ${name}さんが ${what} を見てほしいそうです`, { timeout: 15000, action: { label: '見る', fn: () => jumpTo(c.t, c.sel) } });
+  const name = clip(typeof m.name === 'string' && m.name ? m.name : p?.name || T('誰か'), 20);
+  const what = fmt(c.t) + (c.sel.length ? T`（コメント ${c.sel.length} 件）` : '');
+  toast(T`📣 ${name}さんが ${what} を見てほしいそうです`, { timeout: 15000, action: { label: T('見る'), fn: () => jumpTo(c.t, c.sel) } });
 }
 // その時刻へ移り、コメントを選ぶ（t が無ければ最初のコメントの時刻へ）
 function jumpTo(t, ids = []){
@@ -5696,11 +5964,11 @@ function copyText(text){
   return navigator.clipboard?.writeText ? navigator.clipboard.writeText(text).catch(fallback) : fallback();
 }
 function linkCopy(){
-  if (!state.videoLoaded) return toast('動画を開いてから使ってください');
+  if (!state.videoLoaded) return toast(T('動画を開いてから使ってください'));
   const { url, t, comment } = linkUrl();
   copyText(url).then(
-    () => toast(`${fmt(t)}${comment ? 'のコメント' : ''}へのリンクをコピーしました（メッセージに貼って送れます）`, { timeout: 3000 }),
-    () => prompt('このリンクをコピーしてください', url));
+    () => toast(T`${fmt(t)}${comment ? T('のコメント') : ''}へのリンクをコピーしました（メッセージに貼って送れます）`, { timeout: 3000 }),
+    () => prompt(T('このリンクをコピーしてください'), url));
 }
 // 開いた URL の #t= / #c= を読む（読んだら URL から外す。同じリンクをもう一度開いても動くように）
 function linkParse(){
@@ -5716,13 +5984,13 @@ function linkTry(){
   const p = link.pending;
   if (!p) return;
   if (!state.videoLoaded){
-    if (!p.told && p.t != null) toast(`動画を開くと ${fmt(p.t)} に移ります`, { timeout: 5000 });
+    if (!p.told && p.t != null) toast(T`動画を開くと ${fmt(p.t)} に移ります`, { timeout: 5000 });
     p.told = true;
     return;
   }
   if (p.c && state.collab && !collab.synced) return; // ホストからコメントが届くのを待つ
   link.pending = null;
-  if (p.c && !shown().has(p.c)) toast('リンクのコメントが見つかりません（消されたか、別のコメントかもしれません）', { type:'error' });
+  if (p.c && !shown().has(p.c)) toast(T('リンクのコメントが見つかりません（消されたか、別のコメントかもしれません）'), { type:'error' });
   jumpTo(p.t, p.c ? [p.c] : []);
 }
 window.addEventListener('hashchange', linkParse);
@@ -5762,10 +6030,17 @@ document.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k === 'z' || k === 'y'){ e.preventDefault(); if (k === 'y' || e.shiftKey) redo(); else undo(); return; }
   }
+  // イン点・アウト点を消す（Alt＋I / O / X。Mac の Option は文字が変わるので、キーの位置で見る）
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !inField && !document.querySelector('dialog[open]')){
+    const w = { KeyI: 'in', KeyO: 'out', KeyX: '' }[e.code];
+    if (w != null){ e.preventDefault(); rangeClear(w || undefined); return; }
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (inField) return;
   if (document.querySelector('dialog[open]')) return;
   switch (e.key){
+    case 'i': case 'I': e.preventDefault(); rangeSet('in'); break;
+    case 'o': case 'O': e.preventDefault(); rangeSet('out'); break;
     case ' ': case 'k': case 'K': e.preventDefault(); togglePlay(); break;
     case 'ArrowLeft': e.preventDefault(); seekBy(e.shiftKey ? -1 : -5); break;
     case 'ArrowRight': e.preventDefault(); seekBy(e.shiftKey ? 1 : 5); break;
@@ -5799,6 +6074,13 @@ renderPresets();
 updateUndoUI();
 tlSelChanged();
 applyPanes();
+// 言語（?lang= を付けて開き直す。選んだものは js/i18n.js がこのブラウザで覚える）
+$('#setLang').value = I18N.lang;
+$('#setLang').onchange = (e) => {
+  const u = new URL(location.href);
+  u.searchParams.set('lang', e.target.value);
+  location.href = u.href;
+};
 collabInit();
 linkParse();
 requestAnimationFrame(loop);
