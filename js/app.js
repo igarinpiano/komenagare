@@ -527,6 +527,8 @@ function seekRatio(e){ const r = seekEl.getBoundingClientRect(); return Math.min
 seekEl.addEventListener('pointerdown', (e) => {
   if (!state.videoLoaded) return;
   seekDragging = true; seekEl.setPointerCapture(e.pointerId);
+  // つまんでいる間は、時刻をマウスより上に離して出す（指やマウスで隠れないように）
+  seekEl.classList.add('drag');
   seekTo(seekRatio(e) * video.duration);
 });
 seekEl.addEventListener('pointermove', (e) => {
@@ -535,8 +537,8 @@ seekEl.addEventListener('pointermove', (e) => {
   seekTip.textContent = fmt(r * (video.duration || 0));
   if (seekDragging) seekTo(r * video.duration);
 });
-seekEl.addEventListener('pointerup', () => { seekDragging = false; });
-seekEl.addEventListener('pointercancel', () => { seekDragging = false; });
+seekEl.addEventListener('pointerup', () => { seekDragging = false; seekEl.classList.remove('drag'); });
+seekEl.addEventListener('pointercancel', () => { seekDragging = false; seekEl.classList.remove('drag'); });
 
 function updateTimeUI(t = video.currentTime){
   const d = video.duration, r = isFinite(d) && d > 0 ? Math.min(1, t / d) : 0;
@@ -2368,14 +2370,18 @@ function tlDraw(){
     } else { g.fillStyle = '#4a4f56'; g.fillRect(x, TL_RULER - 5, 1, 4); }
   }
   g.restore();
-  // マウスを重ねている位置（Final Cut Pro のスキマーのように、細い線とその時刻を出す。ドラッグ中は出さない）
-  const hv = TL.hover;
-  if (hv && !TL.drag && hv.x >= TL_HEAD && hv.x <= W){
-    const hx = Math.round(hv.x) + 0.5;
-    g.fillStyle = 'rgba(255,255,255,.28)'; g.fillRect(hx - 0.5, TL_RULER, 1, H);
-    const label = fmtPrecise(Math.max(0, xt(hv.x)));
+  // マウスを重ねている位置（Final Cut Pro のスキマーのように、細い線とその時刻を出す）と、目盛りをつまんで動かしている位置の時刻。
+  // マウスが目盛りの上にあるときは、時刻をマウスの横にずらして出す（重なって読めないように）
+  const hv = TL.hover, sd = TL.drag && TL.drag.type === 'scrub' ? TL.drag : null;
+  const sx = sd ? sd.lastX : hv && !TL.drag ? hv.x : null;
+  if (sx != null && sx >= TL_HEAD && sx <= W){
+    const hx = Math.round(sx) + 0.5, onRuler = !!sd || hv.y < TL_RULER;
+    if (!sd){ g.fillStyle = 'rgba(255,255,255,.28)'; g.fillRect(hx - 0.5, TL_RULER, 1, H); }
+    const label = fmtPrecise(Math.max(0, xt(sx)));
     g.font = '600 10.5px ' + 'ui-monospace,Menlo,Consolas,monospace'; g.textBaseline = 'middle';
-    const tw = g.measureText(label).width + 10, lx = clamp(hx - tw / 2, TL_HEAD, W - tw);
+    const tw = g.measureText(label).width + 10, gap = 16;
+    const lx = !onRuler ? clamp(hx - tw / 2, TL_HEAD, W - tw)
+      : hx + gap + tw <= W ? hx + gap : Math.max(TL_HEAD, hx - gap - tw);
     g.fillStyle = '#e8e6e1'; rr(g, lx, 2, tw, TL_RULER - 5, 3); g.fill();
     g.fillStyle = '#121417'; g.textAlign = 'center'; g.fillText(label, lx + tw / 2, TL_RULER / 2 - 0.5);
   }
@@ -2713,7 +2719,7 @@ TL.main.addEventListener('pointerdown', (e) => {
   const touch = e.pointerType !== 'mouse';
   const base = { x0: p.x, y0: p.y, started: false, touch, id: e.pointerId };
   if (p.y < TL_RULER){
-    TL.drag = { ...base, type:'scrub' };
+    TL.drag = { ...base, type:'scrub', lastX: p.x };
     if (state.videoLoaded) seekTo(Math.max(0, xt(p.x)));
     return;
   }
@@ -2766,7 +2772,7 @@ TL.main.addEventListener('pointermove', (e) => {
     if (d.orig) tlDragBegin(d);
     if (d.type === 'move') TL.main.style.cursor = d.copy ? 'copy' : 'grabbing';
   }
-  if (d.type === 'scrub'){ if (state.videoLoaded) seekTo(Math.max(0, xt(p.x))); }
+  if (d.type === 'scrub'){ d.lastX = p.x; if (state.videoLoaded) seekTo(Math.max(0, xt(p.x))); }
   else if (d.type === 'marquee'){ d.lastX = p.x; d.lastY = p.y; tlMarqueeUpdate(d); }
   else if (d.type === 'create'){ d.lastX = p.x; }
   else if (d.type === 'pan'){ TL.t0 = d.t0 - dx / TL.pps; TL.scrollY = d.sy - dy; tlClampView(); }

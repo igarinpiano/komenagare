@@ -235,7 +235,9 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .seek-range{position:absolute;top:-3px;bottom:-3px;border-left:2px solid var(--amber);border-right:2px solid var(--amber);background:rgba(255,179,0,.16);pointer-events:none}
 .seek-knob{position:absolute;top:50%;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;background:#fff;border-radius:50%;left:0;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
 .seek-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;pointer-events:none;opacity:0;transition:opacity .1s;white-space:nowrap;font-variant-numeric:tabular-nums}
-.seek:hover .seek-tip{opacity:1}
+.seek:hover .seek-tip,.seek.drag .seek-tip{opacity:1}
+/* つまんで動かしている間は、マウスや指で隠れないよう上へ離す */
+.seek.drag .seek-tip{bottom:46px;font-size:12px;padding:3px 8px}
 .ctrl-row{display:flex;align-items:center;gap:6px;margin-top:1px}
 .icon{background:none;border:none;padding:4px;width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r)}
 .icon:hover{background:var(--panel3)}
@@ -270,7 +272,7 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .preset .sw{flex:none;width:9px;height:9px;border-radius:2px;border:1px solid rgba(255,255,255,.35)}
 .preset kbd{font:10px var(--mono);color:#999;background:#121417;border:1px solid var(--line2);border-radius:3px;padding:0 3px}
 .preset-tool{flex:none;padding:3px 10px;font-size:12.5px;border-radius:999px}
-.presets .hint{flex:none;font-size:12px;color:var(--muted);white-space:nowrap}
+.presets .hint{flex:0 1 auto;min-width:0;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tlset-grid{grid-template-columns:150px 1fr}
 .tlset-grid label{line-height:1.3}
 .pr-list{display:flex;flex-direction:column;gap:6px}
@@ -498,9 +500,15 @@ dialog::backdrop{background:rgba(5,6,8,.62)}
     .ctrl-row{margin-top:0}
     .icon{height:28px}
   }
+  /* プレビューの列が狭いときは、入力欄を1段目にして、コマンドと「コメントする」を2段目に回す（右がはみ出さないように） */
+  @container pcol (max-width: 760px){
+    .comment-bar{flex-wrap:wrap}
+    #textInput{order:-1;flex:1 1 100%}
+    .cmd-input{flex:1;width:auto;min-width:0}
+    .char-count{padding-top:6px}
+  }
   @container pcol (max-width: 640px){
     .vol input,.ccount{display:none}
-    .cmd-input{width:100px}
   }
 }
 @media (min-width: 981px) and (max-width: 1400px){
@@ -576,7 +584,7 @@ dialog::backdrop{background:rgba(5,6,8,.62)}
 }
 
 /* ---------- タイムマシン（右から目盛りを出して、画面をその分押し縮める） ----------
-   目盛りの帯は、上（昔）ほど深い藍色、下（今）は作業場の灰色で、さかのぼるほど奥へ行くように見せる。
+   目盛りの帯は、上（昔）ほど深い金色、下（今）は作業場の灰色。色の変わり方はゆっくり（段差が見えないよう、止める所を細かく置く）。
    1本が1コミット。長さはそのコミットでまとめた変更の数で少し伸び、マウスや指を近づけると、
    そのあたりの目盛りが拡大鏡のように伸びる（--m。js/app.js の tmLens）。日ごとに薄い帯で区切る */
 :root{--tm-w:104px}
@@ -584,13 +592,14 @@ dialog::backdrop{background:rgba(5,6,8,.62)}
 body{transition:padding-right .35s cubic-bezier(.2,.8,.2,1)}
 body.tm-on{padding-right:var(--tm-w)}
 .tm-rail{position:fixed;top:0;right:0;bottom:0;width:var(--tm-w);z-index:40;display:flex;flex-direction:column;align-items:stretch;
-  background:radial-gradient(140% 70px at 100% 100%,rgba(255,80,80,.13),transparent 70%),linear-gradient(#101330,#12152a 30%,#131520 65%,#141518);
-  border-left:1px solid #2a2e44;
+  background:radial-gradient(140% 70px at 100% 100%,rgba(255,80,80,.12),transparent 70%),
+    linear-gradient(180deg,#2a1f08 0%,#271d09 10%,#241b0a 20%,#211a0b 30%,#1e180c 40%,#1b170e 50%,#19160f 60%,#171510 70%,#161411 80%,#151412 90%,#141413 100%);
+  border-left:1px solid #4a3a1a;
   transform:translateX(100%);transition:transform .35s cubic-bezier(.2,.8,.2,1);outline:none;touch-action:none;user-select:none;-webkit-user-select:none}
 body.tm-on .tm-rail{transform:none;box-shadow:-10px 0 30px rgba(0,0,0,.4)}
 .tm-rail:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
-.tm-arrow{flex:none;margin:6px auto;width:32px;height:24px;padding:0;border-radius:999px;font-size:10px;line-height:1;color:#c9cbe0;background:rgba(40,44,70,.7);border-color:#3a3f60}
-.tm-arrow:hover{background:#2e3354;border-color:#4a5180}
+.tm-arrow{flex:none;margin:6px auto;width:32px;height:24px;padding:0;border-radius:999px;font-size:10px;line-height:1;color:#ffd28a;background:rgba(58,44,16,.75);border-color:#5a4520}
+.tm-arrow:hover{background:#4a3814;border-color:#7a5c26}
 .tm-arrow:disabled{opacity:.3}
 .tm-track{position:relative;flex:1;min-height:0;margin:2px 0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;overscroll-behavior:contain;touch-action:pan-y}
 .tm-track::-webkit-scrollbar{display:none}
@@ -598,38 +607,39 @@ body.tm-on .tm-rail{transform:none;box-shadow:-10px 0 30px rgba(0,0,0,.4)}
 .tm-track.scroll{-webkit-mask-image:linear-gradient(transparent,#000 18px,#000 calc(100% - 18px),transparent);mask-image:linear-gradient(transparent,#000 18px,#000 calc(100% - 18px),transparent)}
 .tm-ticks{position:relative;cursor:pointer}
 /* 日ごとの帯（1日おきに少し明るく） */
-.tm-day{position:absolute;left:0;right:0;pointer-events:none;background:rgba(170,180,255,.045);border-top:1px solid rgba(170,180,255,.09)}
+.tm-day{position:absolute;left:0;right:0;pointer-events:none;background:rgba(255,206,130,.045);border-top:1px solid rgba(255,206,130,.09)}
 .tm-day.alt{background:transparent}
-.tm-tick{position:absolute;right:10px;width:min(calc(var(--len, 9px) * var(--m, 1)), 29px);height:1px;background:#7d84a8;opacity:calc(.62 + (var(--m, 1) - 1) * .3);pointer-events:none;border-radius:1px 0 0 1px;transition:width .09s ease-out}
-.tm-tick.long{height:2px;margin-top:-.5px;background:#d6d9ee}
+.tm-tick{position:absolute;right:10px;width:min(calc(var(--len, 9px) * var(--m, 1)), 29px);height:1px;background:#a8946a;opacity:calc(.62 + (var(--m, 1) - 1) * .3);pointer-events:none;border-radius:1px 0 0 1px;transition:width .09s ease-out}
+.tm-tick.long{height:2px;margin-top:-.5px;background:#f2e4c2}
 .tm-tick.now{background:#ff5a5a;height:2px;opacity:1}
-.tm-label{position:absolute;right:42px;transform:translateY(-50%);font:600 10.5px/1 var(--mono);color:#a9aecb;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.tm-label small{font:500 9.5px/1 system-ui,sans-serif;color:#7c82a3;margin-left:3px}
+.tm-label{position:absolute;right:42px;transform:translateY(-50%);font:600 10.5px/1 var(--mono);color:#d2bf93;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tm-label small{font:500 9.5px/1 system-ui,sans-serif;color:#9a8762;margin-left:3px}
 .tm-label.now{z-index:3;font:700 10.5px/1 system-ui,sans-serif;color:#fff;background:#d64545;padding:2px 6px 3px;border-radius:999px;letter-spacing:.04em}
 /* 見ているコミット：琥珀の線と、画面の側を指す小さな三角 */
 .tm-cur{position:absolute;right:3px;width:40px;height:3px;margin-top:-1.5px;border-radius:2px;background:var(--amber);box-shadow:0 0 10px rgba(255,179,0,.75);pointer-events:none;transition:top .14s cubic-bezier(.2,.8,.2,1)}
 .tm-cur::before{content:"";position:absolute;left:-7px;top:50%;margin-top:-5px;border:5px solid transparent;border-right:6px solid var(--amber);border-left:0}
 .tm-hov{position:absolute;right:5px;width:30px;height:1px;background:#fff;pointer-events:none;box-shadow:0 0 6px rgba(255,255,255,.6)}
 .tm-tip{position:absolute;right:calc(100% + 10px);transform:translateY(-50%);display:flex;flex-direction:column;gap:2px;max-width:min(360px,60vw);
-  padding:6px 11px;border-radius:9px;background:rgba(16,18,34,.93);border:1px solid #3a3f62;box-shadow:0 8px 26px rgba(0,0,0,.5);pointer-events:none;white-space:nowrap;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+  padding:6px 11px;border-radius:9px;background:rgba(30,23,10,.94);border:1px solid #5a4520;box-shadow:0 8px 26px rgba(0,0,0,.5);pointer-events:none;white-space:nowrap;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 .tm-tip b{font-size:12.5px;font-variant-numeric:tabular-nums}
-.tm-tip span{font-size:11.5px;color:#a0a5c0;overflow:hidden;text-overflow:ellipsis}
+.tm-tip span{font-size:11.5px;color:#bba984;overflow:hidden;text-overflow:ellipsis}
 /* 指でなぞっている間の日付。後ろをぼかし、右（目盛りの側）から左へ薄くする */
 .tm-scrub{position:fixed;top:0;bottom:0;right:var(--tm-w);width:min(80vw,440px);z-index:39;pointer-events:none;opacity:0;transition:opacity .2s ease}
 .tm-scrub.on{opacity:1}
 .tm-scrub::before{content:"";position:absolute;inset:0;backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);
-  background:linear-gradient(to left,rgba(10,12,30,.8),rgba(10,12,30,.35) 60%,rgba(10,12,30,0));
+  background:linear-gradient(to left,rgba(26,19,6,.82),rgba(26,19,6,.55) 30%,rgba(26,19,6,.3) 60%,rgba(26,19,6,.1) 85%,rgba(26,19,6,0));
   -webkit-mask-image:linear-gradient(to left,#000 30%,transparent);mask-image:linear-gradient(to left,#000 30%,transparent)}
 .tm-scrub-text{position:absolute;right:14px;max-width:calc(100% - 28px);text-align:right;text-shadow:0 1px 6px rgba(0,0,0,.8)}
 #tmScrubDate{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
-#tmScrubSub{font-size:13px;color:#c8cae0;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tmScrubSub{font-size:13px;color:#d8c9a6;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* メニューバー：タイムマシンの間は、編集の操作の代わりに、見ている時点・前後・復元・終了を出す */
-body.tm-on .topbar{background:linear-gradient(#141733,var(--bg));border-bottom-color:#33395e}
+/* 上から下へ、金色から地の色へゆっくり変える（止める所を細かく置いて、段差が見えないように） */
+body.tm-on .topbar{background:linear-gradient(180deg,#2b2009 0%,#281e0a 12%,#251c0b 24%,#21190c 36%,#1d170d 48%,#19150e 60%,#16130f 72%,#131210 84%,var(--bg) 100%);border-bottom-color:#5a4520}
 body.tm-on .tb-edit{display:none}
 .tm-bar{align-items:center;gap:10px;min-width:0;flex:1 1 auto;flex-wrap:nowrap}
 /* PC ではいつも1段使う（日時の長さで、折り返したり折り返さなかったりしてボタンの位置が変わらないように） */
 @media (min-width: 981px){ .tm-bar{flex-basis:100%;order:10;padding:2px 0} }
-.tm-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:#c9cdf5;white-space:nowrap}
+.tm-title{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:#ffd28a;white-space:nowrap}
 .tm-glyph{width:16px;height:16px;background:currentColor;-webkit-mask:var(--ico) center/contain no-repeat;mask:var(--ico) center/contain no-repeat;
   --ico:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12a8 8 0 1 0 2.4-5.7L4 8.7'/%3E%3Cpath d='M4 4v4.7h4.7M12 8v4.5l3 2'/%3E%3C/svg%3E")}
 .tm-at{display:flex;flex-direction:column;min-width:0;line-height:1.25}
@@ -644,7 +654,7 @@ body.tm-on .tb-edit{display:none}
 /* 見ている時点で変わったコメント */
 .row.tm-new{box-shadow:inset 3px 0 0 #ffc233;background:rgba(255,194,51,.09)}
 .row.tm-new.current{background:#3a3218}
-#tmBtn.on{color:#c9cdf5;border-color:#4a5180;background:#1c2040}
+#tmBtn.on{color:#ffd28a;border-color:#7a5420;background:#2a2110}
 /* 過去を見ている間は書き込む場所を隠す（再生・タイムライン・リスト・書き出しはそのまま） */
 body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row .del,body.tm-on .tl-edit{display:none}
 @media (max-width: 980px){
