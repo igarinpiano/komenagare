@@ -3908,7 +3908,7 @@ new ResizeObserver(() => { if (vim.E && !$('#paneVim').hidden) vimScheduleRender
    - ホスト側で他の人の変更と重なった分は反映されないので、ホストの内容に合わせて知らせる
    ===================================================================== */
 // ホストとのやりとりの取り決めの版数（変えたら web.json と cli/src/server.rs の PROTOCOL も合わせる）
-const COLLAB_PROTOCOL = 9;
+const COLLAB_PROTOCOL = 10;
 const collab = {
   ws: null, connected: false, retry: 0, timer: 0, peers: [], outbox: [], db: null, saveTimer: 0, failed: 0,
   // ホストから最後に受け取った変更の通し番号と、ホストの起動ごとの id（つなぎ直したとき、それ以降の変更だけを受け取るため）
@@ -5463,6 +5463,8 @@ function cleanPresence(s){
       : c.a === 'tl' && finiteOr(c.t) != null ? { a: 'tl', t: c.t, y: cleanLane(c.y) } : null,
     // 動画の長さだけを取り出す（古い版が送ってくるファイル名は使わない）
     video: vd && typeof vd === 'object' && finiteOr(vd.d, 0) > 0 ? { d: vd.d } : null,
+    // いましていることの短い説明（自動の参加者が付ける。komenagare mcp）
+    note: typeof s.note === 'string' ? clip(s.note.trim(), 60) : '',
   };
 }
 // 「ここ見て」（{ t: 秒, sel: [コメントの id] }。形が違えば null）
@@ -5611,6 +5613,8 @@ const PRESENCE_MS = 100; // 送る間隔の最短
 const PEER_HUES = [140, 205, 25, 290, 50, 330, 175, 0, 245, 90];
 const peerColor = (p, a = 1) => `hsla(${PEER_HUES[(p.color ?? hashStr(String(p.client))) % PEER_HUES.length]}, 85%, 62%, ${a})`;
 const peerOf = (id) => collab.peerList.find(p => p.id === id);
+// カーソルに添える名前（一時停止中の自動の参加者には ‖ を付ける）
+const peerLabel = (p, n = 40) => (p.agent && p.held ? '‖ ' : '') + clip(p.name, n);
 // ほかの人の今の再生位置（再生中なら、届いてからの時間だけ進める）
 function peerTime(pr){
   const s = pr.state;
@@ -5742,7 +5746,7 @@ function stageCursors(){
     const el = els[i];
     el.style.transform = `translate(${(canvas.offsetLeft + cur.x * canvas.offsetWidth).toFixed(1)}px,${(canvas.offsetTop + cur.y * canvas.offsetHeight).toFixed(1)}px)`;
     el.style.setProperty('--peer', peerColor(p));
-    el.lastChild.textContent = p.name;
+    el.lastChild.textContent = peerLabel(p);
   });
 }
 function listMarkPeers(){
@@ -5823,17 +5827,21 @@ function tlDrawOverviewPeers(g, H){
 function tlDrawCursor(g, x, y, p){
   g.fillStyle = peerColor(p); g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 1;
   g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 14); g.lineTo(x + 4, y + 10); g.lineTo(x + 10, y + 10); g.closePath(); g.fill(); g.stroke();
-  const label = clip(p.name, 12), w = g.measureText(label).width + 8;
+  const label = peerLabel(p, 12), w = g.measureText(label).width + 8;
   g.fillStyle = peerColor(p, 0.9); rr(g, x + 8, y + 12, w, 14, 3); g.fill();
   g.fillStyle = '#111'; g.fillText(label, x + 12, y + 19.5);
 }
 
 /* ---------- 参加者の一覧と追いかける ---------- */
-function presenceText(s, t = s.t){
-  if (typeof t !== 'number') return '—';
-  const parts = [(s.playing ? T('再生中 ') : T('停止中 ')) + fmt(t)];
+// p は参加者（自動の参加者なら、止めた人と、いましていることも出す）
+function presenceText(s, t = s.t, p = null){
+  const held = p && p.agent && p.held ? T`一時停止中（${clip(p.held, 20)}さんが止めました）` : '';
+  if (typeof t !== 'number') return held || '—';
+  const parts = [(s.playing ? T('再生中 ') : p && p.agent ? '' : T('停止中 ')) + fmt(t)];
+  if (held) parts.unshift(held);
+  else if (s.note) parts.push(s.note);
   if (s.sel && s.sel.length) parts.push(T`${s.sel.length} 件選択中`);
-  if (!s.video) parts.push(T('動画を開いていません'));
+  if (!s.video){ if (!(p && p.agent)) parts.push(T('動画を開いていません')); }
   else if (videoDiffers(s.video)) parts.push(T`⚠ 動画の長さが違います（${fmtPrecise(s.video.d)}）`);
   return parts.join(T('　'));
 }
@@ -5846,8 +5854,17 @@ function peersRender(){
     const row = mkEl('div', 'peer-row' + (on ? ' on' : ''));
     row.style.setProperty('--peer', peerColor(p));
     const info = mkEl('div', 'peer-info'), st = mkEl('div', 'peer-state');
-    info.append(mkEl('div', 'peer-name', p.name + (me ? T('（あなた）') : collab.myClient && p.client === collab.myClient ? T('（あなた・別のタブ）') : '')), st);
+    const nm = mkEl('div', 'peer-name', p.name + (me ? T('（あなた）') : collab.myClient && p.client === collab.myClient ? T('（あなた・別のタブ）') : ''));
+    // 自動の参加者（AI など。komenagare mcp）には印を付け、だれでも一時停止・再開できる（ホストが、止めている間の変更を断る）
+    if (p.agent) nm.append(mkEl('span', 'peer-tag', 'AI'));
+    info.append(nm, st);
     row.append(mkEl('span', 'peer-dot'), info);
+    if (p.agent && !me){
+      const h = mkEl('button', p.held ? 'primary' : null, p.held ? T('再開') : T('一時停止'));
+      h.title = p.held ? T('この参加者の書き込みを再開します') : T('この参加者の書き込みを止めます（再開するまで、コメントを変えられなくなります）');
+      h.onclick = () => { if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hold', id: p.id, on: !p.held })); };
+      row.append(h);
+    }
     if (!me){
       const b = mkEl('button', on ? 'primary' : null, on ? T('追いかけるのをやめる') : T('追いかける'));
       b.onclick = () => { if (on) collabUnfollow(); else { collabFollow(p.id); $('#peersDlg').close(); } };
@@ -5864,7 +5881,7 @@ function peersUpdate(){
   presence.dlgAt = performance.now();
   for (const [id, el] of presence.dlgRows){
     const pr = collab.presence.get(id);
-    el.textContent = id === collab.me ? presenceText(presenceState()) : pr ? presenceText(pr.state, peerTime(pr)) : '—';
+    el.textContent = id === collab.me ? presenceText(presenceState()) : pr ? presenceText(pr.state, peerTime(pr), peerOf(id)) : presenceText({}, null, peerOf(id));
   }
 }
 function peersOpen(){ peersRender(); if (!$('#peersDlg').open) $('#peersDlg').showModal(); }

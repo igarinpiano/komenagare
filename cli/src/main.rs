@@ -12,6 +12,7 @@ mod awake;
 mod collection;
 mod files;
 mod firewall;
+mod mcp;
 mod output;
 mod remote;
 mod render;
@@ -190,6 +191,38 @@ enum Cmd {
         /// Web アプリの取得元
         #[arg(long, value_name = "URL", env = "KOMENAGARE_WEB_URL", default_value = web::DEFAULT_URL)]
         web_url: String,
+    },
+    /// AI などの自動の参加者を、動いているホストに参加者としてつなぐ（MCP サーバー）。
+    /// AI のアプリ（Claude Code など）に「komenagare mcp <URL> --name 名前」を MCP サーバーとして登録すると、
+    /// AI がコメントを読み書きし、カーソルや選択がほかの人の画面に出る。
+    /// --manual / --script なら、AI と同じ道具を手で（台本で）呼べる
+    Mcp {
+        /// ホストの URL（起動時に出る「開く:」の URL。合言葉 k= とプロジェクト p= も読む）
+        url: String,
+        /// 画面に出す名前（--otp のホストでは、ワンタイムパスワードの名前になる）
+        #[arg(long, default_value = "AI")]
+        name: String,
+        /// ワンタイムパスワード（--otp のホストに初めてつなぐとき。ログインは控えるので、次からは要らない）
+        #[arg(long, value_name = "CODE", env = "KOMENAGARE_MCP_CODE")]
+        code: Option<String>,
+        /// プロジェクトの名前か id（ホストに複数あるとき）
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
+        /// 動画ファイル（コマや範囲を AI に渡す。ffmpeg が必要）
+        #[arg(long, value_name = "FILE")]
+        video: Option<PathBuf>,
+        /// 切り出した動画・画像の置き場所（省略すると一時フォルダ）
+        #[arg(long, value_name = "DIR")]
+        media_dir: Option<PathBuf>,
+        /// カーソルを動かして見せる間を空けずに、すぐ書き込む
+        #[arg(long)]
+        instant: bool,
+        /// MCP ではなく、標準入力から1行ずつ道具を呼ぶ（help で使い方）
+        #[arg(long, conflicts_with = "script")]
+        manual: bool,
+        /// 台本（--manual と同じ行を並べたファイル）を順に実行して終わる
+        #[arg(long, value_name = "FILE")]
+        script: Option<PathBuf>,
     },
     /// コメントを動画に焼き込む（ffmpeg が必要）。--ass なら字幕ファイル（ASS）だけを書き出す
     Render {
@@ -505,6 +538,34 @@ async fn run(args: Args) -> Result<()> {
             web::Outcome::Incompatible(p) => bail!("{}", incompatible_message(p)),
         }
         return Ok(());
+    }
+    if let Some(Cmd::Mcp {
+        url,
+        name,
+        code,
+        project,
+        video,
+        media_dir,
+        instant,
+        manual,
+        script,
+    }) = &args.cmd
+    {
+        let agent = mcp::Agent::connect(mcp::Connect {
+            url: url.clone(),
+            name: name.clone(),
+            code: code.clone(),
+            project: project.clone(),
+            video: video.clone(),
+            media_dir: media_dir.clone(),
+            instant: *instant,
+        })
+        .await?;
+        return if *manual || script.is_some() {
+            mcp::manual(agent, script.as_deref(), media_dir.as_deref()).await
+        } else {
+            mcp::serve(agent).await
+        };
     }
     if let Some(Cmd::Otp { cmd, auth_dir }) = &args.cmd {
         return run_otp(cmd, auth_dir.as_deref());

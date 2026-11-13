@@ -82,6 +82,7 @@ var HELP_EN = `
 <p class="muted" style="margin:6px 0 0">📣 (Look here) on the playback bar tells the others the current position and selected comments; they can jump there with “View”. 🔗 copies a link to the current position (or to the selected comment). Anyone who opens it jumps there (or when they open the video, if it isn’t open yet).</p>
 <p class="muted" style="margin:6px 0 0">Everyone opens their own copy of the video, so you’re told when someone’s video has a different length (a different video would put comments at the wrong moments). It also shows in the participant list.</p>
 <p class="muted" style="margin:6px 0 0">If the host was started with <code>--remote</code> and you’re allowed, “Terminal” at the top right runs commands (<code>git status</code>, <code>git push</code>, …) in the host’s project folder. Commands that ask for input don’t work. Commands are logged on the host.</p>
+<p class="muted" style="margin:6px 0 0">An AI connected with <code>komenagare mcp</code> appears in the list as a participant marked “AI”. Press “Pause” to stop it from changing comments until someone resumes it (anyone can). Other people’s movement is glided between the positions received; turn this off under Collaboration in Settings.</p>
 <p class="muted" style="margin:6px 0 0">The same people can use “Time Machine” to look back through earlier comments kept in git. Move the pointer or a finger near the scale on the right (older at top, now at the bottom; days are separated by faint bands, and longer ticks mean more changes in that commit) and nearby ticks magnify and show the date; press to see the comments from that time (on phones, slide and release). With many ticks the scale scrolls: the wheel on a computer, a quick swipe on a phone (press and hold briefly, then slide to choose). Comments added or changed in that commit are outlined (step through them with “n changes” in the menu bar), and recently changed ones are brighter on the timeline. Playback, the timeline and export keep working while you look, but editing doesn’t. “Restore this point…” records a new commit that changes the current comments back to that point (history isn’t erased).</p>
 
 <h4>File formats</h4>
@@ -161,6 +162,9 @@ var I18N = (function (){
     '自動スクロール': 'Auto-scroll', 'コメント・コマンドで絞り込み': 'Filter by text or command', '時間': 'Time', 'コメント': 'Comment', '設定': 'Settings',
     '該当するコメントはありません': 'No matching comments',
     'コメントはまだありません。\n動画を再生しながら下の入力欄から書き込めます。': 'No comments yet.\nPlay the video and write in the input below.',
+    '再開': 'Resume', '一時停止': 'Pause', 'この参加者の書き込みを再開します': 'Let this participant write again',
+    'この参加者の書き込みを止めます（再開するまで、コメントを変えられなくなります）': 'Stop this participant from writing (it can’t change comments until resumed)',
+    '一時停止中（{0}さんが止めました）': 'Paused by {0}',
     '共同編集': 'Collaboration', '言語': 'Language', '設定の項目': 'Settings sections', 'コメントリストの設定': 'Comment list settings',
     'ほかの人の動きをなめらかにつなぐ': 'Smooth other people’s movement',
     'ほかの人（や AI）のカーソルと再生位置を、届いた位置の間をつないで動かします。オフにすると、届いた位置にすぐ移ります': 'Glides other people’s (and AI agents’) cursors and playheads between the positions received. Turn off to jump straight to each position',

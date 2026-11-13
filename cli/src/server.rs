@@ -25,8 +25,8 @@
 //!   POST /api/admin/revoke {"id"}        セッションかワンタイムパスワードを取り消す（つながっていれば切る）
 //!
 //! WebSocket: クライアント → サーバー（hello を最初に送る。それまでほかは受け付けない）
-//!   {"type":"hello","protocol":9,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき),
-//!    "since":N,"epoch":"…"(つなぎ直しのとき)}
+//!   {"type":"hello","protocol":10,"name":"表示名","client_key":"ブラウザごとの秘密（16進 64 文字）","session":"…"(--otp のとき),
+//!    "since":N,"epoch":"…"(つなぎ直しのとき),"agent":true(AI などの自動の参加者。komenagare mcp)}
 //!     ブラウザごとの id（client）はホストが client_key のハッシュから作る。秘密は配らないので、他人の id は名乗れない
 //!     since・epoch は、前の接続で最後に受け取った通し番号と、そのときのホストの起動ごとの id。同じ起動のホストで、
 //!     そこからの変更が最近の記録に全部残っていれば、snapshot に全体ではなくそれ以降の変更だけを入れて返す
@@ -34,6 +34,7 @@
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
 //!   {"type":"call","state":{"t":秒,"sel":[...]}}             「ここ見て」（ほかの人に一度だけ配る。覚えない）
+//!   {"type":"hold","id":接続id,"on":bool}                    自動の参加者（agent）を一時停止する・再開する（だれでも。止めている間、その参加者の変更は受け付けない）
 //!   {"type":"ping"}                                          生きているかの確認（pong が返る）。何も届かない接続は切る
 //!   {"type":"conflict_add","conflicts":[{"key":..,...}]}     「あとで」にした衝突を全員に見せる
 //!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
@@ -55,7 +56,9 @@
 //!   {"type":"change","rev":N,"time":ms,"author":"名前","change":{...}} 他の人の変更（適用できた op だけ）
 //!   {"type":"history","entries":[{"rev","time","author","change"},...]} 最近の変更（新しい順）
 //!   {"type":"ack","id":"変更セットid","rev":N,"dup":bool,"conflicts":[...],"fix":[{"id":..,"comment":..|null}]}
-//!   {"type":"peers","names":[...],"peers":[{"id","name","client","color"}]} 参加者（color は色の番号。今いる人の中で空いている一番小さい番号）
+//!   {"type":"peers","names":[...],"peers":[{"id","name","client","color","agent":bool,"held":"止めた人の名前"|null}]}
+//!                                                            参加者（color は色の番号。今いる人の中で空いている一番小さい番号。agent は自動の参加者、held は一時停止中）
+//!   {"type":"held","id":"変更セットid","by":"止めた人の名前"}   一時停止中なので、この変更は受け付けなかった（再開されたら送り直す）
 //!   {"type":"run_out","id":"…","data":"出力","err":bool}       コマンドの出力（err は標準エラー出力）
 //!   {"type":"run_end","id":"…","code":N|null,"message":"…"|null} コマンドが終わった（message は止めた理由・断った理由）
 //!   {"type":"tm_log","commits":[{"id","time"(ミリ秒),"author","subject","changes":[変更セットの id]},...]} コミットの一覧（新しい順）
@@ -89,7 +92,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
 
 /// やりとりの取り決めの版数（変えたら web.json と js/app.js の COLLAB_PROTOCOL も合わせる）
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 10;
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = ".."]
@@ -263,18 +266,24 @@ struct Inner {
     history: VecDeque<LogEntry>,
     /// 「あとで」にした衝突（全員に見せる）
     conflicts: Vec<Value>,
+    /// 一時停止している自動の参加者（client → 止めた人の名前）。つなぎ直しても止めたまま
+    held: HashMap<String, String>,
 }
 
 struct Peer {
     name: String,
     client: String,
     color: u32,
+    /// 自動の参加者（AI など。hello の agent）。ほかの人が一時停止できる
+    agent: bool,
     /// 最後に届いた状態（後から入った人に渡す）
     presence: Option<Value>,
 }
 
 /// 保留中の衝突として覚えておく件数の上限
 const CONFLICTS_KEEP: usize = 500;
+/// 一時停止の控えの上限（つないでいない参加者の分も残るので、際限なく増やさない）
+const HELD_KEEP: usize = 200;
 /// presence 1件の大きさの上限（バイト）
 const PRESENCE_MAX: usize = 16 * 1024;
 /// これだけ何も届かない接続は切る（ブラウザは 20 秒ごとに ping を送る。裏のタブは 1 分に 1 回ほどに
@@ -593,6 +602,7 @@ impl Hub {
                 peers: HashMap::new(),
                 history,
                 conflicts,
+                held: HashMap::new(),
             }),
             tx,
             writer,
@@ -1517,6 +1527,7 @@ async fn connection(
     let mut name = String::from("名無し");
     let mut email = String::from("anonymous@komenagare");
     let mut client = String::new();
+    let mut agent = false;
     let mut joined = false;
     let mut session: Option<String> = None;
     // リモートのコマンドを打てるか（hello で決める）と、動いているもの
@@ -1616,6 +1627,7 @@ async fn connection(
                 // ほかの人に配るのは作った id だけなので、他人の id を名乗ることはできない
                 client = client_id(v["client_key"].as_str());
                 email = format!("{client}@komenagare");
+                agent = v["agent"].as_bool() == Some(true);
                 joined = true;
                 drop(waiting_login.take());
                 let mut inner = hub.inner.lock().await;
@@ -1633,6 +1645,7 @@ async fn connection(
                         name: name.clone(),
                         client: client.clone(),
                         color,
+                        agent,
                         presence,
                     },
                 );
@@ -1677,6 +1690,27 @@ async fn connection(
                 p.presence = Some(state.clone());
                 let msg = json!({ "type": "presence", "id": conn, "state": state }).to_string();
                 let _ = hub.tx.send((conn, msg.into()));
+            }
+            Some("hold") => {
+                // 自動の参加者だけを止められる（人の編集は止めない）
+                let mut inner = hub.inner.lock().await;
+                let target = v["id"]
+                    .as_u64()
+                    .and_then(|id| inner.peers.get(&id))
+                    .filter(|p| p.agent)
+                    .map(|p| p.client.clone());
+                let Some(target) = target else {
+                    continue;
+                };
+                let changed = if v["on"].as_bool() == Some(true) {
+                    inner.held.len() < HELD_KEEP
+                        && inner.held.insert(target, name.clone()).is_none()
+                } else {
+                    inner.held.remove(&target).is_some()
+                };
+                if changed {
+                    broadcast_peers(&hub, &inner);
+                }
             }
             Some("ping") => {
                 let _ = out_tx.send(r#"{"type":"pong"}"#.to_string());
@@ -1825,6 +1859,14 @@ async fn connection(
                             .to_string(),
                     );
                     continue;
+                }
+                // 一時停止中の自動の参加者の変更は受け付けない（再開されたら送り直してくる）
+                if agent {
+                    if let Some(by) = hub.inner.lock().await.held.get(&client) {
+                        let _ = out_tx
+                            .send(json!({ "type": "held", "id": change.id, "by": by }).to_string());
+                        continue;
+                    }
                 }
                 let reply = apply_change(&hub, conn, &name, &email, change).await;
                 let _ = out_tx.send(reply);
@@ -1988,7 +2030,10 @@ fn broadcast_peers(hub: &Hub, inner: &Inner) {
     let mut peers: Vec<Value> = inner
         .peers
         .iter()
-        .map(|(id, p)| json!({ "id": id, "name": p.name, "client": p.client, "color": p.color }))
+        .map(|(id, p)| {
+            let held = p.agent.then(|| inner.held.get(&p.client)).flatten();
+            json!({ "id": id, "name": p.name, "client": p.client, "color": p.color, "agent": p.agent, "held": held })
+        })
         .collect();
     peers.sort_by_key(|p| p["id"].as_u64());
     let _ = hub.tx.send((
@@ -2247,6 +2292,7 @@ mod tests {
             // 記録に残っているのは 6〜10（それより古いものは押し出された）
             history: (6..=10).map(entry).collect(),
             conflicts: vec![],
+            held: HashMap::new(),
         };
         let revs =
             |v: Option<Vec<&LogEntry>>| v.map(|v| v.iter().map(|e| e.rev).collect::<Vec<_>>());
