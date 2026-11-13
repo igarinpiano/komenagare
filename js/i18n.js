@@ -88,7 +88,7 @@ var HELP_EN = `
 <p class="muted" style="margin:0">JSON: an array of <code>{"t": seconds, "cmd": "command", "text": "text", "id": "UUID"}</code> (under the <code>comments</code> key). CSV: four columns <code>time,command,text,id</code>. To keep spreadsheets from running cells as formulas, cells starting with <code>= + - @</code> and similar get a leading <code>'</code> (Komenagare removes it when reading). <code>id</code> identifies each comment; if omitted, a new one is assigned on load. Niconico comment XML (<code>&lt;chat vpos mail&gt;</code>) and comment JSON can be read too.</p>
 
 <h4>Language</h4>
-<p class="muted" style="margin:0">Add <code>?lang=en</code> to the URL for English or <code>?lang=ja</code> for Japanese, or change it under Settings in the comment list. The choice is remembered in this browser. Messages from the host (the komenagare command) stay in Japanese.</p>
+<p class="muted" style="margin:0">Add <code>?lang=en</code> to the URL for English or <code>?lang=ja</code> for Japanese, or change it under Settings in the menu bar. The choice is remembered in this browser. Messages from the host (the komenagare command) stay in Japanese.</p>
 
 <h4>License</h4>
 <p class="muted" style="margin:0">Komenagare © 2026 Igarin. Published under the <a href="https://github.com/igarinpiano/komenagare" target="_blank" rel="noopener">Apache License 2.0</a> (distribute LICENSE and NOTICE with the code). Video conversion uses <a href="https://github.com/Vanilagy/mediabunny" target="_blank" rel="noopener">Mediabunny</a> (MPL-2.0).</p>
@@ -161,6 +161,9 @@ var I18N = (function (){
     '自動スクロール': 'Auto-scroll', 'コメント・コマンドで絞り込み': 'Filter by text or command', '時間': 'Time', 'コメント': 'Comment', '設定': 'Settings',
     '該当するコメントはありません': 'No matching comments',
     'コメントはまだありません。\n動画を再生しながら下の入力欄から書き込めます。': 'No comments yet.\nPlay the video and write in the input below.',
+    '共同編集': 'Collaboration', '言語': 'Language', '設定の項目': 'Settings sections', 'コメントリストの設定': 'Comment list settings',
+    'ほかの人の動きをなめらかにつなぐ': 'Smooth other people’s movement',
+    'ほかの人（や AI）のカーソルと再生位置を、届いた位置の間をつないで動かします。オフにすると、届いた位置にすぐ移ります': 'Glides other people’s (and AI agents’) cursors and playheads between the positions received. Turn off to jump straight to each position',
     'コメントの不透明度': 'Comment opacity', 'コメント入力中は一時停止': 'Pause while typing a comment', '自分のコメントを枠で囲む': 'Outline my comments',
     '投稿・削除時に自動保存': 'Save automatically after posting or deleting',
     'コメントが多いときもリストを軽く保ちます（見えている行だけを作ります。オフにすると全部の行を作ります）。どちらも長い本文は折り返して 10 行まで出し、それを超える分はマウスを重ねると出ます': 'Keeps the list fast with many comments (only visible rows are built; turn off to build every row). Long text wraps up to 10 lines either way; hover to see the rest',

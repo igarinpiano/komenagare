@@ -135,7 +135,7 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .peer-marks{position:absolute;left:0;right:0;top:0;bottom:0;pointer-events:none}
 .peer-mark{position:absolute;top:8px;width:3px;height:13px;margin-left:-1.5px;border-radius:2px;opacity:.85;box-shadow:0 0 0 1px rgba(0,0,0,.45)}
 .peer-cursors{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-.peer-cursor{position:absolute;color:var(--peer);pointer-events:none;transition:left .1s linear,top .1s linear}
+.peer-cursor{position:absolute;left:0;top:0;color:var(--peer);pointer-events:none;will-change:transform}
 .peer-cursor svg{display:block}
 .peer-cursor span{position:absolute;left:10px;top:15px;background:var(--peer);color:#111;font-size:10px;font-weight:600;line-height:14px;padding:0 4px;border-radius:3px;white-space:nowrap;opacity:.9}
 .follow-bar{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:3;display:flex;gap:8px;align-items:center;padding:3px 4px 3px 10px;border-radius:999px;background:rgba(0,0,0,.75);border:1px solid var(--peer);font-size:12px;color:#fff;white-space:nowrap;max-width:calc(100% - 16px)}
@@ -281,8 +281,6 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .preset kbd{font:10px var(--mono);color:#999;background:#121417;border:1px solid var(--line2);border-radius:3px;padding:0 3px}
 .preset-tool{flex:none;padding:3px 10px;font-size:12.5px;border-radius:999px}
 .presets .hint{flex:0 1 auto;min-width:0;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tlset-grid{grid-template-columns:150px 1fr}
-.tlset-grid label{line-height:1.3}
 .pr-list{display:flex;flex-direction:column;gap:6px}
 .pr-row{display:grid;grid-template-columns:1fr 140px 92px auto auto auto;gap:6px;align-items:center}
 /* キーの割り当て（押してからキーを押す） */
@@ -311,7 +309,10 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 /* ---------- side panel ---------- */
 .side{min-height:0;min-width:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .side-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 6px}
-.side-title{font-weight:700}
+.side-title{font-weight:700;margin-right:auto}
+.side-gear{background:none;border-color:transparent;color:var(--muted);padding:3px 5px;margin-left:6px}
+.side-gear:hover{color:var(--text)}
+.side-gear svg.i{width:16px;height:16px}
 .side-title span{color:var(--muted);font-weight:400;margin-left:6px;font-size:12px;font-variant-numeric:tabular-nums}
 .chk{font-size:12px;color:#ccc;display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .chk input{accent-color:var(--accent)}
@@ -336,11 +337,6 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .list-spacer{width:1px}
 .list-empty{padding:30px 16px;text-align:center;color:#777;font-size:13px;line-height:1.7}
 /* パネルが低いとき（タイムラインを高くしたときなど）は、開いた設定の中をスクロールする */
-.settings{border-top:1px solid var(--line);padding:8px 12px 10px;font-size:13px;flex:0 1 auto;min-height:40px;overflow-y:auto;overscroll-behavior:contain}
-.settings summary{cursor:pointer;color:#ccc;font-weight:600;padding:2px 0}
-.set-grid{display:grid;grid-template-columns:1fr auto;gap:8px 10px;align-items:center;margin-top:8px}
-.set-grid label{color:#ccc}
-.set-grid input[type=range]{width:120px}
 .lb-row{display:inline-flex;gap:6px;align-items:center}
 .lb-row input[type=color]{width:34px;height:24px;padding:0 2px;border:1px solid #444;border-radius:4px;background:#222;cursor:pointer}
 .lb-row button{font-size:11.5px;padding:3px 7px}
@@ -363,6 +359,43 @@ dialog::backdrop{background:rgba(5,6,8,.62)}
 .dlg-head{padding:14px 18px 12px;border-bottom:1px solid var(--line);font-weight:700;font-size:15px}
 .dlg-body{padding:14px 18px;max-height:70vh;overflow:auto;line-height:1.65}
 .dlg-foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;background:#14161a;border-radius:0 0 14px 14px}
+/* 設定：左に項目の見出し（タイムラインの段の見出しと同じ並び。今いる項目に再生位置の色の線）、右に中身を1本のスクロールで並べる */
+dialog.set-dlg{width:min(740px,96vw)}
+dialog.set-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--vv-h, 100dvh) - 24px)}
+.set-head{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 8px 18px}
+.set-wrap{display:grid;grid-template-columns:172px minmax(0,1fr);flex:1 1 auto;min-height:0;height:540px}
+.set-nav{position:relative;display:flex;flex-direction:column;gap:1px;padding:10px 0;background:#121417;border-right:1px solid var(--line);border-radius:0 0 0 14px;overflow-y:auto}
+.set-nav button{position:relative;text-align:left;background:none;border:none;border-radius:0;padding:8px 14px 8px 18px;color:var(--muted)}
+.set-nav button:hover{background:var(--panel2);color:var(--text)}
+.set-nav button.on{color:var(--text);background:var(--panel)}
+.set-nav button.on::before{content:"";position:absolute;left:0;top:5px;bottom:5px;width:2px;background:var(--amber);border-radius:1px}
+.set-body{position:relative;overflow-y:auto;overscroll-behavior:contain;padding:4px 20px 300px;scroll-behavior:smooth;line-height:1.5}
+.set-sec{padding:14px 0 10px}
+.set-sec + .set-sec{border-top:1px solid var(--line)}
+.set-sec h3{margin:0 0 4px;font-size:15px;font-weight:700}
+.set-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 16px;padding:9px 0}
+.set-row > label{flex:1 1 230px;min-width:0;cursor:pointer}
+.set-row > label small{display:block;margin-top:2px;font-size:12px;line-height:1.5;color:var(--muted)}
+.set-row > select{flex:0 1 auto;max-width:100%}
+.set-row input[type=range]{width:150px}
+.set-note{margin:6px 0 4px;font-size:12px;line-height:1.6;color:var(--muted)}
+.set-note:empty{display:none}
+/* オン・オフはスイッチで出す */
+.set-row input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:none;position:relative;width:38px;height:22px;margin:0;border-radius:11px;background:var(--panel3);border:1px solid var(--line2);cursor:pointer;transition:background-color .15s,border-color .15s}
+.set-row input[type=checkbox]::after{content:"";position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:transform .15s,background-color .15s}
+.set-row input[type=checkbox]:checked{background:var(--amber);border-color:var(--amber)}
+.set-row input[type=checkbox]:checked::after{transform:translateX(16px);background:var(--amber-ink)}
+.set-row input[type=checkbox]:focus-visible,.set-nav button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width: 640px){
+  .set-wrap{display:flex;flex-direction:column;height:auto}
+  .set-nav{flex:none;flex-direction:row;gap:4px;padding:8px 10px;border-right:none;border-bottom:1px solid var(--line);border-radius:0;overflow-x:auto;scrollbar-width:none}
+  .set-nav::-webkit-scrollbar{display:none}
+  .set-nav button{flex:none;padding:5px 11px;border-radius:999px}
+  .set-nav button.on{background:var(--accent-bg);color:var(--accent-ink)}
+  .set-nav button.on::before{display:none}
+  .set-body{flex:1 1 auto;min-height:0;padding:0 14px 240px}
+}
+@media (prefers-reduced-motion: reduce){ .set-body{scroll-behavior:auto} }
 .form-grid{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center}
 .form-grid .inline{display:flex;gap:8px;align-items:center}
 .form-grid input[type=text]{width:90px}
