@@ -28,6 +28,7 @@
   - `server.rs` — 配信（`index.html` に `<meta name="komenagare-host">` を差し込む）、HTTP の API、WebSocket の取り決め（ファイル冒頭に記載）。1つのホストで複数のプロジェクト（作業フォルダ）を共有する（`/ws?p=<作業フォルダの id>`）
   - `remote.rs` — `--remote`（許された参加者が画面の「ターミナル」からホストの作業フォルダでコマンドを打つ。`git` は決まったサブコマンドだけで、ほかのプログラムを動かせるオプションや作業フォルダの外を読み書きするオプションは断る。`shell` は何でも。`--otp` のときだけ）
   - `auth.rs` — 参加者ごとのワンタイムパスワード（`--otp`、`komenagare otp`）。1件1ファイルで置き、動いているホストと `komenagare otp` が同時に書いても壊れないようにする
+  - `mcp.rs` — `komenagare mcp`。AI などの自動の参加者を、ブラウザと同じ取り決めでホストにつなぐ（hello に `agent: true`）。道具は `Agent::call` の1か所で、MCP（標準入出力の JSON-RPC。標準出力にはそれ以外を書かない）と手動（`--manual`・`--script`）の両方から呼ぶ（道具を足したら `tools()`・`parse_manual`・README も）。動きは「カーソルを動かす → 変更を送る → 選ぶ」を間を空けて見せる（`act`）。動画は ffmpeg でコマ（`get_frames`）と範囲（`get_clip`）を切り出す。ログインと client_key は設定の置き場所の `agents/` に控える
   - `render.rs` — `komenagare render`。`js/app.js` の `relayout` と同じ規則で配置して ASS 字幕にし、ffmpeg（libass）で焼き込む（`relayout` やコメントの定数を変えたらこちらも合わせる）
   - `files.rs` — コメントファイル（JSON / JSONL / CSV）の読み込み
   - `tunnel.rs` — `--tunnel`（cloudflared / tailscale / ngrok を子プロセスで起動し、出力から公開 URL を読む）と `--public-url`。公開 URL は共有・招待のリンクに使い、ページには `<meta>` の `data-public-url` で渡す。`--allowed-mail`（Cloudflare のみ・`--otp` と一緒）は cloudflared に渡してメールの PIN で入る人を絞り、ページには `data-email-gate` で知らせる（確認が切れたら再読み込みを案内する）
@@ -85,6 +86,7 @@
 - ブラウザは 20 秒ごとに `ping` を送り、`pong`（か何か）が返らなければつなぎ直す（`collabPing`）。ホストは 2 分間何も届かない接続を切る（`server.rs` の `IDLE_TIMEOUT`。裏のタブの timer は 1 分に 1 回ほどに間引かれるので、これより短くしない）。
 - ホストの `--remote` で許された人には、snapshot の `remote` が付き、「⌨ ターミナル」（`#termDlg`）から `run` / `run_stop` を送れる。出力は `run_out`、終わりは `run_end`（`term`）。
   許すかどうかはホストが決める（画面で隠すだけに頼らない）。`--remote-users` に名前で挙げた人のワンタイムパスワードは、自分も打てる人かホストの人（起動時の URL で入った人。セッションの `startup`）だけが画面から発行できる（`admin_otp_handler`）。git で使えるサブコマンドやオプションを増やすときは、ほかのプログラムを動かせないか・作業フォルダの外を読み書きできないかを確かめ、`remote.rs` のテストに足す。
+- 自動の参加者（hello の `agent`。`komenagare mcp`）は peers に `agent` が付き、管理者だけが `hold` で一時停止・再開できる（参加者の一覧のボタン。管理者かは snapshot の `admin`。`--otp` なら管理者のセッション、それ以外はこのパソコンから開いた人（`local_request`）。自動の参加者は管理者にしない。ホストが確かめる）。止めている間、ホストはその参加者の変更を断り（`held` を返す。`Inner.held` に client で覚えるので、つなぎ直しても止めたまま）、peers の `held` に止めた人の名前を出す。人の編集は止められない。presence の `note` は、いましていることの短い説明。
 - 変更履歴は、ひとりのときは `state.changeLog`（`recordChange`）、共同編集のときはホストの記録（`history` メッセージ）を出す。
 - タイムマシン（`tm`・`tmOpen`。`--remote` で許された人だけ。ホストも `can_run` で確かめる）は `tm_log` / `tm_show` / `tm_restore` で git の履歴（`workspace::snapshots` / `comments_at`）を読む。
   過去を見ている間は `tm.view`（そのときのコメントの CommentStore）を画面に出す（`state.comments` と `shown()`。画面に出すものを `store` から直接読まない）。`store` は今のまま、ほかの人の変更も当て続ける。
@@ -96,6 +98,8 @@
 - PC の画面の配置（`LAYOUTS`・`layoutApply`）: 標準・右にリスト・右にタイムラインの3つ。出すパネル（`settings.preview` / `side` / `timeline`）と合わせて、`.layout` の格子の列・行と各パネルの置き場所を決める。
   パネルの間のすき間（`#gutV` `#gutH` `#gutC`）で大きさを変え、配置ごとに覚える（標準は前からの `sideWidth`・`tlHeight`）。スマホは今まで通りタブで切り替える（格子は使わない）。
   プレビューの枠が低くなったら、CSS のコンテナークエリでプリセットをコメント欄の右に並べる。
+- 設定は1つのダイアログ（`#settingsDlg`・`settingsOpen`。メニューバーの歯車）にまとめる。タイムライン・コメントリストの歯車は、その項目を開くだけ。設定を足すときは、ここの項目（`.set-sec`）に足す（ほかの場所に設定の置き場を作らない）。
+- ほかの人のカーソルと再生位置は、届いた位置（`pr.state`）へ毎フレーム寄せて出す（`peerEase`・`pr.sm`。`settings.peerSmooth`、既定でオン）。追いかける（`followApply`）などは届いた値をそのまま使う。
 - プリセットのキーは各プリセットの `key`（`presetKeyOf` の形。英字は大文字、Shift なら `Shift+`。null で無し）。前に保存した key の無いものは先頭10個を 1〜9, 0 にする。ほかの操作に使っているキー（`PRESET_KEY_RESERVED`）と Ctrl・⌘・Alt との組み合わせは割り当てない（ショートカットを足したらそこにも足す）。
 - イン点・アウト点（`state.range`・`rangeSet`。キー I / O、Alt で消す）は書き出しの範囲の初期値とループ再生（`settings.tlLoop`・`loopFrame`）に使う。覚えない。
 - コメントリストは既定で見えている行だけ作る（`settings.listVirtual`。設定でオフにすると全部の行を作る）。本文は折り返して 10 行まで出す（`.rc` の line-clamp と `LIST_LINES`）。行の高さは本文から見積もって置き、作った行を測って直す（`listPaint`）。行の色（再生位置の行・手で選んだ行 `listPick`・ほかの人の選択）は状態から決めて、作るときと変わったときに当てる（行の要素を直接持ち続けない）。タイムラインも見える範囲のコメントだけ描く（`firstAtOrAfter`）。

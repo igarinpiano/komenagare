@@ -31,7 +31,7 @@ pub struct Fields {
 }
 
 impl Fields {
-    fn of(c: &Comment) -> Fields {
+    pub fn of(c: &Comment) -> Fields {
         Fields {
             t: Some(c.t),
             cmd: Some(c.cmd.clone()),
@@ -113,6 +113,13 @@ impl Store {
     }
     pub fn len(&self) -> usize {
         self.by_id.len()
+    }
+    /// コメントをそのまま置く・外す（ホストから届いた今の値に合わせるとき。komenagare mcp）
+    pub fn put(&mut self, c: Comment) {
+        self.by_id.insert(c.id.clone(), c);
+    }
+    pub fn remove(&mut self, id: &str) {
+        self.by_id.remove(id);
     }
     pub fn get(&self, id: &str) -> Option<&Comment> {
         self.by_id.get(id)
