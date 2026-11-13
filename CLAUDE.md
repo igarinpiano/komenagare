@@ -86,7 +86,7 @@
 - ブラウザは 20 秒ごとに `ping` を送り、`pong`（か何か）が返らなければつなぎ直す（`collabPing`）。ホストは 2 分間何も届かない接続を切る（`server.rs` の `IDLE_TIMEOUT`。裏のタブの timer は 1 分に 1 回ほどに間引かれるので、これより短くしない）。
 - ホストの `--remote` で許された人には、snapshot の `remote` が付き、「⌨ ターミナル」（`#termDlg`）から `run` / `run_stop` を送れる。出力は `run_out`、終わりは `run_end`（`term`）。
   許すかどうかはホストが決める（画面で隠すだけに頼らない）。`--remote-users` に名前で挙げた人のワンタイムパスワードは、自分も打てる人かホストの人（起動時の URL で入った人。セッションの `startup`）だけが画面から発行できる（`admin_otp_handler`）。git で使えるサブコマンドやオプションを増やすときは、ほかのプログラムを動かせないか・作業フォルダの外を読み書きできないかを確かめ、`remote.rs` のテストに足す。
-- 自動の参加者（hello の `agent`。`komenagare mcp`）は peers に `agent` が付き、だれでも `hold` で一時停止・再開できる（参加者の一覧のボタン）。止めている間、ホストはその参加者の変更を断り（`held` を返す。`Inner.held` に client で覚えるので、つなぎ直しても止めたまま）、peers の `held` に止めた人の名前を出す。人の編集は止められない。presence の `note` は、いましていることの短い説明。
+- 自動の参加者（hello の `agent`。`komenagare mcp`）は peers に `agent` が付き、管理者だけが `hold` で一時停止・再開できる（参加者の一覧のボタン。管理者かは snapshot の `admin`。`--otp` なら管理者のセッション、それ以外はこのパソコンから開いた人（`local_request`）。自動の参加者は管理者にしない。ホストが確かめる）。止めている間、ホストはその参加者の変更を断り（`held` を返す。`Inner.held` に client で覚えるので、つなぎ直しても止めたまま）、peers の `held` に止めた人の名前を出す。人の編集は止められない。presence の `note` は、いましていることの短い説明。
 - 変更履歴は、ひとりのときは `state.changeLog`（`recordChange`）、共同編集のときはホストの記録（`history` メッセージ）を出す。
 - タイムマシン（`tm`・`tmOpen`。`--remote` で許された人だけ。ホストも `can_run` で確かめる）は `tm_log` / `tm_show` / `tm_restore` で git の履歴（`workspace::snapshots` / `comments_at`）を読む。
   過去を見ている間は `tm.view`（そのときのコメントの CommentStore）を画面に出す（`state.comments` と `shown()`。画面に出すものを `store` から直接読まない）。`store` は今のまま、ほかの人の変更も当て続ける。

@@ -34,7 +34,7 @@
 //!   {"type":"history","limit":N}                             最近の変更を求める
 //!   {"type":"presence","state":{...}}                        自分の再生位置・選択・カーソルなど（ほかの人に配るだけ）
 //!   {"type":"call","state":{"t":秒,"sel":[...]}}             「ここ見て」（ほかの人に一度だけ配る。覚えない）
-//!   {"type":"hold","id":接続id,"on":bool}                    自動の参加者（agent）を一時停止する・再開する（だれでも。止めている間、その参加者の変更は受け付けない）
+//!   {"type":"hold","id":接続id,"on":bool}                    自動の参加者（agent）を一時停止する・再開する（管理者だけ。止めている間、その参加者の変更は受け付けない）
 //!   {"type":"ping"}                                          生きているかの確認（pong が返る）。何も届かない接続は切る
 //!   {"type":"conflict_add","conflicts":[{"key":..,...}]}     「あとで」にした衝突を全員に見せる
 //!   {"type":"conflict_done","keys":[...]}                    衝突を解決した（一覧から外す）
@@ -44,9 +44,10 @@
 //!   {"type":"tm_show","commit":"…"}                          タイムマシン: そのコミットのときのコメントを求める
 //!   {"type":"tm_restore","commit":"…"}                       タイムマシン: そのコミットのときの中身に戻す（今の中身からの変更として記録・コミットし、全員に配る）
 //! サーバー → クライアント
-//!   {"type":"snapshot","rev":N,"epoch":"…","you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null}
+//!   {"type":"snapshot","rev":N,"epoch":"…","you":接続id,"name":"名前","client":"自分のブラウザの id","comments":[...],"remote":"git"|"shell"|null,"admin":bool}
 //!                                                            接続直後の全体（name はホストが使う名前。client は peers・conflicts の client と比べて自分のものか見分ける。remote はコマンドを打てるときの種類。
-//!                                                            epoch はホストの起動ごとの id）
+//!                                                            epoch はホストの起動ごとの id。
+//!                                                            admin は管理者か（--otp なら管理者、それ以外はこのパソコンから開いた人。自動の参加者を一時停止できる））
 //!     つなぎ直しで差分を返すときは comments の代わりに "changes":[{"rev","time","author","change"},...]（古い順）。
 //!     自分の変更も入るが、当て直しても衝突して何も変わらない（同じ内容が二重になることはない）
 //!   {"type":"presence","id":接続id,"state":{...}}            ほかの人の状態（接続直後は今いる全員の分）
@@ -1435,9 +1436,12 @@ async fn admin_revoke_handler(
 async fn ws_handler(
     State(server): State<Arc<Server>>,
     Query(q): Query<KeyQuery>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // このパソコンから開いたか（合言葉・--no-token のとき、管理者として扱う）
+    let local = local_request(&peer, &headers);
     match &server.access {
         Access::Token(token) if !q.k.as_deref().is_some_and(|k| same_secret(k, token)) => {
             return (StatusCode::UNAUTHORIZED, "invalid key").into_response();
@@ -1463,7 +1467,7 @@ async fn ws_handler(
         .project(q.p.as_deref())
         .map(|p| (p.hub.clone(), p.dir.clone(), p.name.clone()));
     ws.max_message_size(MESSAGE_MAX)
-        .on_upgrade(move |socket| connection(server, project, socket, pending))
+        .on_upgrade(move |socket| connection(server, project, socket, pending, local))
 }
 
 /// 動いているリモートのコマンド
@@ -1479,6 +1483,7 @@ async fn connection(
     project: Option<(Arc<Hub>, PathBuf, String)>,
     socket: WebSocket,
     pending: Pending,
+    local: bool,
 ) {
     // hello が済むまで「ログイン待ち」として数える（済んだら外す）
     let mut waiting_login = Some(pending);
@@ -1528,6 +1533,8 @@ async fn connection(
     let mut email = String::from("anonymous@komenagare");
     let mut client = String::new();
     let mut agent = false;
+    // 管理者か（--otp なら管理者のセッション、それ以外はこのパソコンから開いた人）。自動の参加者を一時停止できる
+    let mut admin = false;
     let mut joined = false;
     let mut session: Option<String> = None;
     // リモートのコマンドを打てるか（hello で決める）と、動いているもの
@@ -1612,6 +1619,7 @@ async fn connection(
                                 .remote
                                 .as_ref()
                                 .is_some_and(|r| r.allows(&s.name, s.admin));
+                            admin = s.admin;
                             name = s.name;
                             session = Some(s.id);
                         }
@@ -1628,6 +1636,8 @@ async fn connection(
                 client = client_id(v["client_key"].as_str());
                 email = format!("{client}@komenagare");
                 agent = v["agent"].as_bool() == Some(true);
+                // 自動の参加者は管理者にしない（自分で自分を再開できないように）
+                admin = !agent && (admin || (server.auth().is_none() && local));
                 joined = true;
                 drop(waiting_login.take());
                 let mut inner = hub.inner.lock().await;
@@ -1660,11 +1670,11 @@ async fn connection(
                     .flatten();
                 let snapshot = match since.and_then(|n| changes_since(&inner, n)) {
                     Some(changes) => {
-                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "changes": changes, "remote": remote })
+                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "changes": changes, "remote": remote, "admin": admin })
                     }
                     None => {
                         let comments: Vec<&Comment> = inner.store.sorted();
-                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote })
+                        json!({ "type": "snapshot", "rev": inner.rev, "epoch": hub.epoch, "you": conn, "name": name, "client": client, "comments": comments, "remote": remote, "admin": admin })
                     }
                 };
                 let _ = out_tx.send(snapshot.to_string());
@@ -1692,7 +1702,10 @@ async fn connection(
                 let _ = hub.tx.send((conn, msg.into()));
             }
             Some("hold") => {
-                // 自動の参加者だけを止められる（人の編集は止めない）
+                // 管理者だけが、自動の参加者だけを止められる（人の編集は止めない）
+                if !admin {
+                    continue;
+                }
                 let mut inner = hub.inner.lock().await;
                 let target = v["id"]
                     .as_u64()

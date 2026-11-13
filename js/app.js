@@ -4121,6 +4121,7 @@ function collabHandle(m){
     collab.epoch = typeof m.epoch === 'string' ? m.epoch : null;
     collab.connected = true; collab.retry = 0; collab.failed = 0; collab.me = m.you ?? null; collab.serverName = m.name ?? null; collab.myClient = typeof m.client === 'string' ? m.client : null;
     collab.remote = m.remote || null;
+    collab.admin = m.admin === true;
     if (!collab.remote) tmClose();
     collab.synced = true; collab.peersReady = false;
     termDropped(T('接続し直したため'));
@@ -5855,11 +5856,11 @@ function peersRender(){
     row.style.setProperty('--peer', peerColor(p));
     const info = mkEl('div', 'peer-info'), st = mkEl('div', 'peer-state');
     const nm = mkEl('div', 'peer-name', p.name + (me ? T('（あなた）') : collab.myClient && p.client === collab.myClient ? T('（あなた・別のタブ）') : ''));
-    // 自動の参加者（AI など。komenagare mcp）には印を付け、だれでも一時停止・再開できる（ホストが、止めている間の変更を断る）
+    // 自動の参加者（AI など。komenagare mcp）には印を付け、管理者は一時停止・再開できる（ホストが確かめ、止めている間の変更を断る）
     if (p.agent) nm.append(mkEl('span', 'peer-tag', 'AI'));
     info.append(nm, st);
     row.append(mkEl('span', 'peer-dot'), info);
-    if (p.agent && !me){
+    if (p.agent && !me && collab.admin){
       const h = mkEl('button', p.held ? 'primary' : null, p.held ? T('再開') : T('一時停止'));
       h.title = p.held ? T('この参加者の書き込みを再開します') : T('この参加者の書き込みを止めます（再開するまで、コメントを変えられなくなります）');
       h.onclick = () => { if (collab.connected) collab.ws.send(JSON.stringify({ type: 'hold', id: p.id, on: !p.held })); };
