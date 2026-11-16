@@ -7,6 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>コメナガレ</title>
 <link rel="stylesheet" href="css/komenagare.css">
+<link rel="stylesheet" href="css/theme-xp.css">
 </head>
 <body>
 
@@ -36,7 +37,8 @@
     <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8M7.6 10.5h5.8M10.5 7.6v5.8"/></symbol>
     <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 5v14M20 5v14M7.5 12h9M10 9l-3 3 3 3M14 9l3 3-3 3"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18 7h2M4 17h3M12 17h8"/><circle cx="15.5" cy="7" r="2.3"/><circle cx="9.5" cy="17" r="2.3"/></symbol>
-    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M10.34 5.10L10.72 2.49L13.28 2.49L13.66 5.10A7.1 7.1 0 0 1 15.71 5.95L17.82 4.37L19.63 6.18L18.05 8.29A7.1 7.1 0 0 1 18.90 10.34L21.51 10.72L21.51 13.28L18.90 13.66A7.1 7.1 0 0 1 18.05 15.71L19.63 17.82L17.82 19.63L15.71 18.05A7.1 7.1 0 0 1 13.66 18.90L13.28 21.51L10.72 21.51L10.34 18.90A7.1 7.1 0 0 1 8.29 18.05L6.18 19.63L4.37 17.82L5.95 15.71A7.1 7.1 0 0 1 5.10 13.66L2.49 13.28L2.49 10.72L5.10 10.34A7.1 7.1 0 0 1 5.95 8.29L4.37 6.18L6.18 4.37L8.29 5.95A7.1 7.1 0 0 1 10.34 5.10z"/><circle cx="12" cy="12" r="2.9"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.6" r=".9" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-in" viewBox="0 0 24 24"><path d="M11 4H7v16h4"/><path d="M14 12h6M17 9l3 3-3 3"/></symbol>
     <symbol id="i-out" viewBox="0 0 24 24"><path d="M13 4h4v16h-4"/><path d="M4 12h6M7 9l3 3-3 3"/></symbol>
     <symbol id="i-loop" viewBox="0 0 24 24"><path d="M4 12V9.5A3.5 3.5 0 0 1 7.5 6H19l-3-3"/><path d="M20 12v2.5a3.5 3.5 0 0 1-3.5 3.5H5l3 3"/></symbol>
@@ -70,7 +72,8 @@
     <button id="tmExit" title="タイムマシンを終わって、今に戻る">終了</button>
   </div>
   <div class="status">
-    <span id="videoStatus">動画: なし</span>
+    <!-- 開いているファイルの名前は、長いとメニューバーが折り返すので、ここを押して出す（#fileInfo）。バーには保存の状態だけ出す -->
+    <button id="fileInfoBtn" class="tb-btn icon-only" title="開いているファイル" aria-label="開いているファイル" aria-haspopup="true" aria-expanded="false" aria-controls="fileInfo"><svg class="i"><use href="#i-info"/></svg></button>
     <span id="fileStatus"></span>
     <button id="projectBtn" class="collab proj" hidden title="プロジェクトの一覧（切り替え・新しいタブで開く）"></button>
     <button id="collabStatus" class="collab" hidden></button>
@@ -106,12 +109,24 @@
   <p class="lay-note">境目のすき間をドラッグすると大きさを変えられます（ダブルクリックで元の大きさ）。配置ごとに大きさを覚えています。</p>
 </div>
 
+<!-- 開いているファイル（fileInfoBtn） -->
+<div class="file-info" id="fileInfo" role="dialog" aria-label="開いているファイル" hidden>
+  <dl>
+    <dt>動画</dt><dd id="fiVideo"></dd>
+    <dt>コメント</dt><dd id="fiComments"></dd>
+    <dt>保存</dt><dd id="fiState"></dd>
+  </dl>
+</div>
+
 <main class="layout" id="layout">
   <section class="player-col">
     <div class="player" id="player">
       <div class="stage" id="stage">
         <video id="video" playsinline preload="auto"></video>
+        <!-- タイムラインにマウスを重ねている間、その位置の映像を出す（再生位置は動かさない。js/app.js の skim） -->
+        <video id="skimVideo" class="skim" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
         <canvas id="commentCanvas"></canvas>
+        <div class="skim-tag" id="skimTag" hidden></div>
         <div class="peer-cursors" id="peerCursors"></div>
         <div class="follow-bar" id="followBar" hidden><span class="dot"></span><span><b id="followName"></b> を追いかけています<span id="followWaiting" hidden>（つなぎ直すのを待っています）</span></span><button id="followStop">やめる</button></div>
         <div class="empty" id="emptyState">
@@ -338,6 +353,8 @@
   <div class="dlg-head set-head"><span>設定</span><button id="setClose" class="dlg-x" type="button" title="閉じる" aria-label="閉じる">×</button></div>
   <div class="set-wrap">
     <nav class="set-nav" id="setNav" aria-label="設定の項目">
+      <button type="button" data-sec="look">外観</button>
+      <button type="button" data-sec="a11y">アクセシビリティ</button>
       <button type="button" data-sec="play">プレビュー</button>
       <button type="button" data-sec="list">コメントリスト</button>
       <button type="button" data-sec="tl">タイムライン</button>
@@ -346,6 +363,18 @@
       <button type="button" data-sec="lang">言語</button>
     </nav>
     <div class="set-body" id="setBody">
+      <section class="set-sec" data-sec="look">
+        <h3>外観</h3>
+        <div class="set-row"><label for="setTheme">テーマ</label>
+          <select id="setTheme"><option value="dark">ダーク</option><option value="xp">XP</option></select></div>
+      </section>
+      <section class="set-sec" data-sec="a11y">
+        <h3>アクセシビリティ</h3>
+        <div class="set-row"><label for="setNoColor">カラー以外で区別<small>オン・オフや選んでいるものを、色だけでなく形や印でも見分けられるようにします</small></label><input type="checkbox" id="setNoColor"></div>
+        <div class="set-row"><label for="setContrast">コントラストを上げる<small>文字と線をはっきりさせます</small></label><input type="checkbox" id="setContrast"></div>
+        <div class="set-row"><label for="setReduceMotion">動きを減らす<small>画面の動き（滑らかなスクロールや切り替えの動き）を止めます</small></label><input type="checkbox" id="setReduceMotion"></div>
+        <p class="set-note"><span id="a11yNote"></span> <button type="button" id="a11yReset" hidden>システムの設定に合わせる</button></p>
+      </section>
       <section class="set-sec" data-sec="play">
         <h3>プレビュー</h3>
         <div class="set-row"><label for="setOpacity">コメントの不透明度</label><input type="range" id="setOpacity" min="0.2" max="1" step="0.05"></div>
@@ -355,6 +384,7 @@
           <span class="lb-row"><input type="color" id="setLetterbox"><button id="setLetterboxReset" title="黒に戻す">黒に戻す</button></span></div>
         <div class="set-row"><label for="setBorder">自分のコメントを枠で囲む</label><input type="checkbox" id="setBorder"></div>
         <div class="set-row"><label for="setPause">コメント入力中は一時停止</label><input type="checkbox" id="setPause"></div>
+        <div class="set-row"><label for="setSkim">タイムラインに重ねた位置をプレビューに出す<small>止めている間、タイムラインにマウスを重ねると、赤い線（再生位置）ではなくマウスの位置の映像とコメントを出します。再生位置は動きません</small></label><input type="checkbox" id="setSkim"></div>
       </section>
       <section class="set-sec" data-sec="list">
         <h3>コメントリスト</h3>
@@ -387,12 +417,13 @@
         <h3>保存</h3>
         <div class="set-row"><label for="setAutosave">投稿・削除時に自動保存</label><input type="checkbox" id="setAutosave"></div>
         <div class="set-row"><label for="setFormat">ダウンロード保存の形式</label>
-          <select id="setFormat"><option value="json">JSON</option><option value="csv">CSV</option></select></div>
+          <select id="setFormat"><option value="json">JSON</option><option value="csv">CSV</option><option value="xml">XML（ニコニコ形式）</option></select></div>
         <p class="set-note" id="fsNote"></p>
       </section>
       <section class="set-sec" data-sec="collab">
         <h3>共同編集</h3>
-        <div class="set-row"><label for="setPeerSmooth">ほかの人の動きをなめらかにつなぐ<small>ほかの人（や AI）のカーソルと再生位置を、届いた位置の間をつないで動かします。オフにすると、届いた位置にすぐ移ります</small></label><input type="checkbox" id="setPeerSmooth"></div>
+        <div class="set-row"><label for="setPeerSmooth">共同編集者カーソルのフレーム補完<small>ほかの人（や AI）のカーソルと再生位置を、届いた位置の間をつないで動かします。オフにすると、届いた位置にすぐ移ります</small></label><input type="checkbox" id="setPeerSmooth"></div>
+        <div class="set-row"><label for="setPeerCursors">共同編集者のマウスカーソルを出す<small>ほかの人（や AI）のマウスカーソルを、プレビューとタイムラインに出します。再生位置と選んでいるコメントは、オフにしても出ます</small></label><input type="checkbox" id="setPeerCursors"></div>
       </section>
       <section class="set-sec" data-sec="lang">
         <h3>言語</h3>
@@ -568,7 +599,7 @@
     </table>
 
     <h4>画面の配置</h4>
-    <p class="muted" style="margin:0">PC では、メニューバーの右の「配置」から、パネルの並べ方を選べます。「標準」（上にプレビューとリスト、下にタイムライン）、「右にリスト」（左にプレビューとタイムライン、右にリストを縦いっぱい）、「右にタイムライン」（左にプレビューとリスト、右にタイムラインを縦いっぱい）の3つです。隣の3つのボタン（プレビュー・リスト・タイムライン）でパネルを出したり隠したりでき、タイムラインだけ・プレビューとリストだけのようにもできます。パネルの間のすき間をドラッグすると大きさが変わり（ダブルクリックで元の大きさ）、配置ごとに覚えています。プレビューの枠が低くなると、プリセットのボタンがコメント欄の右に並び、動画をなるべく大きく残します。スマホでは下のタブで切り替えます。</p>
+    <p class="muted" style="margin:0">PC では、メニューバーの右の「配置」から、パネルの並べ方を選べます。「デフォルト」（上にプレビューとリスト、下にタイムライン）、「右にリスト」（左にプレビューとタイムライン、右にリストを縦いっぱい）、「右にタイムライン」（左にプレビューとリスト、右にタイムラインを縦いっぱい）の3つです。隣の3つのボタン（プレビュー・リスト・タイムライン）でパネルを出したり隠したりでき、タイムラインだけ・プレビューとリストだけのようにもできます。パネルの間のすき間をドラッグすると大きさが変わり（ダブルクリックで元の大きさ）、配置ごとに覚えています。プレビューの枠が低くなると、プリセットのボタンがコメント欄の右に並び、動画をなるべく大きく残します。スマホでは下のタブで切り替えます。</p>
 
     <h4>タイムライン</h4>
     <table>
@@ -581,7 +612,7 @@
       <tr><td>作成・本文の変更</td><td>「＋ 新規」、空いている所をダブルクリック（ダブルタップ）で作成。コメントをダブルクリックか Enter で本文や時刻を編集</td></tr>
       <tr><td>拡大縮小・移動</td><td>Ctrl+ホイール・ピンチ・＋／− で拡大縮小、ホイール・空き部分のドラッグで移動。上下は右のスクロールバー、Shift+ホイール、左の見出し列でのホイールで。ホイールの向きは ⚙ で変更でき、トラックパッドや Magic Mouse では360°自由に動かせます。目盛りか再生位置の赤い線をドラッグで再生位置（そのときの時刻はマウスの横に出ます）</td></tr>
       <tr><td>高さ</td><td>タイムラインとほかのパネルの間のすき間をドラッグ（ダブルクリックでリセット）。2本のすき間が交わる所をドラッグすると、高さと幅を同時に変えられます。縦向きのスマホでは「タイムライン／リスト／Vim／履歴」のタブの上のつまみをドラッグすると動画の大きさが変わり、残りが下の画面になります。段の高さは右端の設定（低い・ふつう・高い）で変えられます</td></tr>
-      <tr><td>タイムコード</td><td>左上の数字は再生位置です。押して時刻（<code>1:23.5</code> など）を打ち、Enter でそこへ移ります。横の ▶ で再生・一時停止（プレビューを隠していても使えます）。マウスを重ねると、その位置に細い線と時刻が出ます</td></tr>
+      <tr><td>タイムコード</td><td>左上の数字は再生位置です。押して時刻（<code>1:23.5</code> など）を打ち、Enter でそこへ移ります。横の ▶ で再生・一時停止（プレビューを隠していても使えます）。マウスを重ねると、その位置に細い線と時刻が出ます。止めている間は、その位置の映像とコメントがプレビューに出ます（再生位置は動きません。設定の「プレビュー」でオフにできます）</td></tr>
       <tr><td>イン点・アウト点</td><td>「[→」「→]」（キー <code>I</code> <code>O</code>）で再生位置を範囲の始まりと終わりにします。範囲は目盛りとシークバーに琥珀色で出て、書き出しの範囲の初期値になります。「↻」のループ再生をオンにすると、範囲（無ければ全体）をくり返し再生します。「×」で範囲を消します</td></tr>
       <tr><td>追従</td><td>「追従」がオンのとき、再生位置が中央まで来るとそこで止まり、タイムラインの方が流れます</td></tr>
       <tr><td>キー（タイムライン選択中）</td><td><code>Delete</code> 削除　<code>Enter</code> 編集　<code>,</code> <code>.</code> 0.1秒ずらす（Shift で1秒）　<code>N</code> スナップ　<code>Shift+Z</code> 全体</td></tr>
@@ -605,13 +636,13 @@
     <p class="muted" style="margin:6px 0 0">ローカルネットワークの外から使うときは、ホストを <code>komenagare --otp --tunnel tailscale</code>（または <code>cloudflare</code> / <code>ngrok</code>）で起動するか、自分で用意した URL を <code>--public-url</code> で渡します。詳しくは README を見てください。</p>
     <p class="muted" style="margin:6px 0 0">ほかの参加者の再生位置・選んでいるコメント・マウスカーソルは、その人の色でシークバー・タイムライン・リスト・プレビューに薄く出ます。右上の「共同編集」を押すと参加者の一覧が開き、表示名の変更や、選んだ人の再生位置とタイムラインの表示を「追いかける」ことができます（自分でシークやスクロールをするとやめます。回線が切れても、同じ人がつなぎ直してくれば追いかけ続けます）。参加者が入ったり抜けたりすると、短く知らせます。</p>
     <p class="muted" style="margin:6px 0 0">再生バーの 📣（ここ見て）を押すと、今の再生位置と選んでいるコメントをほかの参加者に知らせます。受け取った人は「見る」でそこへ移れます。🔗 は今の位置へのリンク（コメントを1件選んでいればそのコメントへのリンク）をコピーします。メッセージで送れば、開いた人がそこへ移ります（動画を開く前なら、開いたときに移ります）。</p>
-    <p class="muted" style="margin:6px 0 0"><code>komenagare mcp</code> でつないだ AI も、参加者の1人として一覧に「AI」の印付きで出ます。管理者（ワンタイムパスワードのホストでは管理者、それ以外はホストのパソコンで開いた人）は「一時停止」を押して、再開するまでその AI がコメントを変えられないようにできます。ほかの人の動きは届いた位置の間をなめらかにつないで出します（設定の「共同編集」でオフにできます）。</p>
+    <p class="muted" style="margin:6px 0 0"><code>komenagare mcp</code> でつないだ AI も、参加者の1人として一覧に「AI」の印付きで出ます。管理者（ワンタイムパスワードのホストでは管理者、それ以外はホストのパソコンで開いた人）は「一時停止」を押して、再開するまでその AI がコメントを変えられないようにできます。ほかの人のカーソルと再生位置は、届いた位置の間をつないで出します（設定の「共同編集」の「共同編集者カーソルのフレーム補完」でオフにできます。マウスカーソルを出すかどうかも、そこで選べます）。</p>
     <p class="muted" style="margin:6px 0 0">動画は各自が手元のファイルを開くので、ほかの人と動画の長さが違うと知らせます（違う動画だと、コメントの出る場面がずれます）。参加者の一覧にも出ます。</p>
     <p class="muted" style="margin:6px 0 0">ホストが <code>--remote</code> を付けて起動していて、あなたに許可があるときは、右上の「ターミナル」からホストの作業フォルダでコマンド（<code>git status</code>・<code>git push</code> など）を打てます。入力を求めるコマンドは使えません。打ったコマンドはホストに記録されます。</p>
     <p class="muted" style="margin:6px 0 0">同じ人は「タイムマシン」で、git に残っている前のコメントをさかのぼって見られます。右の目盛り（上が古く、一番下が今。日ごとに薄い帯で区切り、1本の長さはそのコミットの変更の多さ）にマウスや指を近づけると、そのあたりの目盛りが拡大鏡のように伸びて日時が出て、押すとそのときのコメントになります（スマホは指でなぞって離す）。目盛りが多いときはスクロールでき、PC はホイール、スマホは素早くスワイプでスクロールし、押して少し止めてからなぞると選びます。そのコミットで追加・変更したコメントは枠で囲い（メニューバーの「変更 n 件」で順に飛べます）、タイムラインでは最近変えたものほど明るく出します。見ている間も再生・タイムライン・書き出しは使えますが、編集はできません。「この時点に復元…」は、今のコメントからそのときのコメントに戻す変更を新しいコミットとして記録します（履歴は消えません）。</p>
 
     <h4>ファイル形式</h4>
-    <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。表計算ソフトで数式として動かないよう、<code>= + - @</code> などで始まるセルは先頭に <code>'</code> を付けて書き出します（コメナガレで読み込むと元に戻ります）。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。</p>
+    <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。表計算ソフトで数式として動かないよう、<code>= + - @</code> などで始まるセルは先頭に <code>'</code> を付けて書き出します（コメナガレで読み込むと元に戻ります）。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。ニコニコ形式の XML でも保存できます（「名前を付けて保存」で選ぶか、設定の「保存」でダウンロードの形式にします）。</p>
 
     <h4>言語</h4>
     <p class="muted" style="margin:0">URL に <code>?lang=en</code> を付けると英語、<code>?lang=ja</code> で日本語になります（メニューバーの「設定」でも変えられます）。選んだ言葉はこのブラウザで覚えます。ホスト（komenagare コマンド）からのメッセージは日本語のままです。</p>
@@ -626,6 +657,7 @@
 <script src="js/vim-engine.js"></script>
 <script src="js/comment-store.js"></script>
 <script src="js/comment-csv.js"></script>
+<script src="js/comment-xml.js"></script>
 <script src="js/comment-render.js"></script>
 <script src="js/export-core.js"></script>
 <script src="js/term-ansi.js"></script>

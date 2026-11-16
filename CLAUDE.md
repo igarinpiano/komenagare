@@ -6,9 +6,11 @@
 
 - `index.html` — 画面のマークアップとヘルプ
 - `css/komenagare.css` — スタイル
+- `css/theme-xp.css` — XP テーマ（`<html data-theme="xp">` のときだけ効く上書き）
 - `js/vim-engine.js` — Vim エンジン（DOM 非依存。グローバル `createVimEngine`、Node からも `require` できる）
 - `js/comment-store.js` — コメントの保管と変更（DOM 非依存）。UUID v7、変更セット、3-way マージによる衝突の検出、打ち消し（元に戻す）
 - `js/comment-csv.js` — コメントの CSV の書き出しと読み取り（DOM 非依存）。表計算ソフトで数式にならないよう、先頭が `'*[=+\-@\t\r]` のセルに `'` を足し、コメナガレの CSV（見出しが `time,command,text,id`）を読むときに外す。`cli/src/files.rs` も同じ規則で読む（両方を同じに保つ）
+- `js/comment-xml.js` — コメントの XML（ニコニコ形式）の書き出し（DOM 非依存）。`<chat vpos mail no id>`。読み込みは `js/app.js` の `parseCommentText`
 - `js/comment-render.js` — コメント描画の定数と描画処理（画面・書き出し・ワーカーで共通）
 - `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通。保存先のファイル（`showSaveFilePicker` が使えるブラウザ）があれば少しずつそこへ書き、無ければ今までどおり出力をメモリに持ってダウンロードする（4 GiB まで）。どちらの方式も残す。エンコーダーには書き出しのフレームレートを伝える（伝えないと 30fps と見なしてビットレートを配る。`exportRate`。「動画に合わせる」ではコマの間隔が一定のときだけ元動画の値）
 - `js/export-worker.js` — 高速書き出し用 Web Worker
@@ -99,7 +101,12 @@
   パネルの間のすき間（`#gutV` `#gutH` `#gutC`）で大きさを変え、配置ごとに覚える（標準は前からの `sideWidth`・`tlHeight`）。スマホは今まで通りタブで切り替える（格子は使わない）。
   プレビューの枠が低くなったら、CSS のコンテナークエリでプリセットをコメント欄の右に並べる。
 - 設定は1つのダイアログ（`#settingsDlg`・`settingsOpen`。メニューバーの歯車）にまとめる。タイムライン・コメントリストの歯車は、その項目を開くだけ。設定を足すときは、ここの項目（`.set-sec`）に足す（ほかの場所に設定の置き場を作らない）。
-- ほかの人のカーソルと再生位置は、届いた位置（`pr.state`）へ毎フレーム寄せて出す（`peerEase`・`pr.sm`。`settings.peerSmooth`、既定でオン）。追いかける（`followApply`）などは届いた値をそのまま使う。
+- テーマ（`settings.theme`。ダーク・XP）とアクセシビリティ（`settings.a11y` の `noColor`・`contrast`・`reduceMotion`。null ならシステムの設定に合わせる）は `lookApply` が `<html>` の `data-theme` と `a11y-nocolor` / `a11y-contrast` / `a11y-reduce` に出す。
+  canvas に描く色は `THEME_COLORS`（`theme()`）から取り、色を直接書かない（テーマを足したら `css/` の上書きと `THEME_COLORS` の両方に足す）。動きを減らすかは `a11y('reduceMotion')` で見る（メディアクエリを直接見ない）。
+  色だけで見分けるもの（オン・オフ、選択、状態）を足したら、`a11y-nocolor` のときの形や印も足す。
+- タイムラインにマウスを重ねている間は、その位置の映像（`#skimVideo`。同じ動画を開いた2つ目の `<video>`）とコメントをプレビューに出す（`skim`・`settings.tlSkim`。止めている間だけ）。再生位置（`video.currentTime`）・presence・書き出しは変えない。
+- メニューバーにはファイルの名前を出さない（長いと折り返す）。保存の状態だけを出し、名前は ⓘ（`#fileInfoBtn`）で開く `#fileInfo` に出す（`updateStatus`）。
+- ほかの人のカーソルと再生位置は、届いた位置（`pr.state`）へ毎フレーム寄せて出す（`peerEase`・`pr.sm`。`settings.peerSmooth`、既定でオン）。追いかける（`followApply`）などは届いた値をそのまま使う。マウスカーソルは `settings.peerCursors` で隠せる（再生位置と選択は出したまま）。
 - プリセットのキーは各プリセットの `key`（`presetKeyOf` の形。英字は大文字、Shift なら `Shift+`。null で無し）。前に保存した key の無いものは先頭10個を 1〜9, 0 にする。ほかの操作に使っているキー（`PRESET_KEY_RESERVED`）と Ctrl・⌘・Alt との組み合わせは割り当てない（ショートカットを足したらそこにも足す）。
 - イン点・アウト点（`state.range`・`rangeSet`。キー I / O、Alt で消す）は書き出しの範囲の初期値とループ再生（`settings.tlLoop`・`loopFrame`）に使う。覚えない。
 - コメントリストは既定で見えている行だけ作る（`settings.listVirtual`。設定でオフにすると全部の行を作る）。本文は折り返して 10 行まで出す（`.rc` の line-clamp と `LIST_LINES`）。行の高さは本文から見積もって置き、作った行を測って直す（`listPaint`）。行の色（再生位置の行・手で選んだ行 `listPick`・ほかの人の選択）は状態から決めて、作るときと変わったときに当てる（行の要素を直接持ち続けない）。タイムラインも見える範囲のコメントだけ描く（`firstAtOrAfter`）。
@@ -114,7 +121,7 @@
 
 ## テスト
 
-- `node --test 'tests/*.test.js'` — Vim エンジン・コメントストア・CSV・ターミナルの色・書き出しのフレームレートのテスト
+- `node --test 'tests/*.test.js'` — Vim エンジン・コメントストア・CSV・XML・ターミナルの色・書き出しのフレームレートのテスト
 - `cargo test --manifest-path cli/Cargo.toml` — CLI のテスト（`cargo fmt` も通す）。CI は Windows でも動かし、install.ps1 と komenagare update を手元のミラーで確かめる
 - 共同編集は、CLI を `--web .` 付きで起動し、Playwright で2つのブラウザをつないで確かめる（複数プロジェクト・複数タブ・`--otp` も）
 - 画面と書き出しは Chromium（Playwright）で、http 配信（`npx http-server -p 8124 -s -c-1 .`）と `file://` の両方で確かめる
