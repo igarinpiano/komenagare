@@ -4,7 +4,7 @@
 
 ## 構成
 
-- `index.html` — 画面のマークアップとヘルプ
+- `index.html` — 画面のマークアップとヘルプ。アイコン（favicon）は `<link rel="icon">` に SVG を埋め込む（`file://` でも、`css/`・`js/`・`lib/` だけを配るホストでも出るように。暗い画面では色を明るくする）
 - `css/komenagare.css` — スタイル
 - `css/theme-xp.css` — XP テーマ（`<html data-theme="xp">` のときだけ効く上書き）
 - `js/vim-engine.js` — Vim エンジン（DOM 非依存。グローバル `createVimEngine`、Node からも `require` できる）
@@ -14,7 +14,7 @@
 - `js/comment-render.js` — コメント描画の定数と描画処理（画面・書き出し・ワーカーで共通）
 - `js/export-core.js` — 高速書き出し（WebCodecs + Mediabunny）の本体。ワーカーとメインスレッドで共通。保存先のファイル（`showSaveFilePicker` が使えるブラウザ）があれば少しずつそこへ書き、無ければ今までどおり出力をメモリに持ってダウンロードする（4 GiB まで）。どちらの方式も残す。エンコーダーには書き出しのフレームレートを伝える（伝えないと 30fps と見なしてビットレートを配る。`exportRate`。「動画に合わせる」ではコマの間隔が一定のときだけ元動画の値）
 - `js/export-worker.js` — 高速書き出し用 Web Worker
-- `js/i18n.js` — 画面の言葉（日本語・英語）。`?lang=en` / `?lang=ja` で切り替え、このブラウザで覚える（localStorage の `komenagare.lang`）。JS の言葉は `T('…')` と ``T`…${x}…` ``（キーは `${}` を `{0}` `{1}` … にしたもの）で書き、英語は `EN` から引く。index.html の言葉は開いたときに置き換え、使い方は `HELP_EN` を出す。`js/vim-engine.js`・`js/export-core.js` は `KT`（Node のテストでは日本語のまま）。書き出しのワーカーには URL の `?lang=` で渡す
+- `js/i18n.js` — 画面の言葉（日本語・英語）。`?lang=en` / `?lang=ja` で切り替え、このブラウザで覚える（localStorage の `komenagare.lang`）。設定から変えたときは開き直さず、その場で切り替える（`I18N.setLang` が index.html の言葉を置き換え・戻し、`js/app.js` の `langApply` が JS の出している言葉を出し直す。言葉を定数に入れて持たない（使うときに `T` を呼ぶ）。利用者が書いたものが出る所は `SKIP` に入れる）。JS の言葉は `T('…')` と ``T`…${x}…` ``（キーは `${}` を `{0}` `{1}` … にしたもの）で書き、英語は `EN` から引く。index.html の言葉は開いたときに置き換え、使い方は `HELP_EN` を出す。`js/vim-engine.js`・`js/export-core.js` は `KT`（Node のテストでは日本語のまま）。書き出しのワーカーには URL の `?lang=` で渡す
 - `js/term-ansi.js` — ターミナル（`--remote`）の出力の色（ANSI のエスケープシーケンス）の読み取り（DOM 非依存。Node からも `require` できる）
 - `js/app.js` — アプリ本体（1つの IIFE。上のファイルのグローバルを使う）
 - `lib/` — 同梱ライブラリ（Mediabunny、MPL-2.0。classic スクリプト版でグローバル `Mediabunny`）

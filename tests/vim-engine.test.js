@@ -354,6 +354,30 @@ rw('rewind d → D', 'abc', 'l', 'd', 'D', 'a');
 rw('rewind : (cmdline)', 'abc', '', ':', 'x', 'bc');
 rw('rewind u', 'abc', 'x', 'u', 'x', 'c');
 { const E = mk('abc'); const cp = E.checkpoint(); E.feed('d'); E.feed('d'); E.rewind(cp); if (E.getText() === 'abc' && !E.modified) pass++; else { fail++; console.log('FAIL rewind modified: ' + E.getText()); } }
+// --- :help などの出力（E.more）はキーでスクロールでき、Enter・q で閉じる
+{
+  const got = [];
+  let atEnd = false;
+  const E = mk('one\ntwo', { help: () => ['a', 'b'], moreScroll: (how) => { got.push(how); return !(how === 'page' && atEnd); } });
+  const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log('FAIL more: ' + name, got, E.more, E.getText()); } };
+  for (const k of toks(':help<CR>')) E.feed(k);
+  ok('opens', E.more && E.more.join() === 'a,b');
+  for (const k of ['j', 'k', '<C-d>', 'u', 'G', 'g', ' ']) E.feed(k);
+  ok('keys scroll', got.join() === 'line,-line,half,-half,end,top,page' && !!E.more);
+  ok('keys do not edit', E.getText() === 'one\ntwo' && E.cur.line === 0);
+  atEnd = true; E.feed(' ');
+  ok('space at the end closes', E.more === null);
+  for (const k of toks(':help<CR>')) E.feed(k);
+  E.feed('q');
+  ok('q closes', E.more === null && E.getText() === 'one\ntwo');
+  // 画面の側がスクロールできない（短い）ときも、j で閉じたり動かしたりしない。Enter で閉じる
+  const E2 = mk('one\ntwo', { help: () => ['a'], moreScroll: () => false });
+  for (const k of toks(':help<CR>')) E2.feed(k);
+  E2.feed('j');
+  if (E2.more && E2.cur.line === 0) pass++; else { fail++; console.log('FAIL more: short j'); }
+  E2.feed('<CR>');
+  if (E2.more === null) pass++; else { fail++; console.log('FAIL more: enter closes'); }
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 // --- round 2
 t('c2w', 'a b c d', 'c2wX<Esc>', 'X c d');
