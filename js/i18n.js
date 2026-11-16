@@ -43,7 +43,7 @@ var HELP_EN = `
 </table>
 
 <h4>Layout</h4>
-<p class="muted" style="margin:0">On a computer, choose how panels are arranged from “Layout” at the right of the menu bar: “Standard” (preview and list on top, timeline below), “List on right” (preview and timeline on the left, the list full height on the right) or “Timeline on right” (preview and list on the left, the timeline full height on the right). The three buttons next to it show or hide the preview, list and timeline, so you can have just the timeline, or just the preview and list. Drag the gaps between panels to resize them (double-click to reset); sizes are remembered per layout. When the preview gets short, the preset buttons move next to the comment input so the video stays as large as possible. On phones, switch with the tabs below the video.</p>
+<p class="muted" style="margin:0">On a computer, choose how panels are arranged from “Layout” at the right of the menu bar: “Default” (preview and list on top, timeline below), “List on right” (preview and timeline on the left, the list full height on the right) or “Timeline on right” (preview and list on the left, the timeline full height on the right). The three buttons next to it show or hide the preview, list and timeline, so you can have just the timeline, or just the preview and list. Drag the gaps between panels to resize them (double-click to reset); sizes are remembered per layout. When the preview gets short, the preset buttons move next to the comment input so the video stays as large as possible. On phones, switch with the tabs below the video.</p>
 
 <h4>Timeline</h4>
 <table>
@@ -56,7 +56,7 @@ var HELP_EN = `
   <tr><td>Create / edit text</td><td>“New”, or double-click (double-tap) empty space. Double-click a comment or press Enter to edit its text and time</td></tr>
   <tr><td>Zoom / scroll</td><td>Ctrl+wheel, pinch or the zoom buttons zoom; the wheel or dragging empty space scrolls. Scroll lanes with the scrollbar on the right, Shift+wheel, or the wheel over the left header. Wheel behavior can be changed in timeline settings; trackpads and Magic Mouse can move freely in 360°. Drag on the ruler, or drag the red playhead line, to move the playhead (the time shows beside the pointer)</td></tr>
   <tr><td>Size</td><td>Drag the gap between the timeline and other panels (double-click to reset). Drag where two gaps meet to change height and width together. On a phone held upright, drag the handle above the “Timeline / List / Vim / History” tabs to resize the video. Lane height (short / normal / tall) is in timeline settings</td></tr>
-  <tr><td>Timecode</td><td>The number at the top left is the playhead. Click it, type a time (like <code>1:23.5</code>) and press Enter to jump there. ▶ next to it plays and pauses (even with the preview hidden). Hovering shows a thin line and the time under the pointer</td></tr>
+  <tr><td>Timecode</td><td>The number at the top left is the playhead. Click it, type a time (like <code>1:23.5</code>) and press Enter to jump there. ▶ next to it plays and pauses (even with the preview hidden). Hovering shows a thin line and the time under the pointer; while paused, the preview shows the video and comments at that position without moving the playhead (turn this off under “Preview” in Settings)</td></tr>
   <tr><td>In and out points</td><td>“[→” and “→]” (keys <code>I</code> <code>O</code>) set the start and end of a range at the playhead. The range shows in amber on the ruler and seek bar and becomes the default export range. Turn on “↻” loop playback to repeat the range (or the whole video). “×” clears the range</td></tr>
   <tr><td>Follow</td><td>With “Follow” on, the playhead stops at the center during playback and the timeline scrolls instead</td></tr>
   <tr><td>Keys (timeline focused)</td><td><code>Delete</code> delete　<code>Enter</code> edit　<code>,</code> <code>.</code> nudge 0.1 s (1 s with Shift)　<code>N</code> snapping　<code>Shift+Z</code> fit all</td></tr>
@@ -82,11 +82,11 @@ var HELP_EN = `
 <p class="muted" style="margin:6px 0 0">📣 (Look here) on the playback bar tells the others the current position and selected comments; they can jump there with “View”. 🔗 copies a link to the current position (or to the selected comment). Anyone who opens it jumps there (or when they open the video, if it isn’t open yet).</p>
 <p class="muted" style="margin:6px 0 0">Everyone opens their own copy of the video, so you’re told when someone’s video has a different length (a different video would put comments at the wrong moments). It also shows in the participant list.</p>
 <p class="muted" style="margin:6px 0 0">If the host was started with <code>--remote</code> and you’re allowed, “Terminal” at the top right runs commands (<code>git status</code>, <code>git push</code>, …) in the host’s project folder. Commands that ask for input don’t work. Commands are logged on the host.</p>
-<p class="muted" style="margin:6px 0 0">An AI connected with <code>komenagare mcp</code> appears in the list as a participant marked “AI”. An admin (an admin on a one-time-password host; otherwise whoever opened the page on the host computer) can press “Pause” to stop it from changing comments until resumed. Other people’s movement is glided between the positions received; turn this off under Collaboration in Settings.</p>
+<p class="muted" style="margin:6px 0 0">An AI connected with <code>komenagare mcp</code> appears in the list as a participant marked “AI”. An admin (an admin on a one-time-password host; otherwise whoever opened the page on the host computer) can press “Pause” to stop it from changing comments until resumed. Other people’s cursors and playheads are drawn gliding between the positions received; turn this off with “Interpolate collaborators’ cursors between frames” under Collaboration in Settings, where you can also choose whether their mouse cursors are shown.</p>
 <p class="muted" style="margin:6px 0 0">The same people can use “Time Machine” to look back through earlier comments kept in git. Move the pointer or a finger near the scale on the right (older at top, now at the bottom; days are separated by faint bands, and longer ticks mean more changes in that commit) and nearby ticks magnify and show the date; press to see the comments from that time (on phones, slide and release). With many ticks the scale scrolls: the wheel on a computer, a quick swipe on a phone (press and hold briefly, then slide to choose). Comments added or changed in that commit are outlined (step through them with “n changes” in the menu bar), and recently changed ones are brighter on the timeline. Playback, the timeline and export keep working while you look, but editing doesn’t. “Restore this point…” records a new commit that changes the current comments back to that point (history isn’t erased).</p>
 
 <h4>File formats</h4>
-<p class="muted" style="margin:0">JSON: an array of <code>{"t": seconds, "cmd": "command", "text": "text", "id": "UUID"}</code> (under the <code>comments</code> key). CSV: four columns <code>time,command,text,id</code>. To keep spreadsheets from running cells as formulas, cells starting with <code>= + - @</code> and similar get a leading <code>'</code> (Komenagare removes it when reading). <code>id</code> identifies each comment; if omitted, a new one is assigned on load. Niconico comment XML (<code>&lt;chat vpos mail&gt;</code>) and comment JSON can be read too.</p>
+<p class="muted" style="margin:0">JSON: an array of <code>{"t": seconds, "cmd": "command", "text": "text", "id": "UUID"}</code> (under the <code>comments</code> key). CSV: four columns <code>time,command,text,id</code>. To keep spreadsheets from running cells as formulas, cells starting with <code>= + - @</code> and similar get a leading <code>'</code> (Komenagare removes it when reading). <code>id</code> identifies each comment; if omitted, a new one is assigned on load. Niconico comment XML (<code>&lt;chat vpos mail&gt;</code>) and comment JSON can be read too. Comments can also be saved as Niconico-format XML: choose it under “Save as”, or as the download format under “Save” in Settings.</p>
 
 <h4>Language</h4>
 <p class="muted" style="margin:0">Add <code>?lang=en</code> to the URL for English or <code>?lang=ja</code> for Japanese, or change it under Settings in the menu bar. The choice is remembered in this browser. Messages from the host (the komenagare command) stay in Japanese.</p>
@@ -129,7 +129,7 @@ var I18N = (function (){
     '画面の配置を選ぶ': 'Choose a layout', '配置': 'Layout', 'コメントを焼き込んだ動画を書き出す': 'Export the video with comments burned in',
     '書き出し': 'Export', '使い方': 'Help', '画面の配置': 'Layout', '出すもの': 'Show',
     '境目のすき間をドラッグすると大きさを変えられます（ダブルクリックで元の大きさ）。配置ごとに大きさを覚えています。': 'Drag the gaps between panels to resize them (double-click to reset). Sizes are remembered per layout.',
-    '標準': 'Standard', '右にリスト': 'List on right', '右にタイムライン': 'Timeline on right',
+    'デフォルト': 'Default', '右にリスト': 'List on right', '右にタイムライン': 'Timeline on right',
     'どれか1つは出しておく必要があります': 'At least one panel has to stay visible',
     // ---------- プレビュー・コメント欄 ----------
     'を追いかけています': ' — following', '（つなぎ直すのを待っています）': ' (waiting for them to reconnect)', 'やめる': 'Stop',
@@ -166,7 +166,21 @@ var I18N = (function (){
     'この参加者の書き込みを止めます（再開するまで、コメントを変えられなくなります）': 'Stop this participant from writing (it can’t change comments until resumed)',
     '一時停止中（{0}さんが止めました）': 'Paused by {0}',
     '共同編集': 'Collaboration', '言語': 'Language', '設定の項目': 'Settings sections', 'コメントリストの設定': 'Comment list settings',
-    'ほかの人の動きをなめらかにつなぐ': 'Smooth other people’s movement',
+    '共同編集者カーソルのフレーム補完': 'Interpolate collaborators’ cursors between frames',
+    '共同編集者のマウスカーソルを出す': 'Show collaborators’ mouse cursors',
+    'ほかの人（や AI）のマウスカーソルを、プレビューとタイムラインに出します。再生位置と選んでいるコメントは、オフにしても出ます': 'Shows other people’s (and AI agents’) mouse cursors on the preview and timeline. Their playheads and selections stay visible when this is off',
+    'タイムラインに重ねた位置をプレビューに出す': 'Preview the timeline position under the pointer',
+    '止めている間、タイムラインにマウスを重ねると、赤い線（再生位置）ではなくマウスの位置の映像とコメントを出します。再生位置は動きません': 'While paused, hovering over the timeline shows the video and comments at the pointer instead of at the red line (the playhead). The playhead doesn’t move',
+    'マウスの位置 {0}': 'Pointer {0}',
+    '外観': 'Appearance', 'テーマ': 'Theme', 'ダーク': 'Dark', 'アクセシビリティ': 'Accessibility',
+    'カラー以外で区別': 'Differentiate without color',
+    'オン・オフや選んでいるものを、色だけでなく形や印でも見分けられるようにします': 'Marks on/off states and selections with shapes and symbols, not only color',
+    'コントラストを上げる': 'Increase contrast', '文字と線をはっきりさせます': 'Makes text and lines stand out more',
+    '動きを減らす': 'Reduce motion', '画面の動き（滑らかなスクロールや切り替えの動き）を止めます': 'Stops interface motion such as smooth scrolling and transitions',
+    'システムの設定に合わせる': 'Match system settings', '自分で選んだ設定を使っています。': 'Using the settings you chose.',
+    'システムの設定に合わせています（「カラー以外で区別」は、システムでコントラストを上げているときにオンになります）。切り替えると、このブラウザではその設定を使います。': 'Matching your system settings (“Differentiate without color” turns on when your system increases contrast). Change a switch to use your own setting in this browser.',
+    '開いているファイル': 'Open files', '動画': 'Video', 'ホストに保存（共同編集）': 'Saved on the host (collaboration)', 'まだ保存していません': 'Not saved yet',
+    'XML（ニコニコ形式）': 'XML (Niconico format)', 'コメントファイル (ニコニコ形式 XML)': 'Comment file (Niconico XML)',
     'ほかの人（や AI）のカーソルと再生位置を、届いた位置の間をつないで動かします。オフにすると、届いた位置にすぐ移ります': 'Glides other people’s (and AI agents’) cursors and playheads between the positions received. Turn off to jump straight to each position',
     'コメントの不透明度': 'Comment opacity', 'コメント入力中は一時停止': 'Pause while typing a comment', '自分のコメントを枠で囲む': 'Outline my comments',
     '投稿・削除時に自動保存': 'Save automatically after posting or deleting',
@@ -180,7 +194,7 @@ var I18N = (function (){
     'XML の解析に失敗しました': 'Couldn’t parse the XML', 'JSON の解析に失敗しました': 'Couldn’t parse the JSON', 'コメントの配列が見つかりません': 'No comment array found',
     '動画: ': 'Video: ', 'なし': 'none', 'コメント: ': 'Comments: ', '新規': 'New', '● 未保存': '● Unsaved', '✓ 保存済み': '✓ Saved', ' · 自動保存': ' · autosave',
     'このブラウザは開いたコメントファイルへの直接保存に対応しています。保存時にはファイル側に増えたコメントも取り込んでから書き込みます。': 'This browser can save straight to the comment file you opened. Before writing, it also picks up comments that were added to the file.',
-    'このブラウザはファイルへの直接保存に非対応のため、保存はダウンロードになります（Chrome / Edge 推奨）。': 'This browser can’t save to files directly, so saving downloads a file (Chrome / Edge recommended).',
+    'このブラウザはファイルへの直接保存に非対応のため、保存はダウンロードになります（直接保存はChrome / Edge使用時のみ）。': 'This browser can’t save to files directly, so saving downloads a file (direct saving works only in Chrome / Edge).',
     'ファイルへの書き込みが許可されませんでした': 'Permission to write the file was denied',
     'ファイル側にあった新しいコメント {0} 件を取り込みました': 'Picked up {0} new comments from the file',
     'コメントファイル (JSON)': 'Comment file (JSON)', 'コメントファイル (CSV)': 'Comment file (CSV)',

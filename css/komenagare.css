@@ -74,7 +74,14 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 #btnExport.busy{background:#3a2a10;border-color:#a8741c;color:#ffd58a}
 #btnSave.dirty .lbl::after{content:"";display:inline-block;width:6px;height:6px;margin:0 0 1px 6px;border-radius:50%;background:var(--amber);vertical-align:middle}
 .status{margin-left:auto;color:var(--muted);font-size:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;min-width:0}
-#videoStatus{max-width:22ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#fileStatus{white-space:nowrap}
+#fileInfoBtn{width:28px;height:28px;margin-right:-6px;color:var(--muted)}
+#fileInfoBtn:hover,#fileInfoBtn[aria-expanded="true"]{color:var(--text);background:var(--panel3)}
+/* 開いているファイル（ⓘ を押すと出る）。名前は長くても折り返して全部出す */
+.file-info{position:fixed;z-index:45;width:min(380px,calc(100vw - 16px));padding:10px 14px;background:var(--panel);border:1px solid var(--line2);border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.55);font-size:13px}
+.file-info dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px 14px;margin:0}
+.file-info dt{color:var(--muted);white-space:nowrap}
+.file-info dd{margin:0;word-break:break-all;user-select:text}
 .status .dirty{color:var(--amber)}
 .status .clean{color:var(--ok)}
 .collab{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line2);background:var(--panel);white-space:nowrap}
@@ -211,6 +218,11 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--letterbox, #000)}
 /* コメントは書き出しと同じ 16:9 の範囲に描く（位置と大きさは resizeCanvas で合わせる） */
 .stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+/* タイムラインに重ねた位置の映像（js/app.js の skim）。その時刻のコマが出るまでは隠しておく */
+.stage video.skim{visibility:hidden;pointer-events:none}
+.stage video.skim.on{visibility:visible}
+.skim-tag{position:absolute;left:8px;top:8px;z-index:2;display:flex;align-items:center;gap:6px;padding:2px 8px 2px 7px;border-radius:999px;background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.3);color:#fff;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none}
+.skim-tag::before{content:"";width:1px;height:11px;background:#fff;box-shadow:0 0 0 .5px rgba(255,255,255,.5)}
 .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;color:#bbb;padding:20px;
   background:radial-gradient(ellipse at 50% 45%,#16191d,#0a0b0c 70%)}
 /* 空のときは、コメントが流れていく様子を線で見せる */
@@ -248,10 +260,10 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .seek-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;pointer-events:none;opacity:0;transition:opacity .1s;white-space:nowrap;font-variant-numeric:tabular-nums}
 .seek:hover .seek-tip{opacity:1}
 .ctrl-row{display:flex;align-items:center;gap:6px;margin-top:1px}
-.icon{background:none;border:none;padding:4px;width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r)}
+.icon{color:#eee;background:none;border:none;padding:4px;width:34px;height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r)}
 .icon:hover{background:var(--panel3)}
-.icon svg{width:22px;height:22px;fill:#eee}
-.icon.off svg{fill:#777}
+.icon svg{width:22px;height:22px;fill:currentColor}
+.icon.off{color:#777}
 .time{font-variant-numeric:tabular-nums;font-size:13px;color:#ddd;min-width:96px}
 .vol{display:flex;align-items:center;gap:2px}
 .vol input{width:80px}
@@ -396,7 +408,6 @@ dialog.set-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--vv
   .set-nav button.on::before{display:none}
   .set-body{flex:1 1 auto;min-height:0;padding:0 14px 240px}
 }
-@media (prefers-reduced-motion: reduce){ .set-body{scroll-behavior:auto} }
 .form-grid{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center}
 .form-grid .inline{display:flex;gap:8px;align-items:center}
 .form-grid input[type=text]{width:90px}
@@ -559,7 +570,7 @@ dialog.set-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--vv
   .tb-seg #btnMerge,.tb-seg #btnSaveAs{width:30px}
 }
 @media (min-width: 981px) and (max-width: 1180px){
-  #btnOpenComments .lbl,#videoStatus{display:none}
+  #btnOpenComments .lbl{display:none}
   #btnOpenComments{width:30px;padding:0;justify-content:center}
 }
 
@@ -577,7 +588,8 @@ dialog.set-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--vv
   #btnOpenVideo{width:auto;padding:0 11px}
   #btnOpenVideo .lbl{display:inline}
   .tb-seg .tb-btn{height:32px;width:34px}
-  .desk-only,#videoStatus,#fileStatus{display:none}
+  .desk-only,#fileStatus{display:none}
+  #fileInfoBtn{width:36px;height:36px;margin-right:0}
   .status{margin-left:2px;flex:none}
   .layout{display:contents}
   .player-col{flex:none;padding:8px 8px 0;overflow:visible}
@@ -711,7 +723,39 @@ body.tm-on .comment-bar,body.tm-on .presets,body.tm-on .palette,body.tm-on .row 
   .tm-pos{display:none}
   body.tm-on .ctrl-row #btnLink{display:none}
 }
-@media (prefers-reduced-motion: reduce){
-  body,.tm-rail,.tm-cur,.tm-scrub,.tm-tick,.topbar{transition:none}
-  .brand-flow i{animation:none}
-}
+/* ---------- アクセシビリティ（js/app.js の lookApply が <html> に付ける。選んでいなければシステムの設定に合わせる） ---------- */
+/* 動きを減らす */
+@media (prefers-reduced-motion: reduce){ .brand-flow i{animation:none} }
+html.a11y-reduce *,html.a11y-reduce *::before,html.a11y-reduce *::after{transition:none!important;animation:none!important;scroll-behavior:auto!important}
+/* コントラストを上げる */
+html.a11y-contrast{--bg:#000;--panel:#0c0d0f;--panel2:#17191c;--panel3:#24272b;--line:#6a707a;--line2:#9299a3;--text:#fff;--muted:#cdd1d7;--dim:#a9aeb6;--accent:#7fb0ff;--accent-ink:#fff}
+html.a11y-contrast :where(button,select,input,textarea,[tabindex]):focus-visible{outline-width:3px}
+html.a11y-contrast .rt,html.a11y-contrast .rm,html.a11y-contrast .tl-ico,html.a11y-contrast .chk{color:var(--text)}
+/* カラー以外で区別：オン・オフ、選んでいるもの、状態を、色だけでなく形や印でも見分けられるようにする */
+/* スイッチ：オンは「｜」、オフは「○」 */
+html.a11y-nocolor .set-row input[type=checkbox]::before{content:"";position:absolute;top:50%;right:6px;width:7px;height:7px;margin-top:-4.5px;border:1.5px solid var(--muted);border-radius:50%}
+html.a11y-nocolor .set-row input[type=checkbox]:checked::before{right:auto;left:8px;width:0;height:9px;margin-top:-4.5px;border:0;border-left:2px solid var(--amber-ink);border-radius:0}
+/* オンになっているボタン・選んでいるタブ：下に太い線 */
+html.a11y-nocolor .tb-toggle.on,html.a11y-nocolor .tl-ico.on,html.a11y-nocolor .tl-ico.set,html.a11y-nocolor .cmd-btn.on,html.a11y-nocolor .chip.active,html.a11y-nocolor .mtab.on,
+html.a11y-nocolor .vim-keys button.on,html.a11y-nocolor .lay-card[aria-checked="true"]{box-shadow:inset 0 -3px 0 currentColor;font-weight:700}
+html.a11y-nocolor .stab.on{border-bottom-width:4px}
+/* 隠しているパネルのボタン：斜めの線 */
+html.a11y-nocolor .topbar .tb-toggle:not(.on){background-image:linear-gradient(to top right,transparent calc(50% - 1px),currentColor calc(50% - 1px),currentColor calc(50% + 1px),transparent calc(50% + 1px))}
+html.a11y-nocolor .chip.active::before{content:"✓ "}
+/* コメントリスト：再生位置の行は枠、自分のコメントは下線、ほかの人が選んでいる行は点線 */
+html.a11y-nocolor .row.current{outline:2px solid var(--text);outline-offset:-2px}
+html.a11y-nocolor .row.current .rt{font-weight:700;color:var(--text)}
+html.a11y-nocolor .row.mine .rc{text-decoration:underline dotted;text-underline-offset:3px}
+html.a11y-nocolor .row.peer-sel{outline:2px dashed var(--peer);outline-offset:-2px}
+html.a11y-nocolor .row.tm-new{border-left:4px double #ffc233}
+/* 状態：注意・誤り（つながっているかどうかは、もともと ● と文字で出している） */
+html.a11y-nocolor .collab.warn::before,html.a11y-nocolor button.warn::before,html.a11y-nocolor .toast.error span::before{content:"⚠ "}
+html.a11y-nocolor .char-count.warn::after{content:" !"}
+html.a11y-nocolor .cf-table td.cf-changed{text-decoration:underline}
+html.a11y-nocolor .term-out .err::before{content:"✗ "}
+html.a11y-nocolor .hist-item.pending{border-left-style:dashed}
+html.a11y-nocolor #btnExport.busy .lbl::after{content:" …"}
+/* ほかの人の再生位置（シークバー）：名前の頭文字を添える */
+html.a11y-nocolor .peer-mark::after{content:attr(data-ch);position:absolute;left:50%;top:-11px;transform:translateX(-50%);font-size:9px;font-weight:700;line-height:1;color:var(--text);text-shadow:0 0 2px var(--bg),0 0 2px var(--bg)}
+/* イン点〜アウト点：斜線の模様 */
+html.a11y-nocolor .seek-range{background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(255,255,255,.35) 3px 4px)}

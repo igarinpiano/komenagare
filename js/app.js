@@ -17,18 +17,58 @@ const M_VIDEO = 0.32; // 縦向きのスマホで、動画の高さが画面の�
 // 右にリスト: 左にプレビューとタイムライン、右にパネル（縦いっぱい）。右にタイムライン: 左にプレビューとパネル、右にタイムライン。
 // 大きさ（右の列の幅 w・左下の行の高さ h）は配置ごとに覚える（標準は前からの sideWidth・tlHeight）
 const LAYOUTS = {
-  std: { name: T('標準'), top: ['player', 'side'], bottom: 'tl', w: 'sideWidth', h: 'tlHeight', dw: SIDE_W, dh: TL_H },
+  std: { name: T('デフォルト'), top: ['player', 'side'], bottom: 'tl', w: 'sideWidth', h: 'tlHeight', dw: SIDE_W, dh: TL_H },
   split: { name: T('右にリスト'), left: ['player', 'tl'], right: 'side', w: 'splitW', h: 'splitH', dw: SIDE_W, dh: 320 },
   splitTl: { name: T('右にタイムライン'), left: ['player', 'side'], right: 'tl', w: 'splitTlW', h: 'splitTlH', dw: 620, dh: 300 },
 };
 const settings = Object.assign(
-  { show:true, opacity:1, pauseOnInput:false, mineBorder:true, autosave:true, saveFormat:'json', volume:1, muted:false,
+  { show:true, opacity:1, pauseOnInput:false, mineBorder:false, autosave:true, saveFormat:'json', volume:1, muted:false,
     listVirtual:true, timeline:true, side:true, preview:true, layout:'std', tlHeight:TL_H, mVideo:M_VIDEO, sideWidth:SIDE_W,
     splitW:LAYOUTS.split.dw, splitH:LAYOUTS.split.dh, splitTlW:LAYOUTS.splitTl.dw, splitTlH:LAYOUTS.splitTl.dh,
-    sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, tlLane:'m', tlLoop:false, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video', peerSmooth:true },
+    sidePane:'list', mobilePane:'timeline', tlSnap:true, tlFollow:true, tlLane:'m', tlLoop:false, presets:[], wheelMouse:'time', wheelPad:'auto', letterbox:'#000000', commentArea:'video', peerSmooth:true, peerCursors:true, tlSkim:true, theme:'dark',
+    // アクセシビリティ（null はシステムの設定に合わせる。true / false は自分で選んだもの）
+    a11y:{ noColor:null, contrast:null, reduceMotion:null } },
   (() => { try { return JSON.parse(localStorage.getItem('komenagare.settings') || '{}'); } catch { return {}; } })()
 );
 function saveSettings(){ try { localStorage.setItem('komenagare.settings', JSON.stringify(settings)); } catch {} }
+// 設定の版数。1: 「自分のコメントを枠で囲む」の既定をオフにした（前の既定のオンが保存されているので、1回だけオフにする）
+if (!(settings.rev >= 1)){ settings.rev = 1; settings.mineBorder = false; saveSettings(); }
+
+/* ---------- テーマとアクセシビリティ ----------
+   テーマは <html data-theme>（css/theme-xp.css）。canvas に描く色は THEME_COLORS から取る（theme()）。
+   アクセシビリティは、選んでいなければシステムの設定に合わせる（動きを減らす・コントラストを上げる）。
+   「カラー以外で区別」はブラウザからシステムの設定を読めないので、コントラストを上げているとき・強制カラーのときにオンにする。
+   <html> に a11y-nocolor / a11y-contrast / a11y-reduce を付け、CSS と canvas の描画がそれを見る */
+const THEME_COLORS = {
+  dark: { bg:'#121417', laneA:'#1c1f23', laneB:'#181b1f', grid:'rgba(255,255,255,.045)', out:'rgba(0,0,0,.5)', dimOut:'rgba(0,0,0,.28)',
+    head:'#0f1114', headLine:'#23262b', headText:'#d4d2cc', sep:'#25282d', ruler:'#1a1d21', rulerLine:'#2c3036',
+    tick:'#7d828a', tickText:'#b9bcc2', tickMinor:'#4a4f56', hoverLine:'rgba(255,255,255,.28)', tipBg:'#e8e6e1', tipInk:'#121417',
+    ovBg:'#0d0f12', ovVideo:'#181b20', ovOut:'rgba(0,0,0,.55)', mark:'#ffb300', markSoft:'rgba(255,179,0,.2)', markLine:'rgba(255,179,0,.5)',
+    density:'rgba(47,140,255,.55)', playhead:'#ff4d5e', sel:'#ffffff', dash:'rgba(255,255,255,.75)', snap:'#ffd400' },
+  xp: { bg:'#ffffff', laneA:'#ffffff', laneB:'#f1f5fb', grid:'rgba(0,0,0,.07)', out:'rgba(172,168,153,.42)', dimOut:'rgba(172,168,153,.3)',
+    head:'#ece9d8', headLine:'#aca899', headText:'#000000', sep:'#d4d0c8', ruler:'#ece9d8', rulerLine:'#aca899',
+    tick:'#716f64', tickText:'#000000', tickMinor:'#aca899', hoverLine:'rgba(0,0,0,.4)', tipBg:'#ffffe1', tipInk:'#000000',
+    ovBg:'#ffffff', ovVideo:'#e3ebf8', ovOut:'rgba(172,168,153,.5)', mark:'#e68b2c', markSoft:'rgba(230,139,44,.22)', markLine:'rgba(230,139,44,.7)',
+    density:'rgba(49,106,198,.6)', playhead:'#d8262c', sel:'#000000', dash:'rgba(0,0,0,.7)', snap:'#e68b2c' },
+};
+const theme = () => THEME_COLORS[settings.theme] || THEME_COLORS.dark;
+const a11ySys = {
+  reduce: matchMedia('(prefers-reduced-motion: reduce)'), contrast: matchMedia('(prefers-contrast: more)'), forced: matchMedia('(forced-colors: active)'),
+  noColor(){ return this.contrast.matches || this.forced.matches; },
+  get(k){ return k === 'reduceMotion' ? this.reduce.matches : k === 'contrast' ? this.contrast.matches : this.noColor(); },
+};
+function a11y(k){ const v = settings.a11y && settings.a11y[k]; return typeof v === 'boolean' ? v : a11ySys.get(k); }
+// テーマやアクセシビリティが変わったら描き直すもの（下で定義するので、できてから呼ぶ）
+let lookRedraw = () => {};
+function lookApply(){
+  const root = document.documentElement;
+  if (settings.theme === 'xp') root.dataset.theme = 'xp'; else delete root.dataset.theme;
+  root.classList.toggle('a11y-nocolor', a11y('noColor'));
+  root.classList.toggle('a11y-contrast', a11y('contrast'));
+  root.classList.toggle('a11y-reduce', a11y('reduceMotion'));
+  lookRedraw();
+}
+lookApply();
 
 /* ---------- 状態 ---------- */
 // コメントの追加・変更・削除はすべて store（js/comment-store.js）の変更セットで行う
@@ -397,7 +437,8 @@ function drawComments(t = video.currentTime || 0){
   state.needsDraw = false;
   cctx.clearRect(0, 0, canvas.width, canvas.height);
   if (settings.show){
-    displayRenderer.draw(cctx, canvas.width, canvas.height, t, state.layouts,
+    // タイムラインにマウスを重ねている間は、その位置のコメントを出す（skim。時刻の表示は再生位置のまま）
+    displayRenderer.draw(cctx, canvas.width, canvas.height, skim.t ?? t, state.layouts,
       { stage: state.stage, opacity: settings.opacity, mineBorder: settings.mineBorder, selected: TL.sel, highlight: tm.on ? tm.changed : null });
   }
   updateTimeUI(t);
@@ -406,11 +447,52 @@ function loop(){
   requestAnimationFrame(loop);
   const playing = !video.paused && !video.ended;
   const t = video.currentTime || 0;
+  skimFrame(playing);
   if (playing || state.needsDraw || state.needsRelayout) drawComments(t);
   loopFrame(playing, t);
   tlFrame(playing, t);
   vimFrame(playing, t);
   presenceFrame();
+}
+
+/* ---------- タイムラインに重ねた位置をプレビューに出す（settings.tlSkim。既定でオン） ----------
+   止めている間、タイムラインにマウスを重ねると、再生位置（赤い線）は動かさずに、マウスの位置の映像とコメントを出す。
+   映像は同じ動画を開いたもう1つの <video>（#skimVideo）をその時刻へ移して、上に重ねる（初めて重ねたときに開く）。
+   再生位置・ほかの人に配る様子（presence）・書き出しは変わらない */
+const skim = { v: $('#skimVideo'), tag: $('#skimTag'), t: null, url: null, fresh: false };
+function skimTime(playing){
+  const p = TL.hover;
+  if (!settings.tlSkim || playing || !p || TL.drag || TL.pinch || p.x < TL_HEAD || !tlShown()) return null;
+  const d = video.duration;
+  return clamp(xt(p.x), 0, state.videoLoaded && isFinite(d) ? d : TIME_MAX);
+}
+function skimFrame(playing){
+  const t = skimTime(playing);
+  if (t === skim.t) return;
+  skim.t = t;
+  state.needsDraw = true;
+  if (t == null){ skim.fresh = false; skim.v.classList.remove('on'); skim.tag.hidden = true; return; }
+  skim.tag.textContent = T`マウスの位置 ${fmtPrecise(t)}`;
+  skim.tag.hidden = false;
+  if (!state.videoLoaded) return;
+  if (skim.url !== state.videoUrl){ skim.url = state.videoUrl; skim.fresh = false; skim.v.classList.remove('on'); skim.v.src = state.videoUrl; }
+  skimSeek();
+}
+// 移っている途中なら、終わってから最新の位置へ移る（1つずつ。溜めない）
+function skimSeek(){
+  const v = skim.v;
+  if (skim.t == null || v.seeking || v.readyState < 1) return;
+  if (Math.abs(v.currentTime - skim.t) > 0.004) v.currentTime = skim.t;
+  else if (v.readyState >= 2) skimShown();
+}
+function skimShown(){ if (skim.t != null){ skim.fresh = true; skim.v.classList.add('on'); } }
+skim.v.addEventListener('seeked', () => { skimShown(); skimSeek(); });
+skim.v.addEventListener('loadedmetadata', skimSeek);
+skim.v.addEventListener('loadeddata', skimSeek);
+function skimReset(){
+  skim.url = null; skim.fresh = false; skim.t = null;
+  skim.v.classList.remove('on'); skim.tag.hidden = true;
+  skim.v.removeAttribute('src'); skim.v.load();
 }
 
 /* =====================================================================
@@ -423,7 +505,7 @@ const ICON = {
   mute:'<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.6 3 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4z"/></svg>',
   full:'<svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z"/></svg>',
   cmt:'<svg viewBox="0 0 24 24"><path d="M4 4h16v12H8.5L4 20zm3 4v2h10V8zm0 3v2h7v-2z" fill-rule="evenodd"/></svg>',
-  cmtOff:'<svg viewBox="0 0 24 24"><path d="M4 4h16v12H8.5L4 20zm3 4v2h10V8zm0 3v2h7v-2z" fill-rule="evenodd"/><path d="M3 3l18 18" stroke="#eee" stroke-width="2"/></svg>',
+  cmtOff:'<svg viewBox="0 0 24 24"><path d="M4 4h16v12H8.5L4 20zm3 4v2h10V8zm0 3v2h7v-2z" fill-rule="evenodd"/><path d="M3 3l18 18" stroke="currentColor" stroke-width="2"/></svg>',
   link:'<svg viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>',
   call:'<svg viewBox="0 0 24 24"><path d="M18 11v2h4v-2zm-2 6.61c.96.71 2.21 1.65 3.2 2.39.4-.53.8-1.07 1.2-1.6-.99-.74-2.24-1.68-3.2-2.4-.4.54-.8 1.08-1.2 1.61zM20.4 5.6c-.4-.53-.8-1.07-1.2-1.6-.99.74-2.24 1.68-3.2 2.4.4.53.8 1.07 1.2 1.6.96-.72 2.21-1.65 3.2-2.4zM4 9c-1.1 0-2 .9-2 2v2c0 1.1.9 2 2 2h1v4h2v-4h1l5 3V6L8 9zm11.5 3c0-1.33-.58-2.53-1.5-3.35v6.69c.92-.81 1.5-2.01 1.5-3.34z"/></svg>',
 };
@@ -452,6 +534,7 @@ function loadVideo(file, { at = null } = {}){
   state.videoFile = file;
   state.videoLoaded = false;
   state.videoRestoreAt = at;
+  skimReset();
   video.src = state.videoUrl;
   video.load();
   $('#emptyState').hidden = true;
@@ -466,6 +549,7 @@ function unloadVideo(){
   Object.assign(state, { videoUrl: null, videoName: null, videoFile: null, videoLoaded: false, videoRestoreAt: null, viewRestore: null, needsDraw: true });
   video.removeAttribute('src');
   video.load();
+  skimReset();
   updateStage();
   $('#emptyState').hidden = false;
   drawDensity(); updateTimeUI(0); updatePlayIcon(); updateStatus();
@@ -606,7 +690,7 @@ function drawDensity(){
   const bins = Math.max(10, Math.floor(r.width / 3)), counts = new Array(bins).fill(0);
   for (const c of state.comments){ const i = Math.min(bins - 1, Math.floor(c.t / dur * bins)); if (i >= 0) counts[i]++; }
   const max = Math.max(...counts), bw = cv.width / bins;
-  g.fillStyle = 'rgba(47,140,255,.55)';
+  g.fillStyle = theme().density;
   counts.forEach((n, i) => {
     if (!n) return;
     const h = Math.max(dpr, n / max * cv.height);
@@ -1125,6 +1209,8 @@ function serialize(fmt){
   const items = state.comments.map(c => ({ t: c.t, cmd: c.cmd, text: c.text, id: c.id }));
   // CSV は表計算ソフトで数式にならないようにして書く（js/comment-csv.js）
   if (fmt === 'csv') return commentsToCSV(items);
+  // ニコニコ形式の XML（js/comment-xml.js）
+  if (fmt === 'xml') return commentsToXML(items);
   const body = items.length ? '[\n' + items.map(c => '    ' + JSON.stringify(c)).join(',\n') + '\n  ]' : '[]';
   return `{\n  "format": "komenagare",\n  "version": 2,\n  "comments": ${body}\n}\n`;
 }
@@ -1136,7 +1222,7 @@ function parseCommentText(text, name = ''){
     if (doc.querySelector('parsererror')) throw new Error(T('XML の解析に失敗しました'));
     return [...doc.getElementsByTagName('chat')].map(ch => {
       const v = Number(ch.getAttribute('vpos'));
-      return isFinite(v) ? makeComment(v / 100, ch.getAttribute('mail') || '', ch.textContent || '') : null;
+      return isFinite(v) ? makeComment(v / 100, ch.getAttribute('mail') || '', ch.textContent || '', false, ch.getAttribute('id')) : null;
     }).filter(Boolean);
   }
   if (/\.json$/i.test(name) || head.startsWith('{') || head.startsWith('[')){
@@ -1184,23 +1270,41 @@ function defaultFileName(ext){
   const b = state.fileName ? baseName(state.fileName) : (state.videoName ? baseName(state.videoName) + '.comments' : 'comments');
   return `${b}.${ext}`;
 }
+const FORMAT_MIME = { json:'application/json', csv:'text/csv', xml:'text/xml' };
+const fileFormat = (name) => (/\.(csv|xml)$/i.exec(name || '') || [, 'json'])[1].toLowerCase();
+// メニューバーには保存の状態だけを出す。ファイルの名前は長いと折り返すので、ⓘ（#fileInfoBtn）を押すと出る #fileInfo に書く
 function updateStatus(){
-  $('#videoStatus').textContent = T('動画: ') + (state.videoName || T('なし'));
   const fs = $('#fileStatus');
   fs.replaceChildren();
-  const name = document.createElement('span');
-  name.textContent = state.collab ? '' : T('コメント: ') + (state.fileName || T('新規'));
-  fs.append(name, ' ');
   const st = document.createElement('span');
   if (state.dirty){ st.className = 'dirty'; st.textContent = T('● 未保存'); }
   else if (state.fileName){ st.className = 'clean'; st.textContent = T('✓ 保存済み'); }
   fs.append(st);
-  if (state.fileHandle && settings.autosave){ fs.append(T(' · 自動保存')); }
+  const auto = !!(state.fileHandle && settings.autosave);
+  $('#fiVideo').textContent = state.videoName || T('なし');
+  $('#fiComments').textContent = state.collab ? T('ホストに保存（共同編集）') : state.fileName || T('新規');
+  $('#fiState').textContent = (st.textContent || T('まだ保存していません')) + (auto ? T(' · 自動保存') : '');
+  $('#fileInfoBtn').title = T('開いているファイル') + '\n' + T('動画: ') + (state.videoName || T('なし'))
+    + (state.collab ? '' : '\n' + T('コメント: ') + (state.fileName || T('新規')));
   $('#btnSave').classList.toggle('dirty', !!state.dirty);
   $('#fsNote').textContent = hasFS
     ? T('このブラウザは開いたコメントファイルへの直接保存に対応しています。保存時にはファイル側に増えたコメントも取り込んでから書き込みます。')
-    : T('このブラウザはファイルへの直接保存に非対応のため、保存はダウンロードになります（Chrome / Edge 推奨）。');
+    : T('このブラウザはファイルへの直接保存に非対応のため、保存はダウンロードになります（直接保存はChrome / Edge使用時のみ）。');
 }
+function fileInfo(open){
+  const m = $('#fileInfo'), b = $('#fileInfoBtn');
+  if (open == null) open = m.hidden;
+  m.hidden = !open;
+  b.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  const r = b.getBoundingClientRect();
+  m.style.top = (r.bottom + 6) + 'px';
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
+}
+$('#fileInfoBtn').onclick = (e) => { e.stopPropagation(); fileInfo(); };
+document.addEventListener('pointerdown', (e) => { if (!$('#fileInfo').hidden && !e.target.closest('#fileInfo,#fileInfoBtn')) fileInfo(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#fileInfo').hidden){ fileInfo(false); $('#fileInfoBtn').focus(); } });
+window.addEventListener('resize', () => { if (!$('#fileInfo').hidden) fileInfo(false); });
 
 async function ensurePerm(h){
   const opt = { mode:'readwrite' };
@@ -1222,7 +1326,7 @@ async function writeHandle(h, mergeFirst){
       }
     } catch (e) { console.warn('re-read failed', e); }
   }
-  const fmt = /\.csv$/i.test(h.name) ? 'csv' : 'json';
+  const fmt = fileFormat(h.name);
   const w = await h.createWritable();
   await w.write(serialize(fmt));
   await w.close();
@@ -1239,7 +1343,8 @@ async function save({ saveAs = false } = {}){
         types: [
           { description:T('コメントファイル (JSON)'), accept:{ 'application/json':['.json'] } },
           { description:T('コメントファイル (CSV)'), accept:{ 'text/csv':['.csv'] } },
-        ],
+          { description:T('コメントファイル (ニコニコ形式 XML)'), accept:{ 'text/xml':['.xml'] } },
+        ].sort((a, b) => (Object.values(b.accept)[0][0] === '.' + settings.saveFormat) - (Object.values(a.accept)[0][0] === '.' + settings.saveFormat)),
       });
     } catch (e) { if (e.name === 'AbortError') return false; throw e; }
     state.fileHandle = h;
@@ -1249,7 +1354,7 @@ async function save({ saveAs = false } = {}){
   }
   const fmt = settings.saveFormat;
   const name = defaultFileName(fmt);
-  download(serialize(fmt), name, fmt === 'csv' ? 'text/csv' : 'application/json');
+  download(serialize(fmt), name, FORMAT_MIME[fmt] || FORMAT_MIME.json);
   state.fileName = name;
   markClean();
   toast(T`${name} をダウンロードしました`);
@@ -2244,7 +2349,7 @@ function tlDrawClip(g, c, sp, y, lh, gi){
   }
   if (sel){
     g.globalAlpha = 1;
-    g.lineWidth = 2; g.strokeStyle = '#fff';
+    g.lineWidth = 2; g.strokeStyle = theme().sel;
     rr(g, x0 + 1, top + 0.5, w - 2, h - 1, 4); g.stroke();
     const hz = coarse.matches ? 10 : 6;
     if (w > hz * 2.5){
@@ -2260,7 +2365,8 @@ function tlDrawClip(g, c, sp, y, lh, gi){
 function tlDraw(){
   const g = TL.g, W = TL.W, H = TL.H, lh = laneH();
   g.setTransform(TL.dpr, 0, 0, TL.dpr, 0, 0);
-  g.fillStyle = '#121417'; g.fillRect(0, 0, W, H);
+  const C = theme();
+  g.fillStyle = C.bg; g.fillRect(0, 0, W, H);
   const t1 = xt(W), D = tlDuration(), hasDur = isFinite(video.duration) && video.duration > 0;
   const step = rulerStep(), minor = step.major / step.div;
   // トラック
@@ -2269,22 +2375,22 @@ function tlDraw(){
     for (let ln = 0; ln < G.n; ln++){
       const y = laneTop(gi, ln);
       if (y > H || y + lh < TL_RULER) continue;
-      g.fillStyle = ln % 2 ? '#181b1f' : '#1c1f23';
+      g.fillStyle = ln % 2 ? C.laneB : C.laneA;
       g.fillRect(TL_HEAD, y, W - TL_HEAD, lh);
     }
   });
-  g.fillStyle = 'rgba(255,255,255,.045)';
+  g.fillStyle = C.grid;
   for (let k = Math.ceil(TL.t0 / step.major), n = 0; k * step.major <= t1 && n < TL_TICKS_MAX; k++, n++) g.fillRect(Math.round(tx(k * step.major)), TL_RULER, 1, H - TL_RULER);
-  g.fillStyle = 'rgba(0,0,0,.5)';
+  g.fillStyle = C.out;
   if (tx(0) > TL_HEAD) g.fillRect(TL_HEAD, TL_RULER, tx(0) - TL_HEAD, H);
   if (hasDur && tx(D) < W) g.fillRect(tx(D), TL_RULER, W - tx(D), H);
   // イン点〜アウト点の範囲（外を少し暗く）
   const rg = rangeSpan();
   if (rg){
-    g.fillStyle = 'rgba(0,0,0,.28)';
+    g.fillStyle = C.dimOut;
     if (tx(rg.s) > TL_HEAD) g.fillRect(TL_HEAD, TL_RULER, tx(rg.s) - TL_HEAD, H);
     if (tx(rg.e) < W) g.fillRect(tx(rg.e), TL_RULER, W - tx(rg.e), H);
-    g.fillStyle = 'rgba(255,179,0,.5)';
+    g.fillStyle = C.markLine;
     for (const x of [tx(rg.s), tx(rg.e)]) if (x >= TL_HEAD && x <= W) g.fillRect(Math.round(x) - 0.5, TL_RULER, 1, H);
   }
   g.font = TL_FONT; g.textBaseline = 'middle';
@@ -2303,12 +2409,12 @@ function tlDraw(){
   for (let i = lo; i < hi; i++){ const c = cs[i]; if (TL.sel.has(c.id)) drawnSel.add(c.id); drawOne(c); }
   // ドラッグ中は時刻だけ一時的に変えている（並び順はそのまま）ので、選んでいるものは必ず描く
   for (const id of TL.sel) if (!drawnSel.has(id)){ const c = shown().get(id); if (c) drawOne(c); }
-  if (TL.snapT != null){ g.fillStyle = '#ffd400'; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
+  if (TL.snapT != null){ g.fillStyle = theme().snap; g.fillRect(Math.round(tx(TL.snapT)) - 0.5, TL_RULER, 1.5, H); }
   tlDrawPeerSel(g, t1);
   const md = TL.drag;
   // 複製中は、元の場所に点線の枠を描く（元はそこに残る）
   if (md && md.copy && md.started){
-    g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1; g.setLineDash([4, 3]);
+    g.strokeStyle = theme().dash; g.lineWidth = 1; g.setLineDash([4, 3]);
     for (const [c, o] of md.orig){
       const pos = TL.laneOf.get(c.id); if (!pos) continue;
       const sp = spanFromVals(o.t, o.cmd), x0 = tx(sp.s), x1 = tx(sp.e), y = laneTop(pos.g, pos.lane);
@@ -2320,8 +2426,8 @@ function tlDraw(){
   if (md && md.type === 'create' && md.started && md.lastX != null){
     const s = tlCreateSpan(md), x0 = tx(s.ta), x1 = tx(s.tb), y = laneTop(md.gi, md.lane);
     g.fillStyle = TL.groups[md.gi].color; g.globalAlpha = 0.35; g.fillRect(x0, y + 2, x1 - x0, lh - 4); g.globalAlpha = 1;
-    g.strokeStyle = '#fff'; g.lineWidth = 1; g.setLineDash([4, 3]); g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5); g.setLineDash([]);
-    g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(T`＋ ${fmtPrecise(s.t)}・${s.dur.toFixed(1)}秒`, Math.max(x0, TL_HEAD) + 6, y + lh / 2);
+    g.strokeStyle = theme().sel; g.lineWidth = 1; g.setLineDash([4, 3]); g.strokeRect(Math.round(x0) + 0.5, y + 2.5, Math.round(x1 - x0), lh - 5); g.setLineDash([]);
+    g.fillStyle = theme().sel; g.textAlign = 'left'; g.fillText(T`＋ ${fmtPrecise(s.t)}・${s.dur.toFixed(1)}秒`, Math.max(x0, TL_HEAD) + 6, y + lh / 2);
   }
   if (md && md.type === 'marquee' && md.started && md.lastX != null){
     const r = tlMarqueeRect(md), x0 = tx(r.ta), x1 = tx(r.tb), y0 = r.ya - TL.scrollY, y1 = r.yb - TL.scrollY;
@@ -2331,8 +2437,8 @@ function tlDraw(){
   }
   g.restore();
   // 見出し列
-  g.fillStyle = '#0f1114'; g.fillRect(0, TL_RULER, TL_HEAD, H);
-  g.fillStyle = '#23262b'; g.fillRect(TL_HEAD - 1, TL_RULER, 1, H);
+  g.fillStyle = C.head; g.fillRect(0, TL_RULER, TL_HEAD, H);
+  g.fillStyle = C.headLine; g.fillRect(TL_HEAD - 1, TL_RULER, 1, H);
   g.save(); g.beginPath(); g.rect(0, TL_RULER, TL_HEAD, H - TL_RULER); g.clip();
   g.font = '600 12px system-ui,sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   TL.groups.forEach((G, gi) => {
@@ -2340,19 +2446,19 @@ function tlDraw(){
     if (y0 > H || y0 + h < TL_RULER) return;
     g.fillStyle = G.color; rr(g, 4, y0 + 3, 3, h - 6, 1.5); g.fill();
     const vy0 = Math.max(y0, TL_RULER), vy1 = Math.min(y0 + h, H);
-    g.fillStyle = '#d4d2cc'; g.fillText(G.label, TL_HEAD / 2 + 3, (vy0 + vy1) / 2);
-    g.fillStyle = '#25282d'; g.fillRect(0, y0 + h + TL_GAP / 2 - 0.5, W, 1);
+    g.fillStyle = C.headText; g.fillText(G.label, TL_HEAD / 2 + 3, (vy0 + vy1) / 2);
+    g.fillStyle = C.sep; g.fillRect(0, y0 + h + TL_GAP / 2 - 0.5, W, 1);
   });
   g.restore();
   // 目盛り
-  g.fillStyle = '#1a1d21'; g.fillRect(0, 0, W, TL_RULER);
-  g.fillStyle = '#2c3036'; g.fillRect(0, TL_RULER - 1, W, 1);
+  g.fillStyle = C.ruler; g.fillRect(0, 0, W, TL_RULER);
+  g.fillStyle = C.rulerLine; g.fillRect(0, TL_RULER - 1, W, 1);
   // 目盛りの上のイン点〜アウト点（琥珀の帯と、両端のかぎ）
   if (rg){
     const a = Math.max(TL_HEAD, tx(rg.s)), b = Math.min(W, tx(rg.e));
     if (b > a){
-      g.fillStyle = 'rgba(255,179,0,.2)'; g.fillRect(a, 0, b - a, TL_RULER - 1);
-      g.fillStyle = '#ffb300';
+      g.fillStyle = C.markSoft; g.fillRect(a, 0, b - a, TL_RULER - 1);
+      g.fillStyle = C.mark;
       const xa = tx(rg.s), xb = tx(rg.e);
       if (xa >= TL_HEAD - 1){ g.fillRect(Math.round(xa) - 1, 0, 2, TL_RULER - 1); g.fillRect(Math.round(xa) - 1, 0, 6, 2); g.fillRect(Math.round(xa) - 1, TL_RULER - 3, 6, 2); }
       if (xb <= W + 1){ g.fillRect(Math.round(xb) - 1, 0, 2, TL_RULER - 1); g.fillRect(Math.round(xb) - 5, 0, 6, 2); g.fillRect(Math.round(xb) - 5, TL_RULER - 3, 6, 2); }
@@ -2363,9 +2469,9 @@ function tlDraw(){
   for (let k = Math.ceil(TL.t0 / minor), n = 0; k * minor <= t1 && n < TL_TICKS_MAX; k++, n++){
     const x = Math.round(tx(k * minor));
     if (k % step.div === 0){
-      g.fillStyle = '#7d828a'; g.fillRect(x, TL_RULER - 9, 1, 8);
-      g.fillStyle = '#b9bcc2'; g.fillText(fmtRuler(k * minor, step.major), x + 3, 11);
-    } else { g.fillStyle = '#4a4f56'; g.fillRect(x, TL_RULER - 5, 1, 4); }
+      g.fillStyle = C.tick; g.fillRect(x, TL_RULER - 9, 1, 8);
+      g.fillStyle = C.tickText; g.fillText(fmtRuler(k * minor, step.major), x + 3, 11);
+    } else { g.fillStyle = C.tickMinor; g.fillRect(x, TL_RULER - 5, 1, 4); }
   }
   g.restore();
   // マウスを重ねている位置（Final Cut Pro のスキマーのように、細い線とその時刻を出す）と、目盛りをつまんで動かしている位置の時刻。
@@ -2374,19 +2480,19 @@ function tlDraw(){
   const sx = sd ? sd.lastX : hv && !TL.drag ? hv.x : null;
   if (sx != null && sx >= TL_HEAD && sx <= W){
     const hx = Math.round(sx) + 0.5, onRuler = !!sd || hv.y < TL_RULER;
-    if (!sd){ g.fillStyle = 'rgba(255,255,255,.28)'; g.fillRect(hx - 0.5, TL_RULER, 1, H); }
+    if (!sd){ g.fillStyle = C.hoverLine; g.fillRect(hx - 0.5, TL_RULER, 1, H); }
     const label = fmtPrecise(Math.max(0, xt(sx)));
     g.font = '600 10.5px ' + 'ui-monospace,Menlo,Consolas,monospace'; g.textBaseline = 'middle';
     const tw = g.measureText(label).width + 10, gap = 16;
     const lx = !onRuler ? clamp(hx - tw / 2, TL_HEAD, W - tw)
       : hx + gap + tw <= W ? hx + gap : Math.max(TL_HEAD, hx - gap - tw);
-    g.fillStyle = '#e8e6e1'; rr(g, lx, 2, tw, TL_RULER - 5, 3); g.fill();
-    g.fillStyle = '#121417'; g.textAlign = 'center'; g.fillText(label, lx + tw / 2, TL_RULER / 2 - 0.5);
+    g.fillStyle = C.tipBg; rr(g, lx, 2, tw, TL_RULER - 5, 3); g.fill();
+    g.fillStyle = C.tipInk; g.textAlign = 'center'; g.fillText(label, lx + tw / 2, TL_RULER / 2 - 0.5);
   }
   // 再生位置
   const px = tx(video.currentTime || 0);
   if (px >= TL_HEAD - 7 && px <= W + 7){
-    g.fillStyle = '#ff4d5e';
+    g.fillStyle = C.playhead;
     g.fillRect(Math.round(px) - 0.5, 0, 1.5, H);
     g.beginPath(); g.moveTo(px - 6, 0); g.lineTo(px + 6, 0); g.lineTo(px + 6, 8); g.lineTo(px, 14); g.lineTo(px - 6, 8); g.closePath(); g.fill();
   }
@@ -2445,9 +2551,9 @@ function tlDrawOverview(){
     cv.width = TL.ov.width; cv.height = TL.ov.height;
     const c2 = cv.getContext('2d');
     c2.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c2.fillStyle = '#0d0f12'; c2.fillRect(0, 0, W, H);
+    c2.fillStyle = theme().ovBg; c2.fillRect(0, 0, W, H);
     const k = ovK(), rh = (H - 4) / 3;
-    if (isFinite(video.duration)){ c2.fillStyle = '#181b20'; c2.fillRect(ovX(0), 0, video.duration * k, H); }
+    if (isFinite(video.duration)){ c2.fillStyle = theme().ovVideo; c2.fillRect(ovX(0), 0, video.duration * k, H); }
     c2.globalAlpha = 0.7;
     for (const c of state.comments){
       const sp = spanOf(c), gi = TL_GI[sp.o.pos];
@@ -2461,13 +2567,13 @@ function tlDrawOverview(){
   g.drawImage(TL.ovCache, 0, 0);
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   const [a, b] = ovWindow();
-  g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, 0, a, H); g.fillRect(b, 0, W - b, H);
-  g.strokeStyle = '#ffb300'; g.lineWidth = 1.5;
+  g.fillStyle = theme().ovOut; g.fillRect(0, 0, a, H); g.fillRect(b, 0, W - b, H);
+  g.strokeStyle = theme().mark; g.lineWidth = 1.5;
   rr(g, a + 0.75, 0.75, Math.max(3, b - a - 1.5), H - 1.5, 3); g.stroke();
-  g.fillStyle = '#ffb300';
+  g.fillStyle = theme().mark;
   g.fillRect(a, H / 2 - 7, 3, 14); g.fillRect(b - 3, H / 2 - 7, 3, 14);
   tlDrawOverviewPeers(g, H);
-  g.fillStyle = '#ff4d4d'; g.fillRect(ovX(video.currentTime || 0) - 0.5, 0, 1.5, H);
+  g.fillStyle = theme().playhead; g.fillRect(ovX(video.currentTime || 0) - 0.5, 0, 1.5, H);
 }
 function tlFrame(playing, t){
   if (!tlShown()) return;
@@ -4469,7 +4575,7 @@ function tmLens(y){
   const ticks = tm.ticks || [];
   for (const t of tm.lensOn || []) t.el.style.removeProperty('--m');
   tm.lensOn = [];
-  if (y == null || !ticks.length || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (y == null || !ticks.length || a11y('reduceMotion')) return;
   // 近くの目盛りだけを二分探索で探す
   let lo = 0, hi = ticks.length;
   while (lo < hi){ const mid = (lo + hi) >> 1; if (ticks[mid].y < y - TM_LENS) lo = mid + 1; else hi = mid; }
@@ -4489,7 +4595,7 @@ function tmEnsureVisible(smooth){
   if (y < top + m) to = y - m;
   else if (y > top + vh - m) to = y - vh + m;
   if (to == null) return;
-  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reduce = a11y('reduceMotion');
   track.scrollTo({ top: clamp(to, 0, tm.h - vh), behavior: smooth && !reduce ? 'smooth' : 'auto' });
 }
 // 見ている位置・指している位置の印
@@ -5719,6 +5825,8 @@ function syncEls(box, n, make){
   while (box.children.length > n) box.lastChild.remove();
   return [...box.children];
 }
+// 名前の頭文字（カラー以外で区別するときに、色の印に添える）
+const peerInitial = (p) => [...String(p.name || '?').trim()][0] || '?';
 function seekMarks(){
   const d = video.duration, items = [];
   if (isFinite(d) && d > 0) for (const [id, pr] of collab.presence){
@@ -5730,13 +5838,14 @@ function seekMarks(){
     els[i].style.left = (clamp(t / d, 0, 1) * 100) + '%';
     els[i].style.background = peerColor(p);
     els[i].title = `${p.name} ${fmt(t)}`;
+    els[i].dataset.ch = peerInitial(p);
   });
 }
 function stageCursors(){
   const items = [];
   for (const [id, pr] of collab.presence){
     const p = peerOf(id), cur = pr.sm ? pr.sm.cur : pr.state.cur;
-    if (p && cur && cur.a === 'st') items.push([p, cur]);
+    if (p && cur && cur.a === 'st' && settings.peerCursors !== false) items.push([p, cur]);
   }
   const els = syncEls($('#peerCursors'), items.length, () => {
     const el = mkEl('div', 'peer-cursor');
@@ -5804,10 +5913,16 @@ function tlDrawPeers(g){
         g.fillStyle = peerColor(p, 0.5); g.fillRect(Math.round(x) - 0.5, TL_RULER, 1.5, H);
         g.fillStyle = peerColor(p, 0.9);
         g.beginPath(); g.moveTo(x - 4, TL_RULER - 9); g.lineTo(x + 4, TL_RULER - 9); g.lineTo(x, TL_RULER - 1); g.closePath(); g.fill();
+        // カラー以外で区別: 誰の再生位置かを、名前の頭文字でも出す
+        if (a11y('noColor')){
+          const ch = peerInitial(p), w = g.measureText(ch).width + 6;
+          g.fillStyle = peerColor(p, 0.95); rr(g, x + 5, TL_RULER - 14, w, 13, 3); g.fill();
+          g.fillStyle = '#111'; g.fillText(ch, x + 8, TL_RULER - 7);
+        }
       }
     }
     const cur = pr.sm ? pr.sm.cur : pr.state.cur && { a: pr.state.cur.a, x: pr.state.cur.t, y: tlLaneToY(pr.state.cur.y) };
-    if (cur && cur.a === 'tl'){
+    if (cur && cur.a === 'tl' && settings.peerCursors !== false){
       const x = tx(cur.x), y = TL_RULER + cur.y - TL.scrollY;
       if (x >= TL_HEAD && x <= W && y >= TL_RULER && y <= H) tlDrawCursor(g, x, y, p);
     }
@@ -6127,7 +6242,7 @@ $('#btnCall').onclick = callSend;
    ===================================================================== */
 // 設定は1つのダイアログ（#settingsDlg）にまとめる。左の見出しで項目へ移り、スクロールに合わせて今いる項目に印を付ける
 const setBody = $('#setBody'), setNav = $('#setNav');
-let settingsSec = 'play', settingsLock = 0;
+let settingsSec = 'look', settingsLock = 0;
 function settingsMark(sec){
   settingsSec = sec;
   for (const b of setNav.children){
@@ -6163,6 +6278,28 @@ $('#listSettings').onclick = () => settingsOpen('list');
 $('#setClose').onclick = () => $('#settingsDlg').close();
 $('#setPeerSmooth').checked = settings.peerSmooth !== false;
 $('#setPeerSmooth').onchange = (e) => { settings.peerSmooth = e.target.checked; saveSettings(); };
+$('#setPeerCursors').checked = settings.peerCursors !== false;
+$('#setPeerCursors').onchange = (e) => { settings.peerCursors = e.target.checked; saveSettings(); presenceChanged(); };
+$('#setSkim').checked = settings.tlSkim !== false;
+$('#setSkim').onchange = (e) => { settings.tlSkim = e.target.checked; saveSettings(); };
+// テーマとアクセシビリティ（lookApply）。canvas に描いているものは描き直す
+lookRedraw = () => { TL.dirty = true; TL.ovDirty = true; state.needsDraw = true; presence.dirty = true; drawDensity(); };
+$('#setTheme').value = settings.theme === 'xp' ? 'xp' : 'dark';
+$('#setTheme').onchange = (e) => { settings.theme = e.target.value; saveSettings(); lookApply(); };
+const A11Y_INPUTS = { noColor: $('#setNoColor'), contrast: $('#setContrast'), reduceMotion: $('#setReduceMotion') };
+function a11yFill(){
+  if (!settings.a11y || typeof settings.a11y !== 'object') settings.a11y = {};
+  let own = false;
+  for (const [k, el] of Object.entries(A11Y_INPUTS)){ el.checked = a11y(k); if (typeof settings.a11y[k] === 'boolean') own = true; }
+  $('#a11yNote').textContent = own
+    ? T('自分で選んだ設定を使っています。')
+    : T('システムの設定に合わせています（「カラー以外で区別」は、システムでコントラストを上げているときにオンになります）。切り替えると、このブラウザではその設定を使います。');
+  $('#a11yReset').hidden = !own;
+}
+for (const [k, el] of Object.entries(A11Y_INPUTS)) el.onchange = () => { settings.a11y[k] = el.checked; saveSettings(); lookApply(); a11yFill(); };
+$('#a11yReset').onclick = () => { settings.a11y = { noColor:null, contrast:null, reduceMotion:null }; saveSettings(); lookApply(); a11yFill(); };
+for (const mq of [a11ySys.reduce, a11ySys.contrast, a11ySys.forced]) mq.addEventListener?.('change', () => { lookApply(); a11yFill(); });
+a11yFill();
 $('#setOpacity').value = settings.opacity;
 const applyLetterbox = () => { document.documentElement.style.setProperty('--letterbox', settings.letterbox); $('#setLetterbox').value = settings.letterbox; };
 applyLetterbox();
@@ -6173,7 +6310,7 @@ $('#setArea').onchange = (e) => { settings.commentArea = e.target.value; saveSet
 $('#setPause').checked = settings.pauseOnInput;
 $('#setBorder').checked = settings.mineBorder;
 $('#setAutosave').checked = settings.autosave;
-$('#setFormat').value = settings.saveFormat;
+$('#setFormat').value = FORMAT_MIME[settings.saveFormat] ? settings.saveFormat : 'json';
 $('#setOpacity').oninput = (e) => { settings.opacity = +e.target.value; saveSettings(); state.needsDraw = true; };
 $('#setPause').onchange = (e) => { settings.pauseOnInput = e.target.checked; saveSettings(); };
 $('#setBorder').onchange = (e) => { settings.mineBorder = e.target.checked; saveSettings(); displayRenderer.reset(); state.needsDraw = true; };
@@ -6237,7 +6374,7 @@ if (document.fonts && document.fonts.ready){
 (() => {
   const box = document.querySelector('.brand-flow'), brand = document.querySelector('.brand');
   if (!box || !brand) return;
-  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const reduce = { get matches(){ return a11y('reduceMotion'); } };
   const BOX_W = 24, SPEED = [30, 40, 24], ACCEL_TAU = 0.35, DECEL = 45, OMEGA = 6;
   const bars = [...box.children].map((el, i) => {
     const cs = getComputedStyle(el), w = parseFloat(cs.width) || 12, left = parseFloat(cs.left) || 0;
