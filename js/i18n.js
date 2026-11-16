@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 'use strict';
 /* 画面の言葉（日本語・英語）。?lang=en で英語、?lang=ja で日本語にし、選んだものはこのブラウザで覚える（komenagare.lang）。
+   設定から変えたときは、開き直さずにその場で切り替える（I18N.setLang。開いている動画や保存していないコメントを失わない）。
    - JS の中の言葉は T('…') と T`…${x}…` で書く。日本語のときはそのまま返す。英語のときは下の EN から引く
      （T`…` のキーは ${…} を {0} {1} … にしたもの。訳では順番を入れ替えてよい）。EN に無ければ日本語のまま（括弧などだけ直す）
    - index.html の言葉は、開いたときに I18N.translate(document.body) で置き換える（文字と title・placeholder・aria-label）。
@@ -69,7 +70,7 @@ var HELP_EN = `
 <p class="muted" style="margin:0">“Fast” decodes and encodes the video file directly, so it is faster than real time, and you can keep editing or switch tabs while it runs (“Continue in background” closes the dialog and keeps going). Formats: MP4 / MOV / WebM / MKV. If your browser or video doesn’t support it, use “Real-time recording”. Resolution can be the source size (even 8K) or smaller. Bitrate can be “Same as source” (default), “Match resolution”, or a number. In Chrome / Edge you choose where to save when starting, and the file is written gradually, so long videos use little memory. Browsers that can’t choose a save location download the result, up to 4 GB at a time. For very large videos such as 8K, the CLI’s <code>komenagare render</code> is recommended. When in and out points are set, they become the export range.</p>
 
 <h4>Vim editor</h4>
-<p class="muted" style="margin:0">Edit comments as text, one per line (<code>01:23.45 ue red | text</code>), with Vim keys. Change times or commands and apply with <code>:w</code>; close with <code>:q</code>. <code>:now</code> adds a line at the playhead, <code>:seek</code> jumps to the time on the cursor line. Long lines wrap; <code>:set nowrap</code> scrolls sideways instead and <code>:set linebreak</code> wraps at word boundaries (options set with <code>:set</code> are kept for next time). See <code>:help</code> in the editor for the supported keys. On phones, the key bar at the bottom enters Esc and Ctrl (Esc is also next to :w above).</p>
+<p class="muted" style="margin:0">Edit comments as text, one per line (<code>01:23.45 ue red | text</code>), with Vim keys. Change times or commands and apply with <code>:w</code>; close with <code>:q</code>. <code>:now</code> adds a line at the playhead, <code>:seek</code> jumps to the time on the cursor line. Long lines wrap; <code>:set nowrap</code> scrolls sideways instead and <code>:set linebreak</code> wraps at word boundaries (options set with <code>:set</code> are kept for next time). See <code>:help</code> in the editor for the supported keys (scroll it with <code>j</code> / <code>k</code>, <code>d</code> / <code>u</code> or Space; Enter or <code>q</code> closes it). On phones, the key bar at the bottom enters Esc and Ctrl (Esc is also next to :w above).</p>
 
 <h4>History</h4>
 <p class="muted" style="margin:0">The “History” tab on the right lists comment additions, changes and deletions, newest first. “Undo” adds a change that reverses it (it stops if the same comment changed afterwards), and “Go” jumps to that comment’s time. While collaborating, everyone’s changes appear.</p>
@@ -89,7 +90,7 @@ var HELP_EN = `
 <p class="muted" style="margin:0">JSON: an array of <code>{"t": seconds, "cmd": "command", "text": "text", "id": "UUID"}</code> (under the <code>comments</code> key). CSV: four columns <code>time,command,text,id</code>. To keep spreadsheets from running cells as formulas, cells starting with <code>= + - @</code> and similar get a leading <code>'</code> (Komenagare removes it when reading). <code>id</code> identifies each comment; if omitted, a new one is assigned on load. Niconico comment XML (<code>&lt;chat vpos mail&gt;</code>) and comment JSON can be read too. Comments can also be saved as Niconico-format XML: choose it under “Save as”, or as the download format under “Save” in Settings.</p>
 
 <h4>Language</h4>
-<p class="muted" style="margin:0">Add <code>?lang=en</code> to the URL for English or <code>?lang=ja</code> for Japanese, or change it under Settings in the menu bar. The choice is remembered in this browser. Messages from the host (the komenagare command) stay in Japanese.</p>
+<p class="muted" style="margin:0">Add <code>?lang=en</code> to the URL for English or <code>?lang=ja</code> for Japanese, or change it under Settings in the menu bar (it switches in place, so the open video and unsaved comments stay). The choice is remembered in this browser. Messages from the host (the komenagare command) stay in Japanese.</p>
 
 <h4>License</h4>
 <p class="muted" style="margin:0">Komenagare © 2026 Igarin. Published under the <a href="https://github.com/igarinpiano/komenagare" target="_blank" rel="noopener">Apache License 2.0</a> (distribute LICENSE and NOTICE with the code). Video conversion uses <a href="https://github.com/Vanilagy/mediabunny" target="_blank" rel="noopener">Mediabunny</a> (MPL-2.0).</p>
@@ -309,7 +310,8 @@ var I18N = (function (){
     'E: {0} 行目: {1}': 'E: line {0}: {1}', '（ほか {0} 件）': ' ({0} more)', ' / 重複 {0}': ' / {0} duplicates',
     '"コメント" {0}件 反映しました（追加 {1} / 削除 {2}{3}）': '"comments" {0} applied (added {1} / deleted {2}{3})',
     'E: 動画が開かれていません': 'E: No video is open', 'E: 時刻「{0}」を解釈できません': 'E: Can’t read the time “{0}”', 'E: この行には時刻がありません': 'E: This line has no time',
-    'コメナガレ Vim エディタ                                   （Enter / q で閉じる）': 'Komenagare Vim editor                                    (Enter / q to close)',
+    'コメナガレ Vim エディタ          （j / k・d / u・Space でスクロール、Enter / q で閉じる）': 'Komenagare Vim editor          (j / k, d / u, Space to scroll; Enter / q to close)',
+    '-- j / k・d / u・Space でスクロール、Enter か q で閉じる --': '-- j / k, d / u, Space to scroll; Enter or q to close --',
     '書式        時刻 コマンド | 本文       例) 01:23.45 ue red @5 | こんにちは': 'Format      time command | text       e.g. 01:23.45 ue red @5 | hello',
     '            本文の改行は \\n 、\\ 自体は \\\\ 。" で始まる行と空行は無視されます。': '            Newlines in text are \\n, a backslash is \\\\. Lines starting with " and empty lines are ignored.',
     '            表示時間はコマンドの @秒数。時刻の数字は Ctrl-a / Ctrl-x で増減できます。': '            Duration is @seconds in the command. Ctrl-a / Ctrl-x change the time digits.',
@@ -445,7 +447,41 @@ var I18N = (function (){
     return lang === 'ja' || typeof s !== 'string' ? s : look(s);
   }
   // 画面（index.html）の言葉を置き換える。前後の空白はそのまま
-  const SKIP = 'script,style,textarea,.vim-screen,.term-out,.help';
+  // 利用者が書いたもの（コメント・プリセット・名前など）が出る所は置き換えない（JS が今の言語で出し直す）
+  const SKIP = 'script,style,textarea,.vim-screen,.vim-more,.term-out,.help,.list,.presets,.hist,#prList,.toasts,#conflictList,#projectsList,#restoreList,#peersList,#projectBtn,#fiVideo,#fiComments';
+  // 置き換えた所は、元の日本語と置き換えた英語を控えておき、日本語に戻すときに使う（setLang）。
+  // 控えた英語のままの所だけを戻す（そのあと画面が書き換えた所には触らない）
+  const origText = new WeakMap(), origAttr = new WeakMap(), ATTRS = ['title', 'placeholder', 'aria-label', 'label'];
+  const walk = (root) => {
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.parentElement && !n.parentElement.closest(SKIP) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+    const nodes = [];
+    while (tw.nextNode()) nodes.push(tw.currentNode);
+    return nodes;
+  };
+  // 英語のときに JS が作った所（元の日本語を控えていない）は、英語から日本語を逆に引いて戻す
+  let back = null;
+  const unlook = (en) => {
+    if (!back){ back = new Map(); for (const [ja, e] of Object.entries(EN)) if (!ja.includes('{0}') && !back.has(e)) back.set(e, ja); }
+    return /[A-Za-z]{2}/.test(en) ? back.get(en) : undefined;
+  };
+  function restore(root){
+    for (const n of walk(root)){
+      const o = origText.get(n), v = n.nodeValue;
+      if (o){ if (v === o.en) n.nodeValue = o.ja; origText.delete(n); continue; }
+      const k = v.trim(), ja = k && unlook(k);
+      if (ja) n.nodeValue = v.slice(0, v.indexOf(k)) + ja + v.slice(v.indexOf(k) + k.length);
+    }
+    for (const el of root.querySelectorAll(ATTRS.map(a => `[${a}]`).join(','))){
+      const o = origAttr.get(el) || {};
+      for (const a of ATTRS){
+        const v = el.getAttribute(a);
+        if (!v) continue;
+        if (o[a]){ if (v === o[a].en) el.setAttribute(a, o[a].ja); }
+        else { const ja = unlook(v.trim()); if (ja) el.setAttribute(a, ja); }
+      }
+      origAttr.delete(el);
+    }
+  }
   function translate(root){
     if (lang === 'ja' || !root) return;
     const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.parentElement && !n.parentElement.closest(SKIP) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
@@ -455,22 +491,49 @@ var I18N = (function (){
       const v = n.nodeValue, k = v.trim();
       if (!k || !/[぀-ヿ一-鿿]/.test(k)) continue;
       const t = look(k);
-      if (t !== k) n.nodeValue = v.slice(0, v.indexOf(k)) + t + v.slice(v.indexOf(k) + k.length);
+      if (t !== k){ n.nodeValue = v.slice(0, v.indexOf(k)) + t + v.slice(v.indexOf(k) + k.length); origText.set(n, { ja: v, en: n.nodeValue }); }
     }
     for (const el of root.querySelectorAll('[title],[placeholder],[aria-label],[label]')){
       for (const a of ['title', 'placeholder', 'aria-label', 'label']){
         const v = el.getAttribute(a);
-        if (v && /[぀-ヿ一-鿿]/.test(v)) el.setAttribute(a, look(v.trim()));
+        if (v && /[぀-ヿ一-鿿]/.test(v)){
+          const t = look(v.trim());
+          el.setAttribute(a, t);
+          const o = origAttr.get(el) || {}; o[a] = { ja: v, en: t }; origAttr.set(el, o);
+        }
       }
     }
   }
-  if (lang === 'en' && typeof document !== 'undefined'){
-    document.documentElement.lang = 'en';
-    document.title = 'Komenagare';
-    translate(document.body);
+  // 画面の言葉を今の言語にする（index.html の言葉・使い方・タイトル）
+  let helpJa = null;
+  function applyDoc(){
+    if (typeof document === 'undefined') return;
+    document.documentElement.lang = lang;
+    document.title = lang === 'en' ? 'Komenagare' : 'コメナガレ';
     const help = document.querySelector('#helpDlg .help');
-    if (help && typeof HELP_EN === 'string') help.innerHTML = HELP_EN;
+    if (lang === 'en'){
+      translate(document.body);
+      if (help && typeof HELP_EN === 'string'){ if (helpJa == null) helpJa = help.innerHTML; help.innerHTML = HELP_EN; }
+    } else {
+      restore(document.body);
+      if (help && helpJa != null) help.innerHTML = helpJa;
+    }
   }
-  return { lang, T, translate };
+  if (lang === 'en') applyDoc();
+  // 開き直さずに言語を切り替える（開いている動画や保存していないコメントを失わないように）。
+  // index.html の言葉はここで置き換え、JS が出している言葉は呼んだ側（js/app.js の langApply）が出し直す。
+  // 選んだ言語はこのブラウザで覚え、URL の ?lang= も合わせる（書き換えるだけで、移動はしない）
+  function setLang(l){
+    if (l !== 'en' && l !== 'ja' || l === lang) return false;
+    lang = l;
+    try { localStorage.setItem('komenagare.lang', l); } catch {}
+    try {
+      const u = new URL(location.href);
+      if (u.searchParams.has('lang')){ u.searchParams.set('lang', l); history.replaceState(history.state, '', u.href); }
+    } catch {}
+    applyDoc();
+    return true;
+  }
+  return { get lang(){ return lang; }, T, translate, setLang };
 })();
 var T = I18N.T;

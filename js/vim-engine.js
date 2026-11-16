@@ -2689,9 +2689,18 @@ function createVimEngine(hooks = {}){
   }
 
   /* ---------- 公開 API ---------- */
+  const MORE_KEYS = { j:'line', '<Down>':'line', '<C-e>':'line', '<C-n>':'line', k:'-line', '<Up>':'-line', '<C-y>':'-line', '<C-p>':'-line',
+    d:'half', '<C-d>':'half', u:'-half', '<C-u>':'-half', f:'page', '<C-f>':'page', '<PageDown>':'page', ' ':'page', '<Space>':'page',
+    b:'-page', '<C-b>':'-page', '<PageUp>':'-page', g:'top', '<Home>':'top', G:'end', '<End>':'end' };
   function feedKey(k, fromMacro){
     if (E.recording && !fromMacro) recKeys.push(k);
     if (E.more && !fromMacro){
+      // 出力（:help など）が長いときは、キーでスクロールする（画面の側が hooks.moreScroll で動かす。動かせたら true）。
+      // j / k・矢印で1行、d / u（Ctrl-d / Ctrl-u）で半ページ、f / b・Space・PageDown / PageUp で1ページ、g / G で先頭・末尾。
+      // Space は末尾まで来ていたら閉じる。Enter・q・Esc は閉じる
+      const sc = MORE_KEYS[k];
+      if (sc && hooks.moreScroll?.(sc)) return;
+      if (sc && sc !== 'page') return;
       E.more = null;
       if (k === '<CR>' || k === ' ' || k === '<Esc>' || k === '<C-c>' || k === 'q' || k === '<Space>') return;
     }

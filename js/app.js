@@ -17,9 +17,9 @@ const M_VIDEO = 0.32; // 縦向きのスマホで、動画の高さが画面の�
 // 右にリスト: 左にプレビューとタイムライン、右にパネル（縦いっぱい）。右にタイムライン: 左にプレビューとパネル、右にタイムライン。
 // 大きさ（右の列の幅 w・左下の行の高さ h）は配置ごとに覚える（標準は前からの sideWidth・tlHeight）
 const LAYOUTS = {
-  std: { name: T('デフォルト'), top: ['player', 'side'], bottom: 'tl', w: 'sideWidth', h: 'tlHeight', dw: SIDE_W, dh: TL_H },
-  split: { name: T('右にリスト'), left: ['player', 'tl'], right: 'side', w: 'splitW', h: 'splitH', dw: SIDE_W, dh: 320 },
-  splitTl: { name: T('右にタイムライン'), left: ['player', 'side'], right: 'tl', w: 'splitTlW', h: 'splitTlH', dw: 620, dh: 300 },
+  std: { get name(){ return T('デフォルト'); }, top: ['player', 'side'], bottom: 'tl', w: 'sideWidth', h: 'tlHeight', dw: SIDE_W, dh: TL_H },
+  split: { get name(){ return T('右にリスト'); }, left: ['player', 'tl'], right: 'side', w: 'splitW', h: 'splitH', dw: SIDE_W, dh: 320 },
+  splitTl: { get name(){ return T('右にタイムライン'); }, left: ['player', 'side'], right: 'tl', w: 'splitTlW', h: 'splitTlH', dw: 620, dh: 300 },
 };
 const settings = Object.assign(
   { show:true, opacity:1, pauseOnInput:false, mineBorder:false, autosave:true, saveFormat:'json', volume:1, muted:false,
@@ -883,12 +883,12 @@ $('#prList').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.tar
 
 /* ---------- コマンドパレット ---------- */
 const PALETTE = [
-  { label:T('位置'), tokens:['naka','ue','shita'] },
-  { label:T('サイズ'), tokens:['medium','big','small'] },
-  { label:T('色'), tokens:['white','red','pink','orange','yellow','green','cyan','blue','purple','black'] },
-  { label:T('色2'), tokens:['white2','red2','pink2','orange2','yellow2','green2','cyan2','blue2','purple2','black2'] },
-  { label:T('フォント'), tokens:['defont','gothic','mincho'] },
-  { label:T('特殊'), tokens:['invisible','full','ender','_live'] },
+  { get label(){ return T('位置'); }, tokens:['naka','ue','shita'] },
+  { get label(){ return T('サイズ'); }, tokens:['medium','big','small'] },
+  { get label(){ return T('色'); }, tokens:['white','red','pink','orange','yellow','green','cyan','blue','purple','black'] },
+  { get label(){ return T('色2'); }, tokens:['white2','red2','pink2','orange2','yellow2','green2','cyan2','blue2','purple2','black2'] },
+  { get label(){ return T('フォント'); }, tokens:['defont','gothic','mincho'] },
+  { get label(){ return T('特殊'); }, tokens:['invisible','full','ender','_live'] },
 ];
 const DEFAULT_TOKEN = { pos:'naka', size:'medium', color:'white', font:'defont' };
 const palette = $('#palette');
@@ -1412,13 +1412,13 @@ async function mergeFiles(files){
   toast(msg, { timeout:5000 });
 }
 
-const COMMENT_TYPES = [{ description:T('コメントファイル'), accept:{ 'application/json':['.json'], 'text/csv':['.csv'], 'text/xml':['.xml'] } }];
+const commentTypes = () => [{ description:T('コメントファイル'), accept:{ 'application/json':['.json'], 'text/csv':['.csv'], 'text/xml':['.xml'] } }];
 $('#btnOpenComments').onclick = async () => {
   if (state.dirty && state.comments.length &&
       !confirm(T('未保存のコメントがあります。破棄して別のファイルを開きますか？\n（今のコメントに追加したい場合は「マージ」を使ってください）'))) return;
   if (hasFS){
     try {
-      const [h] = await window.showOpenFilePicker({ types: COMMENT_TYPES });
+      const [h] = await window.showOpenFilePicker({ types: commentTypes() });
       const f = await h.getFile();
       loadReplace(await f.text(), f.name, h);
     } catch (e) { if (e.name !== 'AbortError') toast(T('開けませんでした: ') + e.message, { type:'error' }); }
@@ -1431,7 +1431,7 @@ $('#fileComments').onchange = async (e) => {
 $('#btnMerge').onclick = async () => {
   if (hasFS){
     try {
-      const hs = await window.showOpenFilePicker({ types: COMMENT_TYPES, multiple:true });
+      const hs = await window.showOpenFilePicker({ types: commentTypes(), multiple:true });
       mergeFiles(await Promise.all(hs.map(h => h.getFile())));
     } catch (e) { if (e.name !== 'AbortError') toast(T('開けませんでした: ') + e.message, { type:'error' }); }
   } else $('#fileMerge').click();
@@ -2153,11 +2153,14 @@ function updateUndoUI(){
    タイムライン
    ===================================================================== */
 // 見出し列の幅は、英語の段の名前（Top・Flow・Btm）が入るよう少し広く
-const TL_RULER = 22, TL_HEAD = I18N.lang === 'en' ? 40 : 30, TL_GAP = 6, TL_MIN_DUR = 0.1;
+// 見出し列の幅は言語で変わる（英語は Top / Flow / Btm。言語を切り替えたら langApply が直す）
+const tlHeadW = () => I18N.lang === 'en' ? 40 : 30;
+let TL_HEAD = tlHeadW();
+const TL_RULER = 22, TL_GAP = 6, TL_MIN_DUR = 0.1;
 const TL_GROUPS = [
-  { pos:'ue', label:T('上'), color:'#2fae78' },
-  { pos:'naka', label:T('流'), color:'#3d7be0' },
-  { pos:'shita', label:T('下'), color:'#d08a2a' },
+  { pos:'ue', get label(){ return T('上'); }, color:'#2fae78' },
+  { pos:'naka', get label(){ return T('流'); }, color:'#3d7be0' },
+  { pos:'shita', get label(){ return T('下'); }, color:'#d08a2a' },
 ];
 const TL_GI = { ue:0, naka:1, shita:2 };
 const coarse = matchMedia('(pointer: coarse)');
@@ -3354,9 +3357,21 @@ function vimEx(name, args, ctx){
   if (n === 'play'){ togglePlay(); return true; }
   return false;
 }
+// :help などの出力（#vimMore）をキーでスクロールする（js/vim-engine.js の MORE_KEYS）。動かせたら true。
+// 1ページ送り（Space など）は、末尾まで来ていたら false を返して閉じさせる
+function vimMoreScroll(how){
+  const el = $('#vimMore'), max = el.scrollHeight - el.clientHeight;
+  if (el.hidden || max <= 1) return false;
+  const line = parseFloat(getComputedStyle(el).lineHeight) || 19, page = Math.max(line, el.clientHeight - line * 2);
+  const back = how[0] === '-', kind = back ? how.slice(1) : how;
+  if (kind === 'page' && !back && el.scrollTop >= max - 1) return false;
+  const d = kind === 'line' ? line : kind === 'half' ? page / 2 : kind === 'page' ? page : 0;
+  el.scrollTop = kind === 'top' ? 0 : kind === 'end' ? max : clamp(el.scrollTop + (back ? -d : d), 0, max);
+  return true;
+}
 function vimHelp(){
   return [
-    T('コメナガレ Vim エディタ                                   （Enter / q で閉じる）'),
+    T('コメナガレ Vim エディタ          （j / k・d / u・Space でスクロール、Enter / q で閉じる）'),
     '',
     T('書式        時刻 コマンド | 本文       例) 01:23.45 ue red @5 | こんにちは'),
     T('            本文の改行は \\n 、\\ 自体は \\\\ 。" で始まる行と空行は無視されます。'),
@@ -3391,7 +3406,7 @@ function vimEnsure(){
   const E = vim.E = createVimEngine({
     write: vimWrite, quit: vimQuit,
     reload: () => { vim.synced = state.version; return vimBufferText(); },
-    ex: vimEx, exNames: ['seek', 'now', 'play'], help: vimHelp,
+    ex: vimEx, exNames: ['seek', 'now', 'play'], help: vimHelp, moreScroll: vimMoreScroll,
     clipboardWrite: (t) => { try { navigator.clipboard?.writeText(t).catch(() => {}); } catch {} },
     clipboardRead: navigator.clipboard?.readText ? () => navigator.clipboard.readText() : null,
     bell: () => { vimEl.classList.add('bell'); setTimeout(() => vimEl.classList.remove('bell'), 90); },
@@ -3566,8 +3581,17 @@ function vimRender(){
   $('#vimCmd').innerHTML = left + `<span>${escHtml(E.showcmd || '')}</span>`;
   // ページャ
   const more = $('#vimMore');
-  if (E.more){ more.hidden = false; more.innerHTML = escHtml(E.more.join('\n')) + '\n<span class="prompt">Press ENTER or type command to continue</span>'; }
-  else more.hidden = true;
+  if (E.more){
+    // 中身が変わったときだけ書き直す（書き直すとスクロールの位置が戻るため）。新しく出したら先頭から
+    if (vim.moreShown !== E.more){
+      vim.moreShown = E.more;
+      more.hidden = false;
+      more.innerHTML = escHtml(E.more.join('\n')) + '\n<span class="prompt"></span>';
+      more.scrollTop = 0;
+      more.lastChild.textContent = more.scrollHeight > more.clientHeight + 1
+        ? T('-- j / k・d / u・Space でスクロール、Enter か q で閉じる --') : 'Press ENTER or type command to continue';
+    }
+  } else { more.hidden = true; vim.moreShown = null; }
   // IME 候補位置のため入力欄をカーソル位置へ
   const anchor = E.mode === 'cmdline' ? $('#vimCmd .cc') : curEl;
   if (anchor){
@@ -3766,7 +3790,9 @@ vimScreen.addEventListener('wheel', (e) => {
   const n = Math.sign(e.deltaY) * (Math.abs(e.deltaY) > 40 || e.deltaMode ? 3 : 1);
   if (n) vim.E.scrollBy(n);
 }, { passive:false });
-$('#vimMore').addEventListener('pointerdown', (e) => { e.preventDefault(); vimInput.focus({ preventScroll:true }); vim.E?.feed('<CR>'); });
+// 押したら閉じる（指でなぞってスクロールしたときは click にならないので、閉じない）
+$('#vimMore').addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse') e.preventDefault(); vimInput.focus({ preventScroll:true }); });
+$('#vimMore').addEventListener('click', () => { vimInput.focus({ preventScroll:true }); vim.E?.feed('<CR>'); });
 // キーのボタン（スマホのキーバーと上の Esc）。押してもフォーカスを奪わず、キーボードを閉じない
 function vimKeyButton(b) {
   vimInput.focus({ preventScroll:true });
@@ -6450,13 +6476,26 @@ renderPresets();
 updateUndoUI();
 tlSelChanged();
 applyPanes();
-// 言語（?lang= を付けて開き直す。選んだものは js/i18n.js がこのブラウザで覚える）
+// 言語。開き直さずにその場で切り替える（開いている動画・保存していないコメント・元に戻す履歴を失わないように）。
+// index.html の言葉は js/i18n.js の setLang が置き換え、JS が出している言葉はここで出し直す。
+// 言葉を出す所を足したら、切り替えたときに出し直されるかを確かめる（出し直す関数が無ければここに足す）
+function langApply(){
+  TL_HEAD = tlHeadW();
+  if (vim.E) vim.E.fileName = T('コメント');
+  vim.moreShown = null;
+  $('#commentCount').textContent = T`コメント ${state.comments.length}`;
+  for (const f of [updateStatus, renderList, renderPresets, applyPanes, layoutMenuRender, tlRelane, tlSelChanged, updateUndoUI, rangeUI, updateTimeUI,
+    collabUI, followUI, histRender, a11yFill, vimScheduleRender]){
+    try { f(); } catch (e) { console.warn('langApply', e); }
+  }
+  if ($('#peersDlg').open) peersRender();
+  if ($('#projectsDlg').open) projectsRender();
+  if ($('#conflictDlg').open) conflictRender();
+  if (tm.on) tmUI();
+  TL.dirty = true; TL.ovDirty = true; state.needsDraw = true; presence.dirty = true;
+}
 $('#setLang').value = I18N.lang;
-$('#setLang').onchange = (e) => {
-  const u = new URL(location.href);
-  u.searchParams.set('lang', e.target.value);
-  location.href = u.href;
-};
+$('#setLang').onchange = (e) => { if (I18N.setLang(e.target.value)) langApply(); };
 collabInit();
 linkParse();
 requestAnimationFrame(loop);

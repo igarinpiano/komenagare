@@ -6,6 +6,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>コメナガレ</title>
+<!-- アイコン（段違いのコメントと再生位置の線）。タブの色に合わせ、暗い画面では色を少し明るくする。
+     file:// でも、komenagare のホスト（css/・js/・lib/ だけを配る）でも出るよう、ページに埋め込む -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'%3E%3Cstyle%3E.a{fill:%23FF8D28}.b{fill:%2334C759}.c{fill:%230088FF}.d{fill:%236155F5}.p{fill:%23FF383C}@media (prefers-color-scheme:dark){.a{fill:%23FF9F45}.b{fill:%233DDC6B}.c{fill:%233AA0FF}.d{fill:%238B82FF}.p{fill:%23FF5C5F}}%3C/style%3E%3Crect class='a' x='128' y='231' width='340' height='104.131' rx='40'/%3E%3Crect class='b' x='240' y='403' width='410' height='104.131' rx='40'/%3E%3Crect class='c' x='336' y='575' width='410' height='104' rx='40'/%3E%3Crect class='d' x='556' y='747' width='340' height='104.131' rx='40'/%3E%3Cpath class='p' d='M544.218 188.033C540.356 191.797 538.178 196.962 538.178 202.355V901.75C538.178 912.796 529.223 921.75 518.178 921.75H504.178C493.132 921.75 484.178 912.796 484.178 901.75V201.382C484.178 195.989 482 190.824 478.137 187.06L426.081 136.322C413.232 123.799 422.098 102 440.04 102H583.313C601.255 102 610.121 123.799 597.273 136.322L544.218 188.033Z'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/komenagare.css">
 <link rel="stylesheet" href="css/theme-xp.css">
 </head>
@@ -625,7 +628,7 @@
     <p class="muted" style="margin:0">「高速」は動画ファイルを直接デコード・エンコードするので再生より速く、処理中も編集やタブの切り替えができます（「バックグラウンドで続行」でダイアログを閉じても続きます）。形式は MP4 / MOV / WebM / MKV。対応していない環境や動画では「リアルタイム録画」を使ってください。解像度は元動画と同じ大きさ（8K なども）か、それより小さい大きさを選べます。ビットレートは「元動画と同じ」（既定）・「解像度に合わせる」・数値から選べます。Chrome / Edge などでは書き出し開始で保存先を選び、そこへ少しずつ書き込むので、長い動画もメモリをあまり使いません。保存先を選べないブラウザではダウンロードで保存し、一度に書き出せるのは 4 GB までです。8K のような大きな動画は、CLI の <code>komenagare render</code> で書き出すのがおすすめです。</p>
 
     <h4>Vim エディタ</h4>
-    <p class="muted" style="margin:0">コメントを1行1件のテキスト（<code>01:23.45 ue red | 本文</code>）として Vim のキー操作で編集できます。時刻やコマンドを書き換えて <code>:w</code> で反映、<code>:q</code> で閉じます。<code>:now</code> で再生位置に行を追加、<code>:seek</code> でカーソル行の時刻へ移動。長い行は折り返して表示します。<code>:set nowrap</code> で折り返さない（横にスクロール）、<code>:set linebreak</code> で単語の区切りで折り返します（<code>:set</code> で変えた設定は次に開いたときも使われます）。対応キーの一覧はエディタ内で <code>:help</code>。スマホでは画面下のキーバーで Esc や Ctrl を入力できます（Esc は上の :w の隣にもあります）。</p>
+    <p class="muted" style="margin:0">コメントを1行1件のテキスト（<code>01:23.45 ue red | 本文</code>）として Vim のキー操作で編集できます。時刻やコマンドを書き換えて <code>:w</code> で反映、<code>:q</code> で閉じます。<code>:now</code> で再生位置に行を追加、<code>:seek</code> でカーソル行の時刻へ移動。長い行は折り返して表示します。<code>:set nowrap</code> で折り返さない（横にスクロール）、<code>:set linebreak</code> で単語の区切りで折り返します（<code>:set</code> で変えた設定は次に開いたときも使われます）。対応キーの一覧はエディタ内で <code>:help</code>（<code>j</code> / <code>k</code>・<code>d</code> / <code>u</code>・Space でスクロール、Enter か <code>q</code> で閉じます）。スマホでは画面下のキーバーで Esc や Ctrl を入力できます（Esc は上の :w の隣にもあります）。</p>
 
     <h4>変更履歴</h4>
     <p class="muted" style="margin:0">右の「変更履歴」タブで、コメントの追加・変更・削除を新しい順に見られます。「取り消す」でその変更を打ち消す変更を加え（その後に同じコメントが変わっていれば止まります）、「移動」でそのコメントの時刻へ移ります。共同編集中は全員の変更が出ます。</p>
@@ -645,7 +648,7 @@
     <p class="muted" style="margin:0">JSON：<code>{"t": 秒, "cmd": "コマンド", "text": "本文", "id": "UUID"}</code> の配列（<code>comments</code> キー内）。CSV：<code>time,command,text,id</code> の4列。表計算ソフトで数式として動かないよう、<code>= + - @</code> などで始まるセルは先頭に <code>'</code> を付けて書き出します（コメナガレで読み込むと元に戻ります）。<code>id</code> は各コメントを見分ける番号で、省略すると読み込み時に新しく付きます。読み込みはニコニコのコメントXML（<code>&lt;chat vpos mail&gt;</code>）やコメントJSONにも対応しています。ニコニコ形式の XML でも保存できます（「名前を付けて保存」で選ぶか、設定の「保存」でダウンロードの形式にします）。</p>
 
     <h4>言語</h4>
-    <p class="muted" style="margin:0">URL に <code>?lang=en</code> を付けると英語、<code>?lang=ja</code> で日本語になります（メニューバーの「設定」でも変えられます）。選んだ言葉はこのブラウザで覚えます。ホスト（komenagare コマンド）からのメッセージは日本語のままです。</p>
+    <p class="muted" style="margin:0">URL に <code>?lang=en</code> を付けると英語、<code>?lang=ja</code> で日本語になります（メニューバーの「設定」でも変えられます。その場で切り替わるので、開いている動画や保存していないコメントはそのままです）。選んだ言葉はこのブラウザで覚えます。ホスト（komenagare コマンド）からのメッセージは日本語のままです。</p>
 
     <h4>ライセンス</h4>
     <p class="muted" style="margin:0">コメナガレ © 2026 Igarin。<a href="https://github.com/igarinpiano/komenagare" target="_blank" rel="noopener">Apache License 2.0</a> で公開しています（コードを使うときは LICENSE と NOTICE を一緒に配ってください）。動画の変換に <a href="https://github.com/Vanilagy/mediabunny" target="_blank" rel="noopener">Mediabunny</a>（MPL-2.0）を使っています。</p>
