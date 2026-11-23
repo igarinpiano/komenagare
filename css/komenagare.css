@@ -199,7 +199,14 @@ dialog.term-dlg[open]{display:flex;flex-direction:column;max-height:calc(var(--v
 .term-out{flex:0 1 auto;min-height:4.5em;margin:0 0 8px;height:min(52vh,440px);overflow:auto;background:#0a0b0d;border:1px solid var(--line);border-radius:6px;padding:8px 10px;font:12.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-all;color:#ddd}
 .term-out .cmd{color:#7ee2a8;font-weight:600}
 .term-out .err{color:#ff9b9b}
-.term-out .info{color:var(--muted)}
+.term-out .info{color:#8d96a0}
+/* 出力の行の種類（js/term-ansi.js の termLineKind）。標準エラーそのものは普通の色のまま */
+.term-out .t-error{color:#ff9b9b;background:rgba(255,107,107,.13);border-radius:2px}
+.term-out .t-warn{color:#e5c07b}
+.term-out .t-hint{color:#8d96a0}
+.term-out .t-fail{color:#ff8f8f}
+.term-out .end-ok{color:#5fd38d}
+.term-out .end-fail{color:#ff9b9b;font-weight:600}
 .term-form{display:flex;gap:6px;align-items:center}
 .term-prompt{font:600 14px var(--mono);color:#7ee2a8}
 .term-form input{flex:1;min-width:0;font-family:var(--mono)}
@@ -753,6 +760,9 @@ html.a11y-nocolor .collab.warn::before,html.a11y-nocolor button.warn::before,htm
 html.a11y-nocolor .char-count.warn::after{content:" !"}
 html.a11y-nocolor .cf-table td.cf-changed{text-decoration:underline}
 html.a11y-nocolor .term-out .err::before{content:"✗ "}
+html.a11y-nocolor .term-out .t-error.t-start::before{content:"✗ "}
+html.a11y-nocolor .term-out .t-warn.t-start::before{content:"! "}
+html.a11y-nocolor .term-out .t-error{text-decoration:underline}
 html.a11y-nocolor .hist-item.pending{border-left-style:dashed}
 html.a11y-nocolor #btnExport.busy .lbl::after{content:" …"}
 /* ほかの人の再生位置（シークバー）：名前の頭文字を添える */

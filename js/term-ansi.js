@@ -111,4 +111,30 @@ function createAnsiParser(){
   }
   return { push, reset(){ reset(); rest = ''; } };
 }
-if (typeof module !== 'undefined') module.exports = { createAnsiParser, ansiColor256, ANSI_PALETTE };
+// 出力の1行（色を外した文字）が、失敗・警告・ヒントのどれかを見分ける（どれでもなければ null）。
+// 標準エラー（err）には成功したときの経過（git push の「To …」など）も出るので、標準エラーかどうかでは色を決めず、
+// 行の書き出しで決める。標準出力は、取り違えの少ないもの（git のマージの衝突）だけを見る
+const TERM_ERROR_RE = [
+  /^(?:error|fatal|panic|致命的なエラー|致命的エラー|エラー)(?:\[[\w-]+\])?\s*[:：]/i, // git・rustc など
+  /^remote:\s*(?:error|fatal)\b/i,          // push 先が断った
+  /^!\s*\[(?:remote )?rejected\]/,          // git push の「! [rejected]」
+  /^npm (?:ERR!|error)\b/,
+  /^(?:ERROR|FATAL|FAILED|FAIL)\b/,
+  /^Traceback \(most recent call last\)/,   // Python
+  /\bpanicked at\b/,                        // Rust
+  /: (?:command not found|not found|No such file or directory|Permission denied|コマンドが見つかりません|そのようなファイルやディレクトリはありません|許可がありません)$/,
+];
+const TERM_CONFLICT_RE = /^(?:CONFLICT \(|Automatic merge failed|自動マージに失敗しました)/;
+const TERM_WARN_RE = [/^(?:warning|warn|警告)\s*[:：]/i, /^remote:\s*warning\b/i, /^npm WARN\b/];
+const TERM_HINT_RE = /^(?:hint|ヒント)\s*[:：]/i;
+function termLineKind(line, err){
+  const s = String(line).replace(/[\r\n]+$/, '').replace(/^\s+/, '');
+  if (!s) return null;
+  if (TERM_CONFLICT_RE.test(s)) return 'error';
+  if (!err) return null;
+  if (TERM_ERROR_RE.some(re => re.test(s))) return 'error';
+  if (TERM_WARN_RE.some(re => re.test(s))) return 'warn';
+  if (TERM_HINT_RE.test(s)) return 'hint';
+  return null;
+}
+if (typeof module !== 'undefined') module.exports = { createAnsiParser, ansiColor256, ANSI_PALETTE, termLineKind };
