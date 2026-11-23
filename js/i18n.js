@@ -377,7 +377,7 @@ var I18N = (function (){
     '作業フォルダ（': 'In the project folder (',
     '）で git の決まったサブコマンドを打てます（status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash など）。': ') you can run a fixed set of git subcommands (status / log / diff / show / add / commit / push / pull / fetch / switch / restore / stash, etc.).',
     ' 入力を求めるコマンド（エディタ・パスワードなど）は使えません。打ったコマンドはホストに記録されます。': ' Commands that ask for input (editors, passwords, …) don’t work. Commands are logged on the host.',
-    '（終了コード {0}）\n': '(exit code {0})\n', '、コマンドは止まりました': ', the command stopped',
+    '終了コード {0}': 'exit code {0}', '、コマンドは止まりました': ', the command stopped',
     // ---------- タイムマシン ----------
     'タイムマシンの目盛り（上が古く、下が今）': 'Time Machine scale (older at top, now at bottom)', 'ひとつ前へ': 'Previous', 'ひとつ後へ': 'Next', 'この時点に復元': 'Restore this point',
     '履歴を巻き戻す（git reset）のではなく、今の状態からこの時点の状態に戻す変更を、新しいコミットとして記録します。参加者全員に届き、それまでの履歴もそのまま残るので、あとでまたタイムマシンで戻せます。': 'This doesn’t rewind history (no git reset). It records a new commit that changes the current comments back to this point. Everyone receives it, earlier history stays, and you can go back again with Time Machine.',

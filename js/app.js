@@ -4285,7 +4285,7 @@ function collabHandle(m){
   } else if (m.type === 'tm_log' || m.type === 'tm_show' || m.type === 'tm_restore'){
     tmHandle(m);
   } else if (m.type === 'run_out'){
-    if (m.id === term.running) for (const c of term.ansi[m.err ? 'err' : 'out'].push(m.data)) termAppend(c.text, m.err ? 'err' : '', c.style);
+    if (m.id === term.running) termFeed(m.err ? 'err' : 'out', m.data);
   } else if (m.type === 'run_end'){
     if (m.id === term.running) termEnd(m);
   } else if (m.type === 'history'){
@@ -4391,18 +4391,23 @@ function collabUI(){
 
 /* ---------- ターミナル（ホストの --remote。許された人だけがホストの作業フォルダでコマンドを打てる） ---------- */
 const TERM_HISTORY_KEY = 'komenagare.termHistory';
-// ansi: 出力と標準エラーの色の状態（コマンドごとに戻す）
-const term = { running: null, seq: 0, history: [], hpos: 0, draft: '', ansi: { out: createAnsiParser(), err: createAnsiParser() } };
+// ansi: 出力と標準エラーの色の状態（コマンドごとに戻す）。lines: まだ終わっていない行（termFeed）
+// failed: 今のコマンドの出力に失敗の行（termLineKind の 'error'）があったか
+const termLine = () => ({ chunks: [], spans: [], text: '', group: 0 });
+const term = { running: null, seq: 0, history: [], hpos: 0, draft: '', ansi: { out: createAnsiParser(), err: createAnsiParser() },
+  lines: { out: termLine(), err: termLine() }, lineSeq: 0, failed: false };
 try { term.history = JSON.parse(localStorage.getItem(TERM_HISTORY_KEY) || '[]').filter(h => typeof h === 'string').slice(-100); } catch {}
 term.hpos = term.history.length;
-// style は色（ANSI のエスケープシーケンスを js/term-ansi.js で読んだもの）
-function termAppend(text, cls, style){
-  if (!text) return;
+// style は色（ANSI のエスケープシーケンスを js/term-ansi.js で読んだもの）。
+// group を付けると、その組の中でだけつなげる（あとから行ごとに色を変えるため）。書いた span を返す
+function termAppend(text, cls, style, group){
+  if (!text) return null;
   const out = $('#termOut'), stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 4;
-  const last = out.lastChild, key = (cls || '') + '|' + (style || '');
-  if (last && last.dataset.k === key && last.textContent.length < 4096) last.textContent += text;
+  const last = out.lastChild, key = (cls || '') + '|' + (style || '') + '|' + (group || '');
+  let sp;
+  if (last && last.dataset.k === key && last.textContent.length < 4096){ last.textContent += text; sp = last; }
   else {
-    const sp = document.createElement('span');
+    sp = document.createElement('span');
     sp.dataset.k = key;
     if (cls) sp.className = cls;
     if (style) sp.style.cssText = style;
@@ -4412,6 +4417,44 @@ function termAppend(text, cls, style){
   // 表示が重くならないよう、古いものから消す
   while (out.childNodes.length > 2000) out.firstChild.remove();
   if (stick) out.scrollTop = out.scrollHeight;
+  return sp;
+}
+// コマンドの出力を行ごとにまとめ、行の書き出し（termLineKind）で色を決める。
+// 標準エラーにも成功したときの経過が出る（git push など）ので、標準エラーというだけでは赤くしない。
+// 改行の来ない行（入力の催促・経過の表示）は少し待ってから出し、行が終わったら色を決め直す
+function termFeed(stream, data){
+  for (const c of term.ansi[stream].push(data)){
+    for (const piece of c.text.split(/(?<=\n)/)){
+      term.lines[stream].chunks.push({ text: piece, style: c.style });
+      if (piece.endsWith('\n')) termFlushLine(stream, true); // 行が終わると term.lines[stream] は新しい行になる
+    }
+  }
+  const L = term.lines[stream];
+  clearTimeout(L.timer);
+  if (L.chunks.length) L.timer = setTimeout(() => termFlushLine(stream, false), 150);
+}
+function termFlushLine(stream, done){
+  const L = term.lines[stream];
+  clearTimeout(L.timer);
+  const text = L.chunks.map(c => c.text).join('');
+  L.text += text;
+  const kind = termLineKind(L.text, stream === 'err');
+  // 行の途中で出した・色の付く行は、前の行とつなげない（あとで色を変えられるように）
+  if (!done || L.spans.length || kind) L.group ||= ++term.lineSeq;
+  const base = stream === 'err' ? 'stderr' : '';
+  for (const c of L.chunks){
+    const sp = termAppend(c.text, base, c.style, L.group);
+    if (sp && !L.spans.includes(sp)) L.spans.push(sp);
+  }
+  L.chunks = [];
+  L.spans.forEach((sp, i) => {
+    for (const k of ['error', 'warn', 'hint']) sp.classList.toggle('t-' + k, kind === k);
+    sp.classList.toggle('t-start', !!kind && i === 0);
+  });
+  if (!done) return;
+  if (kind === 'error') term.failed = true;
+  L.spans.forEach(sp => { if (base) sp.dataset.run = term.running || ''; });
+  term.lines[stream] = termLine();
 }
 function termUI(){
   const btn = $('#termBtn');
@@ -4433,6 +4476,7 @@ function termRun(line){
   const id = 'r' + Date.now().toString(36) + (term.seq++);
   term.running = id;
   term.ansi.out.reset(); term.ansi.err.reset();
+  term.lines = { out: termLine(), err: termLine() }; term.failed = false;
   term.history = term.history.filter(h => h !== line);
   term.history.push(line);
   term.hpos = term.history.length; term.draft = '';
@@ -4442,11 +4486,18 @@ function termRun(line){
   termUI();
 }
 function termEnd(m){
+  // 改行で終わっていない最後の行も、色を決めてから出す
+  termFlushLine('out', true); termFlushLine('err', true);
+  const out = $('#termOut'), id = term.running;
   term.running = null;
-  const out = $('#termOut');
   if (out.textContent && !out.textContent.endsWith('\n')) termAppend('\n', '');
+  const failed = m.code != null && m.code !== 0;
+  // 失敗したのに、どの行が失敗かを見分けられなかったときは、標準エラー（色の付いていないところ）を赤くする
+  if (failed && !term.failed && id){
+    for (const sp of out.querySelectorAll('span.stderr')) if (sp.dataset.run === id && !sp.style.color) sp.classList.add('t-fail');
+  }
   if (m.message) termAppend(m.message + '\n', 'err');
-  if (m.code != null) termAppend(T`（終了コード ${m.code}）\n`, 'info');
+  if (m.code != null) termAppend((failed ? '✗ ' : '✓ ') + T`終了コード ${m.code}` + '\n', failed ? 'end-fail' : 'end-ok');
   termUI();
 }
 // 接続が切れると、ホストは動いているコマンドを止める
